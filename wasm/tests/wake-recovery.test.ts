@@ -98,6 +98,7 @@ describe("RuntimeRunner wake recovery (wasm)", () => {
               context_inheritance: "none",
               input_agent_ids: ["wf-node0"],
               dependency_outputs: { "wf-node0": "pre-crash dependency output" },
+              dependency_brief: "[dependency wf-node0 output]\npre-crash dependency output",
             }],
           },
       async applyHostEvent(event: Record<string, unknown>) {

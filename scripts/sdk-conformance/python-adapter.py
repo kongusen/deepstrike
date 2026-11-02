@@ -25,9 +25,7 @@ FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
 
 try:
   from deepstrike import (
-    create_native_context_preparation_adapter,
     InMemorySessionLog,
-    SESSION_EVENT_KINDS,
     decode_canonical_content_parts,
     decode_durable_content,
     decode_durable_tool_result,
@@ -39,14 +37,13 @@ try:
     record_prompt_measurement,
   )
   from deepstrike.runtime.execution_evidence import provider_attempt_to_record
-  from deepstrike.runtime.session_log import FileSessionLog
+  from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event
+  from deepstrike.runtime.session_log import FileSessionLog, _session_event_union_fields
 except ModuleNotFoundError as error:
   if error.name != "deepstrike":
     raise
   from deepstrike import (
-    create_native_context_preparation_adapter,
     InMemorySessionLog,
-    SESSION_EVENT_KINDS,
     decode_canonical_content_parts,
     decode_durable_content,
     decode_durable_tool_result,
@@ -58,7 +55,8 @@ except ModuleNotFoundError as error:
     record_prompt_measurement,
   )
   from deepstrike.runtime.execution_evidence import provider_attempt_to_record
-  from deepstrike.runtime.session_log import FileSessionLog
+  from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event
+  from deepstrike.runtime.session_log import FileSessionLog, _session_event_union_fields
 
 
 STOP_REASONS = {"end_turn", "tool_use", "max_tokens", "stop_sequence", "content_filter", "other"}
@@ -149,14 +147,6 @@ def project_attempt_record(record: dict[str, Any]) -> dict[str, Any]:
 def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
   input_value = fixture.get("input", {})
   domain = fixture["domain"]
-  if domain == "context_execution":
-    adapter = create_native_context_preparation_adapter()
-    prepared = adapter.prepare(input_value["request"])
-    return {
-      "input_digest": prepared["execution_input"]["input_digest"],
-      "plan_digest": prepared["plan"]["plan_id"],
-      "verified": adapter.verify(input_value["request"]["effect"], prepared),
-    }
   if domain == "provider_request_plan":
     source = json.loads(fixture_path_for(input_value.get("fixture")).read_text(encoding="utf-8"))
     source = source["input"]
@@ -234,10 +224,26 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
     raise ConformanceError("invalid_provider_attempt", "/input", "provider_attempt_record input must carry attempt or record")
 
   if domain == "session_event_vocabulary":
-    # F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
-    # The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
-    kinds = sorted(SESSION_EVENT_KINDS)
-    return {"kinds": kinds, "count": len(kinds)}
+    # Introspected from the SessionEvent TypedDicts (required base + total=False subclass), not
+    # read back from the registry; the runner compares it with this SDK's slice of the registry.
+    return {"kinds": {
+      kind: {"required": list(entry["required"]), "optional": list(entry["optional"])}
+      for kind, entry in sorted(_session_event_union_fields().items())
+    }}
+
+  if domain == "kernel_observation_projection":
+    events: dict[str, Any] = {}
+    for item in input_value.get("cases", []):
+      options = item.get("options") or {}
+      events[item["name"]] = kernel_observation_to_session_event(
+        item["observation"],
+        item["turn"],
+        next_archive_start=options.get("next_archive_start", 0),
+        latest_seq=options.get("latest_seq"),
+        preserved_refs=options.get("preserved_refs"),
+      )
+    # JSON round-trip so tuples (archived_seq_range) compare as arrays.
+    return {"events": json.loads(json.dumps(events))}
 
   if domain == "provider_error":
     stop_reason = input_value.get("stopReason")

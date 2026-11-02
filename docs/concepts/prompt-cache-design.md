@@ -17,7 +17,7 @@ DeepStrike 的 Context 渲染不是把 messages 简单拼起来，而是把 prom
 ```text
 system_stable       Identity / stable system prompt
 system_knowledge    Skill definitions / initial_memory / host-pinned durable knowledge
-turns               History (incl. runtime memory-tool hits & prefetch); cacheable prefix
+turns               History (incl. runtime memory-tool hits); cacheable prefix
 state_turn          TASK STATE + signals + recency footer; volatile tail
 ```
 
@@ -32,6 +32,14 @@ state_turn          TASK STATE + signals + recency footer; volatile tail
 ```
 
 `system_text = system_stable + system_knowledge` 只服务于 OpenAI 这类单 system slot provider；Anthropic 可以分别给 system block 和 message history 放 cache breakpoint。
+
+## 运行中到达的 knowledge
+
+`system_knowledge` 渲染在 history 前面，所以对它的任何改动（包括追加）都会让后面整段 history 的缓存失效。kernel 的处理规则：
+
+- 当前 prefix 还没发给 provider（第一次调用之前，或刚过 compaction / renewal）：新条目直接进 `system_knowledge`，没有缓存损失。
+- 已经发出过：新条目先渲染进 `state_turn`（标为 staged），到下一次 compaction / renewal 再提升进 `system_knowledge`。
+- staged 条目每轮都按未缓存计费。当 staged token 达到 history token 的 1/4 时，kernel 一次性提升全部 staged 条目，并把被丢弃的 history 缓存计入 `cache_invalidated_tokens`。
 
 ## 为什么 state_turn 不在 turns 里
 

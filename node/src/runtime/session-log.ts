@@ -1,4 +1,4 @@
-import type { ContextPrepared } from "./context.js"
+import { SESSION_EVENT_KINDS as REGISTERED_SESSION_EVENT_KINDS, SESSION_EVENT_REGISTRY } from "./session-event-registry.generated.js"
 import { createReadStream } from "node:fs"
 import type { KernelPrimitive } from "./kernel-event-log.js"
 import { access, mkdir, open as openFile } from "node:fs/promises"
@@ -22,6 +22,33 @@ export type RollbackReason =
   | { kind: "user_interrupt" }
   | { kind: "malformed_replay"; reason: string }
 
+/** History items of one origin in a `context_lifecycle_reported` event (plan task 4.1). */
+export interface ContextOriginTally {
+  origin: ContextItemRecord["origin"]
+  items: number
+  tokens: number
+  resident_items?: number
+  resident_tokens?: number
+  read_back?: number
+}
+
+/** One knowledge item's lifecycle in a `context_lifecycle_reported` event (plan task 4.1). */
+export interface ContextItemRecord {
+  key?: string
+  origin: "system" | "skill" | "memory_recall" | "reference" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary"
+  tokens: number
+  value: {
+    injected_turn: number
+    ref_count: number
+    last_referenced_step?: number
+    last_referenced_turn?: number
+    expanded?: boolean
+    paged_in_after_evict?: boolean
+  }
+  /** Why it left; absent while resident. */
+  end?: "evicted" | "expired" | "removed"
+}
+
 export type SessionEvent =
   // P4-S1: `route` is the runner-construction ResolvedProviderRoute snapshot (P4 §0.2: one
   // fixed route per run today). Older logs simply lack it — C7 degrades, never fails.
@@ -29,7 +56,6 @@ export type SessionEvent =
   // P3-S2 + P4-S1: `effect_id` (G4) + `invocation_id` (P4 §3) join this evidence projection to
   // the journal effect chain; `wire_evidence` (D1) is the sole ProviderWireEvidence bundle.
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
-  | { kind: "context_prepared"; turn: number; effect_id: string; preparation: ContextPrepared }
   | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
   // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload. The kernel-minted
   // effect_id joins this host evidence to the journal effect chain 1:1 (C6); step_seq NEVER
@@ -66,6 +92,22 @@ export type SessionEvent =
   | { kind: "rollbacked"; turn: number; checkpoint_history_len: number; reason?: RollbackReason }
   | { kind: "capability_changed"; turn: number; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
   | { kind: "context_renewed"; turn: number; sprint: number; handoff_ref: string }
+  | {
+      kind: "context_lifecycle_reported"
+      turn: number
+      knowledge_entries: number
+      knowledge_referenced: number
+      regret: number
+      waste_tokens: number
+      cache_loss_tokens: number
+      /** Memory records the kernel recalled, and how many the model read with `memory(record_id)`. */
+      recalled: number
+      recall_expanded: number
+      /** Every knowledge item of the run. Absent when the run had none. */
+      items?: ContextItemRecord[]
+      /** History items by origin: admitted, still in history at the end, read back with `read_result`. */
+      history?: ContextOriginTally[]
+    }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }
   | { kind: "tool_gated"; turn: number; call_id: string; tool: string; reason: string }
@@ -128,6 +170,11 @@ export type SessionEvent =
   | { kind: "memory_queried"; turn: number; scope: MemoryScope; query: string; requested_k: number; requires_async_response: boolean }
   | { kind: "memory_validation_failed"; turn: number; record_id: string; error: string }
   | { kind: "memory_write_failed"; turn: number; record_id: string; error: string }
+  /** M2 · a write handed to the candidate sink and held for review: nothing is remembered yet.
+   *  `receipt_id` is absent when the fact comes from the kernel's own observation. */
+  | { kind: "memory_candidate_pending"; turn: number; candidate_id: string; source: string; name: string; receipt_id?: string }
+  /** M2 · the candidate sink refused the write. */
+  | { kind: "memory_candidate_rejected"; turn: number; candidate_id: string; source: string; name: string; receipt_id: string; reason_code: string }
   | { kind: "memory_query_failed"; turn: number; scope: MemoryScope; query: string; error: string }
   | { kind: "memory_retrieval_result"; hits: MemoryRecall[] }
   | {
@@ -136,11 +183,6 @@ export type SessionEvent =
       agent_id: string
       status: import("../types/agent.js").WorkflowNodeStatus
       termination: string
-      /** W-1: result-borne control signals, persisted so resume replays control flow faithfully —
-       *  a classifier re-prunes its rejected branches, a recorded loop stop is honored. */
-      classify_branch?: string
-      tournament_winner?: string
-      loop_continue?: boolean
       output?: import("../types.js").ModelMessage
     }
   | {
@@ -199,69 +241,32 @@ export type SessionEvent =
 export type SessionEventKind = SessionEvent["kind"]
 
 /**
- * The registered session-event vocabulary (F9 / S3, P7-S4). This list is the single authority
- * the cross-SDK manifest fixture pins: a kind added here without the same-commit update to
- * `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json` and the python/wasm
- * vocabularies turns cross-SDK conformance red. Declared in `SessionEvent` union order.
+ * The registered session-event vocabulary (F9 / S3, P7-S4). The authority is
+ * `contracts/session-events.json`; `session-event-registry.generated.ts` is generated from it
+ * (`node scripts/gen-session-event-registry.mjs`). The assertions below fail compilation when the
+ * `SessionEvent` union and the registry disagree on a kind or on any kind's required/optional
+ * top-level fields, so a new event cannot ship without its registry entry.
  */
-export const SESSION_EVENT_KINDS = [
-  "run_started",
-  "llm_completed",
-  "prompt_measured",
-  "context_prepared",
-  "provider_attempt",
-  "tool_requested",
-  "tool_completed",
-  "tool_argument_repaired",
-  "tool_denied",
-  "permission_requested",
-  "permission_resolved",
-  "compressed",
-  "page_out",
-  "semantic_archive_pending",
-  "semantic_archive_completed",
-  "semantic_archive_failed",
-  "page_in",
-  "rollbacked",
-  "capability_changed",
-  "context_renewed",
-  "suspended",
-  "resumed",
-  "tool_gated",
-  "signal_delivery_disposed",
-  "budget_exceeded",
-  "budget_usage_reported",
-  "operation_cancelled",
-  "milestone_advanced",
-  "milestone_blocked",
-  "checkpoint_taken",
-  "entropy_sample",
-  "entropy_alert",
-  "agent_process_changed",
-  "memory_written",
-  "memory_queried",
-  "memory_validation_failed",
-  "memory_write_failed",
-  "memory_query_failed",
-  "memory_retrieval_result",
-  "workflow_node_completed",
-  "workflow_nodes_submitted",
-  "workflow_batch_spawned",
-  "workflow_completed",
-  "kernel_observation",
-  "run_terminal",
-  "summary_upgraded",
-  "group_member_joined",
-  "group_budget_charged",
-  "round_started",
-  "round_paced",
-] as const satisfies readonly SessionEventKind[]
+export const SESSION_EVENT_KINDS = REGISTERED_SESSION_EVENT_KINDS
+export { SESSION_EVENT_REGISTRY }
 
-// Compile-time lockstep: the list above and the union must cover each other exactly.
-// `satisfies` rejects list entries the union lacks; this rejects union members the list lacks.
-type _AssertVocabularyCoversUnion = Exclude<SessionEventKind, (typeof SESSION_EVENT_KINDS)[number]> extends never ? true : never
-const _vocabularyCoversUnion: _AssertVocabularyCoversUnion = true
-void _vocabularyCoversUnion
+type SessionEventOf<K> = Extract<SessionEvent, { kind: K }>
+type OptionalFieldsOf<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? K : never }[keyof T]
+type RequiredFieldsOf<T> = Exclude<keyof T, OptionalFieldsOf<T> | "kind">
+type SameKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
+type RegistryOf = typeof SESSION_EVENT_REGISTRY
+/** Kinds whose union member disagrees with the registry (never = in lockstep). */
+type SessionEventRegistryMismatch = {
+  [K in SessionEventKind]: K extends keyof RegistryOf
+    ? SameKeys<RequiredFieldsOf<SessionEventOf<K>>, RegistryOf[K]["required"][number]> extends true
+      ? SameKeys<OptionalFieldsOf<SessionEventOf<K>>, RegistryOf[K]["optional"][number]> extends true
+        ? never
+        : K
+      : K
+    : K
+}[SessionEventKind] | Exclude<keyof RegistryOf, SessionEventKind>
+const _sessionEventRegistryInLockstep: [SessionEventRegistryMismatch] extends [never] ? true : SessionEventRegistryMismatch = true
+void _sessionEventRegistryInLockstep
 
 /**
  * The business-projection log (spec §9.2): run started/terminal, stream events, observations,

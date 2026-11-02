@@ -1,5 +1,7 @@
 # Framework Verifiable Runtime Foundation
 
+> **历史设计（2026-11-01 已删除）。** `deepstrike inspect|verify|replay|fork` CLI、`VerifiableOperation`、`verifiableOperationJson` 与 chain validator 已删除。崩溃恢复由内核的 restore（链校验 + 确定性重放 + state digest 自检）负责。见 [上下文优先实施计划](../plans/context-lifecycle-first.md)。
+
 0.2.70 延续 Framework Verifiable Runtime Foundation。它为已经落盘的执行历史提供一个
 与存储无关的框架对象 `VerifiableOperation`。文件系统、数据库、对象存储和浏览器内存都可以
 先由宿主适配器组装 `EvidenceBundle`，再调用同一组框架操作。

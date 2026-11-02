@@ -11,7 +11,7 @@
 | 加载专业指令 | [Skill](./skills) → [Memory](./memory) |
 | 安全地工作 | [治理与限制](./governance) → [工具与集成](./execution-plane-and-tools) |
 | 委托工作 | [Sub-Agent 与 Handoff](./sub-agents-and-collaboration) → [工作流](./workflow) |
-| 并行运行专业 Agent | [工作流](./workflow) → [结构化输出与 Reducer](./structured-output-and-reducers) |
+| 并行运行专业 Agent | [工作流](./workflow) → [结构化输出](./structured-output-and-reducers) |
 | 响应变化中的输入 | [Signals 与 Reactive Agent](./signals-and-reactive) |
 | 跨时间持续工作 | [长时间运行 Session](./session-replay-and-recovery) → [评估与 Milestone](./milestones) |
 | 检查使用量和决策 | [运行时观测](./os-profile-and-snapshots) |
@@ -28,7 +28,7 @@
 | [治理与限制](./governance) | 权限、审批、参数规则、配额、预算和取消 |
 | [Sub-Agent 与 Handoff](./sub-agents-and-collaboration) | 角色、隔离上下文、委托、contract 和 handoff artifact |
 | [工作流](./workflow) | 并行任务、依赖、循环、分支、tournament 和动态增长 |
-| [结构化输出与 Reducer](./structured-output-and-reducers) | Schema、重试、确定性合并和验证 |
+| [结构化输出](./structured-output-and-reducers) | Schema、重试和验证 |
 | [Signals 与 Reactive Agent](./signals-and-reactive) | Webhook、调度、Host note、Peer 反应和注意力选择 |
 | [长时间运行 Session](./session-replay-and-recovery) | 持久化、暂停、唤醒、恢复、replay 和恢复证据 |
 | [评估与 Milestone](./harness-and-eval) | 质量检查、反馈、重试、Milestone 和验收 gate |

@@ -121,8 +121,8 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_operation (K2)",
   })
 })
 
-describe("preQueryMemory prefetch lands in initial history, not knowledge", () => {
-  it("seeds start_operation history with prefetch content, never seed_knowledge/page_in", async () => {
+describe("memory recall is the kernel's", () => {
+  it("a scoped memory store turns on kernel recall; the host seeds no recall itself", async () => {
     kernelEvents.length = 0
     const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
     const memoryStore: MemoryStore = {
@@ -162,11 +162,40 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
 
     for await (const _e of runner.run({ sessionId: "prequery", goal: "use the fact" })) { /* drain */ }
 
-    const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
-      | { initial_context?: { messages?: unknown[] } }
+    const configure = kernelEvents.find((e: { kind?: string }) => e.kind === "configure_operation") as
+      | { config?: { memory_policy?: { recall?: boolean }; memory_access?: { capabilities?: { read?: boolean } } } }
       | undefined
-    expect(JSON.stringify(start?.initial_context?.messages ?? [])).toContain("PREFETCHED_LONGTERM_FACT")
-    expect(hostControls().some(event => event.command?.kind === "seed_knowledge")).toBe(false)
-    expect(kernelEvents.some((e: { kind?: string }) => e.kind === "page_in")).toBe(false)
+    expect(configure?.config?.memory_policy?.recall).toBe(true)
+    expect(configure?.config?.memory_access?.capabilities?.read).toBe(true)
+    const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
+      | { initial_context?: { knowledge?: Array<{ content?: string }> } }
+      | undefined
+    expect((start?.initial_context?.knowledge ?? []).some(k => String(k.content).startsWith("[MEMORY "))).toBe(false)
+  })
+})
+
+describe("dependency outputs reach the child kernel", () => {
+  it("lands dependencyOutputs in start_operation initial_context.dependencies", async () => {
+    kernelEvents.length = 0
+    const provider: LLMProvider = {
+      async complete(): Promise<ModelMessage> {
+        return { role: "assistant", content: "unused", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", delta: "done" }
+      },
+    }
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 2048,
+      dependencyOutputs: { "wf-node0": "FULL_SURVEY_BODY" },
+    })
+    for await (const _e of runner.run({ sessionId: "deps", goal: "synthesize" })) { /* drain */ }
+    const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
+      | { initial_context?: { dependencies?: Array<{ agent_id: string; content: string }> } }
+      | undefined
+    expect(start?.initial_context?.dependencies).toEqual([{ agent_id: "wf-node0", content: "FULL_SURVEY_BODY" }])
   })
 })

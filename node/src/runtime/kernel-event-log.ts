@@ -15,9 +15,13 @@ export function categoryForKind(kind: string): KernelEventCategory {
     case "page_in_requested":
     case "renewed":
     case "context_renewed":
+    case "lifecycle_report":
+    case "context_lifecycle_reported":
     case "memory_written":
     case "memory_queried":
     case "memory_validation_failed":
+    case "memory_candidate_pending":
+    case "memory_candidate_rejected":
       return "mm"
     case "agent_process_changed":
       return "proc"
@@ -41,6 +45,19 @@ export interface KernelObservationSessionEventRequest {
   }
 }
 
+/** The kernel's pressure actions that name a session-level compression action; any other
+ *  action (e.g. `none`) is omitted from the event. Shared rule across all four SDKs. */
+export function canonicalCompressionAction(action?: string): CompressionAction {
+  return action === "snip_compact" || action === "micro_compact" || action === "context_collapse" || action === "auto_compact"
+    ? action
+    : undefined
+}
+
+/**
+ * Project one kernel observation onto its session event (null = not persisted). Pinned across
+ * SDKs by the `kernel_observation_projection` conformance fixture: an absent optional field is
+ * omitted, never written as `null`.
+ */
 export function kernelObservationToSessionEvent(
   obs: KernelObservation,
   turn: number,
@@ -51,8 +68,23 @@ export function kernelObservationToSessionEvent(
     compressionAction?: (action?: string) => CompressionAction
   } = {},
 ): SessionEvent | null {
+  const event = projectKernelObservation(obs, turn, opts)
+  if (!event) return null
+  return Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined && value !== null)) as SessionEvent
+}
+
+function projectKernelObservation(
+  obs: KernelObservation,
+  turn: number,
+  opts: {
+    nextArchiveStart?: number
+    latestSeq?: number
+    preservedRefs?: string[]
+    compressionAction?: (action?: string) => CompressionAction
+  } = {},
+): SessionEvent | null {
   const t = obs.turn ?? turn
-  const compressionAction = opts.compressionAction ?? (() => undefined)
+  const compressionAction = opts.compressionAction ?? canonicalCompressionAction
 
   switch (obs.kind) {
     case "compressed": {
@@ -75,6 +107,20 @@ export function kernelObservationToSessionEvent(
         turn: t,
         sprint: obs.sprint ?? 0,
         handoff_ref: "",
+      }
+    case "lifecycle_report":
+      return {
+        kind: "context_lifecycle_reported" as const,
+        turn: t,
+        knowledge_entries: obs.knowledge_entries ?? 0,
+        knowledge_referenced: obs.knowledge_referenced ?? 0,
+        regret: obs.regret ?? 0,
+        waste_tokens: obs.waste_tokens ?? 0,
+        cache_loss_tokens: obs.cache_loss_tokens ?? 0,
+        recalled: obs.recalled ?? 0,
+        recall_expanded: obs.recall_expanded ?? 0,
+        ...(obs.items && obs.items.length > 0 ? { items: obs.items } : {}),
+        ...(obs.history && obs.history.length > 0 ? { history: obs.history } : {}),
       }
     case "rollbacked":
       return {
@@ -228,6 +274,15 @@ export function kernelObservationToSessionEvent(
         memory_kind: obs.memory_kind ?? "",
         name: obs.name ?? "",
         size_bytes: obs.size_bytes ?? 0,
+      }
+    case "memory_candidate_pending":
+      // M2 · the kernel's PersistMemory effect settled as a candidate (the child-request path).
+      return {
+        kind: "memory_candidate_pending" as const,
+        turn: t,
+        candidate_id: String((obs as { candidate_id?: unknown }).candidate_id ?? ""),
+        source: "child_request",
+        name: obs.name ?? "",
       }
     case "memory_queried":
       return {

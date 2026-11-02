@@ -393,6 +393,36 @@ async def test_p1_15_a_model_memory_query_mirrors_the_kernel_derived_count():
 
 
 @pytest.mark.asyncio
+async def test_p1_15_reads_one_record_in_full_by_record_id_and_reports_when_it_is_gone():
+  elsewhere = _stored("elsewhere")
+  elsewhere.scope = MemoryScope(tenant_id="p1-15", namespace="other")
+  records = {"crossing": _stored("crossing"), "elsewhere": elsewhere}
+  gets: list[str] = []
+
+  class _FetchStore(_Store):
+    async def get(self, _agent_id, record_id):
+      gets.append(record_id)
+      return records.get(record_id)
+
+  provider = Scripted([
+    [ToolCallEvent(id="call_a", name="memory", arguments={"record_id": "crossing"})],
+    [ToolCallEvent(id="call_b", name="memory", arguments={"record_id": "elsewhere"})],
+  ])
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=provider, session_log=InMemorySessionLog(), execution_plane=LocalExecutionPlane(),
+    max_tokens=8000, max_turns=4, agent_id="p1-15", memory_scope=_SCOPE, memory_store=_FetchStore(),
+    pre_query_memory=lambda goal: [],
+  ))
+  await _drain(runner, "p1-15-fetch", goal="recall")
+
+  assert gets == ["crossing", "elsewhere"]
+  assert "[MEMORY record_ref=crossing kind=reference] crossing body" in _text(provider.contexts[1])
+  # a record outside this agent's memory scope is not found, not leaked
+  assert "[MEMORY record_ref=elsewhere] not found" in _text(provider.contexts[2])
+  assert "elsewhere body" not in _text(provider.contexts[2])
+
+
+@pytest.mark.asyncio
 async def test_p1_15_a_host_write_in_a_live_run_answers_to_the_kernel_write_quota():
   store = _Store()
   verdicts = []

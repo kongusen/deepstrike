@@ -6,6 +6,7 @@ use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall, Tool
 use futures::{Stream, StreamExt};
 
 pub mod anthropic;
+pub mod anthropic_compaction;
 pub mod openai;
 pub mod provider_error;
 pub mod request_plan;
@@ -28,6 +29,13 @@ pub type ProviderRunState = serde_json::Value;
 pub struct RuntimePolicy {
     pub max_turns: Option<u32>,
     pub timeout_ms: Option<u64>,
+}
+
+/// Provider-native context tiers declared for a configured provider instance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeContextTiers {
+    pub tool_result_clearing: bool,
+    pub compaction: bool,
 }
 
 /// Stream event emitted by providers.
@@ -111,6 +119,11 @@ pub trait LLMProvider: Send + Sync {
         self.stream(context, tools, extensions, state).await
     }
 
+    /// Context tiers performed natively by this configured provider instance.
+    fn native_context_tiers(&self) -> NativeContextTiers {
+        NativeContextTiers::default()
+    }
+
     /// Optional per-run state for protocol-native continuation (e.g. Responses API).
     fn create_run_state(&self) -> Option<ProviderRunState> {
         None
@@ -157,6 +170,78 @@ pub trait LLMProvider: Send + Sync {
         extensions: Option<&serde_json::Value>,
         state: Option<&ProviderRunState>,
     ) -> crate::Result<Box<dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>>;
+}
+
+/// A shared provider is a provider: a workflow node's child run uses its parent's instance.
+#[async_trait]
+impl<T: LLMProvider + ?Sized> LLMProvider for std::sync::Arc<T> {
+    fn context_route(&self) -> serde_json::Value {
+        (**self).context_route()
+    }
+
+    fn prepare_context_request(
+        &self,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&serde_json::Value>,
+        state: Option<&ProviderRunState>,
+    ) -> crate::Result<serde_json::Value> {
+        (**self).prepare_context_request(context, tools, extensions, state)
+    }
+
+    async fn stream_prepared(
+        &self,
+        prepared: &serde_json::Value,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&serde_json::Value>,
+        state: Option<&ProviderRunState>,
+    ) -> crate::Result<Box<dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+        (**self).stream_prepared(prepared, context, tools, extensions, state).await
+    }
+
+    fn native_context_tiers(&self) -> NativeContextTiers {
+        (**self).native_context_tiers()
+    }
+
+    fn create_run_state(&self) -> Option<ProviderRunState> {
+        (**self).create_run_state()
+    }
+
+    fn runtime_policy(&self) -> RuntimePolicy {
+        (**self).runtime_policy()
+    }
+
+    fn peek_provider_replay(&self, content: &str, tool_calls: &[ToolCall]) -> Option<ProviderReplay> {
+        (**self).peek_provider_replay(content, tool_calls)
+    }
+
+    fn seed_provider_replay(&self, content: &str, tool_calls: &[ToolCall], replay: &ProviderReplay) {
+        (**self).seed_provider_replay(content, tool_calls, replay)
+    }
+
+    fn commit_stream_replay(&self, content: &str, tool_calls: &[ToolCall]) {
+        (**self).commit_stream_replay(content, tool_calls)
+    }
+
+    async fn complete(
+        &self,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&serde_json::Value>,
+    ) -> crate::Result<CoreMessage> {
+        (**self).complete(context, tools, extensions).await
+    }
+
+    async fn stream(
+        &self,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&serde_json::Value>,
+        state: Option<&ProviderRunState>,
+    ) -> crate::Result<Box<dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+        (**self).stream(context, tools, extensions, state).await
+    }
 }
 
 pub async fn collect_message_from_stream(

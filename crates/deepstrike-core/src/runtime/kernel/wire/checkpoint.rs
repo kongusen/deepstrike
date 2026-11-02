@@ -34,6 +34,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
 use super::config::ResolvedOperationConfig;
+use crate::context::item::{ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease, OriginTally};
 use super::effect::{Digest, KernelEffect, LaunchToken, wire_opaque_ref};
 use super::envelope::OperationLifecycle;
 use super::fault::{KernelFault, KernelFaultCode};
@@ -320,6 +321,10 @@ pub struct AuthoredMemoryWriteState {
     pub name: String,
     pub kind: MemoryKind,
     pub size_bytes: u32,
+    /// The model's own `propose_memory` call authored the write, so its outcome is answered back
+    /// into the model's context. Omitted when false, so child-request checkpoints keep their bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model_facing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -329,6 +334,10 @@ pub struct AuthoredMemoryQueryState {
     pub binding_id: MemoryBindingId,
     pub text: String,
     pub requested_k: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall: bool,
 }
 
 /// §12.1 · the P2 plane: task control blocks and their attempts, budgets and waits, the workflow
@@ -531,9 +540,6 @@ pub struct WorkflowGraphState {
 }
 
 /// One workflow node as source state rather than a snapshot of `TaskGraph` internals.
-///
-/// `kind` is explicit even though the canonical ABI currently admits only `spawn`: a checkpoint
-/// must fail closed if a future producer writes a control-flow kind this revision cannot rebuild.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowNodeState {
@@ -543,13 +549,10 @@ pub struct WorkflowNodeState {
     pub depends_on: Vec<NodeId>,
     #[serde(default)]
     pub run_spec: Option<LogicalAgentSpec>,
-    pub kind: String,
     pub status: String,
     /// The deterministic child identity while this node is running.
     #[serde(default)]
     pub active_agent_id: Option<String>,
-    #[serde(default)]
-    pub iterations_completed: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -612,9 +615,6 @@ pub struct MilestoneState {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextVmState {
-    /// Monotonic ContextState generation used to invalidate an admitted ContextPlan after restore.
-    #[serde(default)]
-    pub state_generation: u64,
     /// Optimization evidence must survive restore without changing source/confidence/fingerprint.
     #[serde(default)]
     pub system_measurements: Vec<crate::context::measurement::TokenMeasurement>,
@@ -624,6 +624,27 @@ pub struct ContextVmState {
     pub knowledge_reference_step: u64,
     #[serde(default)]
     pub knowledge_budget_warned: bool,
+    /// The current system[1] has been sent to a provider since the last boundary.
+    #[serde(default)]
+    pub prefix_sent: bool,
+    /// History tokens whose cache mid-run system[1] promotions discarded.
+    #[serde(default)]
+    pub cache_invalidated_tokens: u64,
+    /// Knowledge keys a boundary sweep removed, for regret counting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evicted_knowledge_keys: Vec<String>,
+    #[serde(default)]
+    pub knowledge_regret: u32,
+    #[serde(default)]
+    pub knowledge_wasted_tokens: u64,
+    /// Kernel memory recall width; absent when the operation cannot read memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_top_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall_due: bool,
+    /// Dependency outputs this run can read with `read_result(call_id="dep:<agent_id>")`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub dependency_bodies: std::collections::BTreeMap<String, String>,
     /// **The** home of P3 handle identity and residency.
     #[serde(default)]
     pub handles: Vec<HandleState>,
@@ -639,6 +660,22 @@ pub struct ContextVmState {
     pub active_skills: Vec<SkillLeaseState>,
     #[serde(default)]
     pub knowledge: Vec<KnowledgeSlotState>,
+    /// Knowledge items that already left, for the end-of-run lifecycle report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_items: Vec<ItemRecord>,
+    /// The turn the item table counts leases against.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub item_turn: u32,
+    /// Plan task 1.1b · the item identity of each history message, aligned with the history
+    /// entries of `messages`. Absent ⇒ the messages restore untracked (id 0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_items: Vec<ItemTag>,
+    /// The last item id handed out, so a restored kernel never reissues one.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub last_item_id: u64,
+    /// History items admitted and read back, by origin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_tally: Vec<OriginTally>,
     #[serde(default)]
     pub signals: Vec<String>,
     /// §5q-2 · the stored messages of the system and history partitions, in render order. **The**
@@ -882,6 +919,27 @@ pub struct KnowledgeSlotState {
     pub use_count: u64,
     #[serde(default)]
     pub last_used_step: Option<u64>,
+    /// Rendered in the state turn until the next boundary promotes it into system[1].
+    #[serde(default)]
+    pub staged: bool,
+    /// Plan task 1.1 · the item's origin. Absent ⇒ a `memory:` key is a
+    /// recall and any other key follows [`ItemOrigin::for_host_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ItemOrigin>,
+    /// Absent ⇒ the origin's default lease (permanent when pinned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<Lease>,
+    /// Why the item leaves at the next boundary, when `evict_at_boundary` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaving: Option<ItemEnd>,
+    #[serde(default)]
+    pub injected_turn: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_referenced_turn: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expanded: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paged_in_after_evict: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2231,4 +2289,12 @@ mod tests {
             }
         }
     }
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }

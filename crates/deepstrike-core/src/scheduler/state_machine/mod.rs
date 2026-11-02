@@ -1080,6 +1080,12 @@ impl LoopStateMachine {
         self.emit_call_llm()
     }
 
+    /// Continue the turn a kernel recall paused: the recalled records are in knowledge now.
+    pub fn resume_after_recall(&mut self) -> LoopAction {
+        self.phase = LoopPhase::Reason;
+        self.emit_call_llm()
+    }
+
     /// Return all messages added to history during the current run
     /// (since the last `preload_history` call or since construction).
     ///
@@ -1191,6 +1197,7 @@ impl LoopStateMachine {
         self.sweep_expired_leases();
         // K3: skill leases expire on the same head-of-event cadence as capability leases.
         self.ctx.sweep_expired_skill_leases(self.turn);
+        self.ctx.sweep_expired_item_leases(self.turn);
 
         match event {
             LoopEvent::LLMResponse { message } => {
@@ -1813,6 +1820,19 @@ impl LoopStateMachine {
             let tokens = self.message_tokens(msg);
             self.ctx.push_history(msg.clone(), tokens);
         }
+        let metrics = self.ctx.lifecycle_metrics();
+        self.observations.push(KernelObservation::LifecycleReport {
+            turn: self.turn,
+            knowledge_entries: metrics.knowledge_entries,
+            knowledge_referenced: metrics.knowledge_referenced,
+            regret: metrics.regret,
+            waste_tokens: metrics.waste_tokens,
+            cache_loss_tokens: metrics.cache_loss_tokens,
+            recalled: metrics.recalled,
+            recall_expanded: metrics.recall_expanded,
+            items: metrics.items,
+            history: metrics.history,
+        });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
         // "sleep" for cron loops) — but ONLY on a clean Completed. NoProgress /
@@ -1847,9 +1867,6 @@ impl LoopStateMachine {
             final_message,
             turns_used: self.turn,
             total_tokens_used: self.total_tokens,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision,
         };
         self.set_lifecycle(TaskLifecycle::Done(termination), None);
@@ -1884,6 +1901,21 @@ impl LoopStateMachine {
         // Calling the provider is definitionally "running" — the single funnel for entering the
         // Running lifecycle (covers start, resume, signal-driven turns, budget final-call).
         self.set_lifecycle(TaskLifecycle::Running, None);
+
+        // Plan task 2.1 · a recall owed at run start or after a renewal goes out before the
+        // provider call, so its hits are in system knowledge before that knowledge is cached.
+        if self.pending_termination.is_none()
+            && let Some((text, top_k)) = self.ctx.take_due_recall()
+        {
+            return LoopAction::QueryMemory {
+                query: crate::mm::memory::MemoryQuery {
+                    query: text,
+                    top_k: top_k as usize,
+                    ..Default::default()
+                },
+                requested_k: top_k as usize,
+            };
+        }
 
         // M1 収口 (completed): the budget verdict lives at the same single funnel. Every edge that
         // requests a provider call — tool-turn completion, milestone retry, signal-forced turns,
@@ -2018,14 +2050,15 @@ impl LoopStateMachine {
                     .map_or(&entry.message, |pending| &pending.0);
                 (
                     message.content.as_text().map(str::to_string),
-                    entry.evict_at_boundary,
+                    entry.is_leaving(),
                 )
             });
         match (note, current) {
             (Some(note), Some((Some(text), false))) if text == note => {}
             (Some(note), _) => {
                 let tokens = self.ctx.engine.count(&note).max(1);
-                self.ctx.push_knowledge_entry(
+                self.ctx.push_knowledge_item(
+                    crate::context::item::ItemOrigin::System,
                     Some(KEY.into()),
                     CoreMessage::system(note),
                     tokens,
@@ -2043,6 +2076,10 @@ impl LoopStateMachine {
         let mut tools = self.tools.clone();
         let hidden = self.governance_hidden_tools();
         tools.retain(|tool| !hidden.contains(&tool.name));
+        // `propose_memory` is the kernel's own schema, present only while its feature is on. A
+        // host catalog entry of that name must not expose it otherwise: the proposal surface is
+        // what keeps a model's memory writes in review instead of the store.
+        tools.retain(|tool| tool.name != crate::context::manager::PROPOSE_MEMORY_TOOL_NAME);
         tools.extend(self.ctx.meta_tool_schemas());
 
         if let Some(ref spec) = self.run_spec {
@@ -2051,7 +2088,9 @@ impl LoopStateMachine {
             tools.retain(|tool| {
                 let kind = match tool.name.as_str() {
                     "skill" => CapabilityKind::Skill,
-                    "memory" => CapabilityKind::Memory,
+                    "memory" | crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
+                        CapabilityKind::Memory
+                    }
                     "knowledge" => CapabilityKind::Knowledge,
                     _ => CapabilityKind::Tool,
                 };
@@ -2133,6 +2172,7 @@ impl LoopStateMachine {
         tools: Vec<ToolSchema>,
     ) -> LoopAction {
         self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
+        self.ctx.mark_prefix_sent();
         LoopAction::CallLLM { context, tools }
     }
 

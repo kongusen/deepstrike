@@ -80,7 +80,7 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         | "rollbacked"
         | "milestone_advanced"
         | "milestone_blocked" => KernelEventCategory::Sched,
-        "compressed" | "page_out" | "page_in" | "renewed" | "context_renewed" => {
+        "compressed" | "page_out" | "page_in" | "renewed" | "context_renewed" | "lifecycle_report" | "context_lifecycle_reported" => {
             KernelEventCategory::Mm
         }
         "agent_process_changed"
@@ -89,7 +89,11 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         | "workflow_completed"
         | "agent_preempted" => KernelEventCategory::Proc,
         "signal_delivery_disposed" => KernelEventCategory::Ipc,
-        "memory_written" | "memory_queried" | "memory_validation_failed" => KernelEventCategory::Mm,
+        "memory_written"
+        | "memory_queried"
+        | "memory_validation_failed"
+        | "memory_candidate_pending"
+        | "memory_candidate_rejected" => KernelEventCategory::Mm,
         _ => KernelEventCategory::Sched,
     }
 }

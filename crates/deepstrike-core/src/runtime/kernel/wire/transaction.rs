@@ -2067,26 +2067,11 @@ mod tests {
     }
 
     fn provider_payload() -> CallProviderEffect {
-        let manager = crate::context::manager::ContextManager::new(128_000);
-        let (mut candidate, _) = manager
-            .prepare_candidate(
-                OPERATION.to_string(),
-                "step-1".to_string(),
-                1,
-                crate::evolution::ContentDigest::from_bytes(b"test-policy"),
-            )
-            .unwrap();
         let context = super::super::effect::RenderedContext::default();
         let tools: Vec<super::super::effect::ToolSchema> = vec![];
-        candidate.rendered_snapshot = crate::evolution::ContentDigest::from_bytes(
-            super::super::record::canonical_bytes(&(&context, &tools))
-                .unwrap()
-                .as_slice(),
-        );
         CallProviderEffect {
             context,
             tools,
-            context_candidate: Box::new(candidate),
         }
     }
 

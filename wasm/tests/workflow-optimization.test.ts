@@ -14,7 +14,6 @@ import {
   workflowNodeSpecToKernel, workflowNodeToSpec, subAgentResultToKernel,
 } from "../src/runtime/types/agent.js"
 import type { WorkflowSpec } from "../src/index.js"
-import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
 import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 import type { RegisteredTool } from "../src/tools/index.js"
 import { wrapScriptedKernel } from "./helpers/scripted-canonical-runtime.js"
@@ -78,16 +77,15 @@ const idleProvider: LLMProvider = {
 }
 
 describe("workflow result wire projection", () => {
-  it("subAgentResultToKernel strips the SDK-internal paceDecision but keeps loop_continue", () => {
+  it("subAgentResultToKernel strips the SDK-internal paceDecision", () => {
     const wire = subAgentResultToKernel({
-      agentId: "wf-node0-i1",
+      agentId: "wf-node0",
       result: {
         termination: "completed", turnsUsed: 1, totalTokensUsed: 1,
-        loopContinue: false, paceDecision: { action: "stop", reason: "task complete" },
+        paceDecision: { action: "stop", reason: "task complete" },
       },
     })
     expect(JSON.stringify(wire)).not.toContain("pace")
-    expect((wire.result as Record<string, unknown>).loop_continue).toBe(false)
   })
 })
 
@@ -112,19 +110,6 @@ describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", ()
     expect(spec.maxTurns).toBe(4)
     expect(spec.maxWallMs).toBe(30_000)
     expect(spec.tokenBudget).toBe(5000)
-  })
-
-  it("dependencyOutputsNote formats, clips, and skips empty outputs", () => {
-    const outputs = new Map([
-      ["wf-node0", "alpha findings"],
-      ["wf-node1", "x".repeat(9000)],
-    ])
-    const note = dependencyOutputsNote(["wf-node0", "wf-node1", "wf-node-missing"], outputs, 100)
-    expect(note).toContain("[dependency wf-node0 output]\nalpha findings")
-    expect(note).toContain("…[truncated]")
-    expect(note).not.toContain("wf-node-missing")
-    expect(dependencyOutputsNote([], outputs)).toBe("")
-    expect(dependencyOutputsNote(undefined, outputs)).toBe("")
   })
 })
 
@@ -187,94 +172,5 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     })
     expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0"])
     expect(pings).toBe(0) // untrusted-content reader: no tool reaches the host
-  })
-})
-
-describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable session", () => {
-  /** Per ITERATION the child makes two calls: propose a pace verb, then file the report turn. */
-  function pacingLoopProvider(verbs: string[]): LLMProvider {
-    let call = 0
-    return {
-      async complete(): Promise<ModelMessage> {
-        return { role: "assistant", content: "done", toolCalls: [] }
-      },
-      async *stream(): AsyncIterable<StreamEvent> {
-        call += 1
-        const iteration = Math.ceil(call / 2) - 1
-        if (call % 2 === 1) {
-          yield {
-            type: "tool_call", id: `pace-${call}`, name: "pace",
-            arguments: { next: verbs[Math.min(iteration, verbs.length - 1)], reason: `iter ${iteration}` },
-          }
-          return
-        }
-        yield { type: "text_delta", delta: `iteration ${iteration} report` }
-      },
-    }
-  }
-
-  /** Scripted parent kernel mirroring NodeKind::Loop: iteration k spawns as `wf-node0-i{k}`
-   *  with `loop_max_iters`; an explicit loop_continue=false ends the loop, an explicit true
-   *  re-arms, and NO opinion (v1 fallback) re-arms until the cap. */
-  function loopParentKernel(maxIters: number) {
-    let iter = 0
-    const loopSpawn = (k: number) =>
-      spawn({ agent_id: `wf-node0-i${k}`, goal: "polish until done", loop_max_iters: maxIters })
-    return {
-      turn: () => 0,
-      step(input: string): string {
-        const { event } = JSON.parse(input) as {
-          event: { kind: string; result?: { result?: { loop_continue?: boolean } } }
-        }
-        if (event.kind === "load_workflow") {
-          return reply([{ kind: "workflow_batch_spawned", nodes: [loopSpawn(0)] }])
-        }
-        if (event.kind === "sub_agent_completed") {
-          const cont = event.result?.result?.loop_continue
-          if (cont !== false && iter + 1 < maxIters) {
-            iter += 1
-            return reply([{ kind: "workflow_batch_spawned", nodes: [loopSpawn(iter)] }])
-          }
-          return reply([{ kind: "workflow_completed", node_outcomes: [{ node_id: "wf-node0", status: "completed" }] }])
-        }
-        return reply([])
-      },
-    }
-  }
-
-  it("pace continue→stop drives the iterations; the transcript accumulates under one session id", async () => {
-    const { runner, sessionLog } = createWorkflowRunner(
-      pacingLoopProvider(["continue", "stop"]), loopParentKernel(5), "wfloop",
-    )
-    const outcome = await runner.runWorkflow(
-      { nodes: [{ task: "polish until done", role: "implement", loop: { maxIters: 5 } }] },
-    )
-    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0"])
-    // The pace verb ended the loop at 2 iterations, well before maxIters=5.
-    const loopSession = await sessionLog.read("wfloop-wf-node0")
-    const starts = loopSession.filter(e => e.event.kind === "run_started")
-    expect(starts.length).toBe(2) // W-N6: BOTH iterations ran under the ONE stable session id
-    // No per-iteration session fragments.
-    expect(await sessionLog.read("wfloop-wf-node0-i0")).toEqual([])
-    expect(await sessionLog.read("wfloop-wf-node0-i1")).toEqual([])
-  })
-
-  it("an iteration that never paces completes the loop (silence = done, not run-to-cap)", async () => {
-    const silent: LLMProvider = {
-      async complete(): Promise<ModelMessage> {
-        return { role: "assistant", content: "done", toolCalls: [] }
-      },
-      async *stream(): AsyncIterable<StreamEvent> {
-        yield { type: "text_delta", delta: "all done in one pass" }
-      },
-    }
-    const { runner, sessionLog } = createWorkflowRunner(silent, loopParentKernel(4), "wfsilent")
-    const outcome = await runner.runWorkflow(
-      { nodes: [{ task: "one-shot polish", role: "implement", loop: { maxIters: 4 } }] },
-    )
-    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0"])
-    // default_action=stop: exactly ONE iteration ran (the kernel's pace fallback said stop).
-    const starts = (await sessionLog.read("wfsilent-wf-node0")).filter(e => e.event.kind === "run_started")
-    expect(starts.length).toBe(1)
   })
 })

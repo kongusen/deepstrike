@@ -254,6 +254,25 @@ async function drain(runner, sessionId, goal = "go") {
     assert.deepEqual(promotions, [{ recordId: "crossing", recallCount: 3 }])
   }
 
+  // memory(record_id) reads one record in full; a record outside the scope is not found
+  {
+    const fixture = store()
+    const records = new Map([["crossing", stored("crossing", 0)], ["elsewhere", { ...stored("elsewhere", 0), scope: { ...scope, namespace: "other" } }]])
+    fixture.memoryStore.get = async (_agent, id) => records.get(id) ?? null
+    const provider = scripted([
+      [{ type: "tool_call", id: "f1", name: "memory", arguments: { record_id: "crossing" } }],
+      [{ type: "tool_call", id: "f2", name: "memory", arguments: { record_id: "elsewhere" } }],
+    ])
+    const runner = new RuntimeRunner({
+      provider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(), maxTokens: 8000, maxTurns: 4,
+      agentId: "p1-15", memoryScope: scope, memoryStore: fixture.memoryStore, preQueryMemory: () => [],
+    })
+    await drain(runner, "p1-15-fetch")
+    assert.match(JSON.stringify(provider.contexts[1]), /\[MEMORY record_ref=crossing kind=reference\] crossing body/)
+    assert.match(JSON.stringify(provider.contexts[2]), /\[MEMORY record_ref=elsewhere\] not found/)
+    assert.doesNotMatch(JSON.stringify(provider.contexts[2]), /elsewhere body/)
+  }
+
   // a host write inside a live run answers to the kernel's rolling write quota
   {
     const fixture = store()
@@ -286,7 +305,7 @@ async function drain(runner, sessionId, goal = "go") {
     assert.equal(await make().writeMemory({ ...wide, name: "记".repeat(101) }), false)
     assert.equal(await make({ maxContentBytes: 4 }).writeMemory({ ...stored("big", 0), content: "12345" }), false)
   }
-  ok("P1-15 the kernel is the one memory authority (validation, quota, recall counts)")
+  ok("P1-15 the kernel is the one memory authority (validation, quota, recall counts, fetch by id)")
 }
 
 console.log(`# ${passed} P1 boundary checks passed against the real kernel`)

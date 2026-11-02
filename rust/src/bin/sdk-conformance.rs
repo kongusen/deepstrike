@@ -115,40 +115,13 @@ fn load_fixture(path: &Path) -> Result<Fixture, String> {
 
 fn project(fixture: &Fixture) -> Result<Value, AdapterError> {
     match fixture.domain.as_str() {
-        "context_execution" => {
-            let request: deepstrike_core::context::execution::ContextDispatchRequest =
-                serde_json::from_value(fixture.input["request"].clone()).map_err(|error| {
-                    AdapterError {
-                        code: "invalid_context".into(),
-                        path: "/input/request".into(),
-                        message: error.to_string(),
-                    }
-                })?;
-            let prepared = deepstrike_core::context::execution::prepare_context_dispatch(&request)
-                .map_err(|error| AdapterError {
-                    code: "invalid_context".into(),
-                    path: "/input/request".into(),
-                    message: error.to_string(),
-                })?;
-            deepstrike_core::context::execution::verify_context_dispatch(
-                &request.effect,
-                &prepared,
-            )
-            .map_err(|error| AdapterError {
-                code: "invalid_context".into(),
-                path: "/input/request".into(),
-                message: error.to_string(),
-            })?;
-            Ok(
-                json!({ "input_digest": prepared.execution_input.input_digest,
-                "plan_digest": prepared.plan.plan_id, "verified": true }),
-            )
-        }
         "provider_request_plan" => project_request_plan(&fixture.input),
         "durable_tool_result" => project_durable_tool_result(&fixture.input),
         "prompt_measurement" => project_prompt_measurement(&fixture.input),
         "provider_error" => project_provider_error(&fixture.input),
         "session_event" => project_session_event(&fixture.input),
+        "session_event_vocabulary" => project_session_event_vocabulary(&fixture.input),
+        "kernel_observation_projection" => project_kernel_observations(&fixture.input),
         domain => Err(AdapterError::unsupported_domain(domain)),
     }
 }
@@ -271,6 +244,7 @@ fn project_session_event(input: &Value) -> Result<Value, AdapterError> {
             is_fatal: false,
             error_kind: None,
         }],
+        effect_id: None,
     };
     let SessionEvent::ToolCompleted { results, .. } = event else {
         unreachable!("constructed tool completion event")
@@ -286,6 +260,77 @@ fn project_session_event(input: &Value) -> Result<Value, AdapterError> {
         "isError": result.is_error,
         "blockTypes": content.blocks.iter().map(block_type).collect::<Vec<_>>(),
     }))
+}
+
+/// The kinds `SessionEvent` carries, each with the top-level fields its serde shape treats as
+/// required/optional — probed on the shared sample rather than read from the registry: a field is
+/// optional when the sample still decodes without it and the re-encoded event then omits it.
+fn project_session_event_vocabulary(input: &Value) -> Result<Value, AdapterError> {
+    let samples = required_object(input, "samples", "/input/samples")?;
+    let mut kinds = serde_json::Map::new();
+    for kind in SessionEvent::KINDS {
+        let sample = samples.get(*kind).ok_or_else(|| AdapterError {
+            code: "missing_sample",
+            path: "/input/samples",
+            message: format!("no shared sample for Rust kind {kind}"),
+        })?;
+        let decode = |value: Value| {
+            serde_json::from_value::<SessionEvent>(value)
+                .and_then(|event| serde_json::to_value(&event))
+                .ok()
+        };
+        let encoded = decode(sample.clone()).ok_or_else(|| AdapterError {
+            code: "invalid_session_event",
+            path: "/input/samples",
+            message: format!("shared {kind} sample does not decode in Rust"),
+        })?;
+        let (mut required, mut optional) = (Vec::new(), Vec::new());
+        for field in encoded.as_object().into_iter().flat_map(|map| map.keys()) {
+            if field == "kind" {
+                continue;
+            }
+            let mut without = sample.clone();
+            without.as_object_mut().map(|map| map.remove(field));
+            match decode(without) {
+                Some(event) if event.get(field).is_none() => optional.push(field.clone()),
+                _ => required.push(field.clone()),
+            }
+        }
+        required.sort();
+        optional.sort();
+        kinds.insert(
+            kind.to_string(),
+            json!({ "required": required, "optional": optional }),
+        );
+    }
+    Ok(json!({ "kinds": kinds }))
+}
+
+fn project_kernel_observations(input: &Value) -> Result<Value, AdapterError> {
+    use deepstrike_sdk::runtime::kernel_event_log::{
+        ProjectionOptions, kernel_observation_to_session_event_value,
+    };
+    let cases = input
+        .get("cases")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AdapterError::failure("kernel_observation_projection input must carry cases")
+        })?;
+    let mut events = serde_json::Map::new();
+    for case in cases {
+        let name = required_value_str(case, "name", "/input/cases/name")?;
+        let options = case.get("options").cloned().unwrap_or(Value::Null);
+        let opts = ProjectionOptions {
+            next_archive_start: options["next_archive_start"].as_u64().unwrap_or(0),
+            latest_seq: options["latest_seq"].as_u64(),
+            preserved_refs: serde_json::from_value(options["preserved_refs"].clone())
+                .unwrap_or_default(),
+        };
+        let turn = case.get("turn").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let event = kernel_observation_to_session_event_value(&case["observation"], turn, &opts);
+        events.insert(name.to_string(), event.unwrap_or(Value::Null));
+    }
+    Ok(json!({ "events": events }))
 }
 
 fn read_referenced_fixture(reference: &str) -> Result<Value, AdapterError> {

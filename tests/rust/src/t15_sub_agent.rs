@@ -90,7 +90,7 @@ fn isolation_manifest_role_defaults_context_inheritance() {
         "implement",
     );
     let implement = IsolationManifest::from_spec(&implement_spec, &available);
-    assert_eq!(implement.context_inheritance, ContextInheritance::Full);
+    assert_eq!(implement.context_inheritance, ContextInheritance::SystemOnly);
 
     let verify_spec = AgentRunSpec::new(
         AgentIdentity::sub_agent("v", "s"),
@@ -102,7 +102,7 @@ fn isolation_manifest_role_defaults_context_inheritance() {
 
     let plan_spec = AgentRunSpec::new(AgentIdentity::sub_agent("p", "s"), AgentRole::Plan, "plan");
     let plan = IsolationManifest::from_spec(&plan_spec, &available);
-    assert_eq!(plan.context_inheritance, ContextInheritance::Full);
+    assert_eq!(plan.context_inheritance, ContextInheritance::SystemOnly);
 }
 
 // ─── G7 gate: parent-child lineage ─────────────────────────────────────────
@@ -180,7 +180,7 @@ fn spawn_sub_agent_registers_kernel_process() {
         "lineage is the logical parent task, not a host session"
     );
     assert_eq!(process.role, AgentRole::Implement);
-    assert_eq!(process.context_inheritance, ContextInheritance::Full);
+    assert_eq!(process.context_inheritance, ContextInheritance::SystemOnly);
     assert_eq!(process.state, ProcessState::Running);
     assert!(process.permitted_capability_ids.is_empty());
     assert!(obs.iter().any(|o| {
@@ -248,9 +248,6 @@ fn sub_agent_completed_resumes_loop_with_call_llm() {
             final_message: Some(CoreMessage::assistant("task complete")),
             turns_used: 3,
             total_tokens_used: 500,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         },
     };
@@ -290,9 +287,6 @@ fn sub_agent_completed_updates_kernel_process() {
             final_message: Some(CoreMessage::assistant("task complete")),
             turns_used: 3,
             total_tokens_used: 500,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         },
     };

@@ -8,9 +8,10 @@ import {
   decodeDurableContent,
   decodeCanonicalContentParts,
   encodeCanonicalContentParts,
-  SESSION_EVENT_KINDS,
+  SESSION_EVENT_REGISTRY,
+  kernelObservationToSessionEvent,
 } from "../../node/dist/conformance.js"
-import { createNativeContextPreparationAdapter, providerAttemptToRecord } from "../../node/dist/runtime/public.js"
+import { providerAttemptToRecord } from "../../node/dist/runtime/public.js"
 import { createProviderRequestPlan, recordPromptMeasurement } from "../../node/dist/providers/public.js"
 import { FileSessionLog, InMemorySessionLog } from "../../node/dist/advanced/public.js"
 
@@ -56,15 +57,6 @@ async function inputFixturePath(relativePath) {
 async function canonicalFor(fixture) {
   const input = fixture.input ?? {}
   switch (fixture.domain) {
-    case "context_execution": {
-      const adapter = createNativeContextPreparationAdapter()
-      const prepared = adapter.prepare(input.request)
-      return {
-        input_digest: prepared.execution_input.input_digest,
-        plan_digest: prepared.plan.plan_id,
-        verified: adapter.verify(input.request.effect, prepared),
-      }
-    }
     case "provider_request_plan": {
       const source = JSON.parse(await readFile(await inputFixturePath(input.fixture), "utf8"))
       const plan = createProviderRequestPlan(source.input)
@@ -130,10 +122,26 @@ async function canonicalFor(fixture) {
       invalid("invalid_provider_attempt", "/input", "provider_attempt_record input must carry attempt or record")
     }
     case "session_event_vocabulary": {
-      // F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
-      // The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
-      const kinds = [...SESSION_EVENT_KINDS].sort()
-      return { kinds, count: kinds.length }
+      // The registry-backed vocabulary (kinds + top-level fields), compile-time checked against
+      // the SessionEvent union. The runner compares it with this SDK's slice of the registry.
+      const kinds = {}
+      for (const kind of Object.keys(SESSION_EVENT_REGISTRY).sort()) {
+        kinds[kind] = { required: [...SESSION_EVENT_REGISTRY[kind].required], optional: [...SESSION_EVENT_REGISTRY[kind].optional] }
+      }
+      return { kinds }
+    }
+    case "kernel_observation_projection": {
+      const events = {}
+      for (const item of input.cases) {
+        const options = item.options ?? {}
+        const event = kernelObservationToSessionEvent(item.observation, item.turn, {
+          nextArchiveStart: options.next_archive_start,
+          latestSeq: options.latest_seq,
+          preservedRefs: options.preserved_refs,
+        })
+        events[item.name] = event === null ? null : JSON.parse(JSON.stringify(event))
+      }
+      return { events }
     }
     case "session_event": {
       const event = input.event ?? {}

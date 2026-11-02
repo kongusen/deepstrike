@@ -55,8 +55,6 @@ pub(crate) struct CanonicalRunnerOptions {
     pub max_turns: Option<u32>,
     pub max_total_tokens: Option<u64>,
     pub max_wall_ms: Option<u64>,
-    /// Host-owned artifact set identity captured in the operation genesis.
-    pub artifact_set_digest: Option<String>,
     pub memory_binding_id: String,
     pub persist_payload: Option<PersistPayloadFn>,
 }
@@ -85,6 +83,7 @@ struct InitialContext {
     messages: Vec<Value>,
     knowledge: Vec<Value>,
     capabilities: Vec<Value>,
+    dependencies: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -120,12 +119,6 @@ impl CanonicalRunnerRuntime {
         }
 
         let mut config = Map::new();
-        if let Some(artifact_set_digest) = options.artifact_set_digest {
-            config.insert(
-                "artifact_set_binding".into(),
-                json!({"artifact_set_digest": artifact_set_digest}),
-            );
-        }
         config.insert("execution_policy".into(), Value::Object(execution_policy));
         config.insert(
             "host_effect_support".into(),
@@ -327,6 +320,13 @@ impl CanonicalRunnerRuntime {
     /// This is intentionally a JSON-shaped host boundary: the canonical wire DTOs remain owned by
     /// core, while the SDK no longer imports or constructs the retired input enum.
     pub async fn apply_host_event(&mut self, event: Value) -> Result<Option<HostAction>> {
+        // The lowering below awaits a kernel transition whose future is hundreds of KiB in a
+        // debug build. Boxing it here keeps every caller's state machine — above all the runner's
+        // `try_stream!`, which awaits this from dozens of sites — off the thread stack.
+        Box::pin(self.apply_host_event_inner(event)).await
+    }
+
+    async fn apply_host_event_inner(&mut self, event: Value) -> Result<Option<HostAction>> {
         if !self.started && self.apply_bootstrap(&event) {
             return Ok(None);
         }
@@ -337,9 +337,11 @@ impl CanonicalRunnerRuntime {
         match kind {
             "provider_result" => {
                 let message = object(event.get("message"));
+                let mut message = provider_message(&message);
+                self.lower_workflow_syscalls(&mut message);
                 let mut outcome = json!({
                     "kind": "completed",
-                    "message": provider_message(&message),
+                    "message": message,
                 });
                 if let Some(v) = event.get("observed_input_tokens") {
                     outcome
@@ -581,7 +583,10 @@ impl CanonicalRunnerRuntime {
                     .unwrap_or_default();
                 if !submitted.is_empty() {
                     let nodes = self
-                        .workflow_spec(object(Some(&json!({ "nodes": submitted }))))
+                        .workflow_spec_from(
+                            object(Some(&json!({ "nodes": submitted }))),
+                            Some(&append_prefix()),
+                        )
                         .get("nodes")
                         .cloned()
                         .unwrap_or_else(|| json!([]));
@@ -631,6 +636,15 @@ impl CanonicalRunnerRuntime {
                     .await
                 }
             }
+            "memory_candidate_result" => {
+                match memory_candidate_resolution(&event, &self.memory_binding_id) {
+                    Ok(result) => self.resolve(&event, result).await,
+                    Err(failure) => {
+                        self.failed(&event, "storage_unavailable", &failure.message, failure.retryable)
+                            .await
+                    }
+                }
+            }
             "memory_query_result" => {
                 if let Some(error) = event.get("error").filter(|v| !v.is_null()) {
                     self.failed(&event, "storage_unavailable", &error.to_string(), true)
@@ -654,6 +668,17 @@ impl CanonicalRunnerRuntime {
                                 "kind": record.get("kind").and_then(|v| v.as_str()).unwrap_or("reference"),
                                 "content": string_field(&record, "content"),
                             });
+                            let description = string_field(&record, "description");
+                            if !description.trim().is_empty() {
+                                recall.as_object_mut().unwrap().insert("description".into(), json!(description));
+                            }
+                            if let Some(trust) = record
+                                .get("provenance")
+                                .and_then(|p| p.get("trust"))
+                                .and_then(|t| t.as_str())
+                            {
+                                recall.as_object_mut().unwrap().insert("trust".into(), json!(trust));
+                            }
                             if let Some(score) = hit.get("score").filter(|v| v.is_number()) {
                                 recall
                                     .as_object_mut()
@@ -1135,11 +1160,15 @@ impl CanonicalRunnerRuntime {
     }
 
     fn initial_context_json(&self) -> Value {
-        json!({
+        let mut context = json!({
             "messages": self.initial_context.messages,
             "knowledge": self.initial_context.knowledge,
             "capabilities": self.initial_context.capabilities,
-        })
+        });
+        if !self.initial_context.dependencies.is_empty() {
+            context["dependencies"] = json!(self.initial_context.dependencies);
+        }
+        context
     }
 
     fn feature_policy(&mut self) -> &mut Map<String, Value> {
@@ -1204,6 +1233,13 @@ impl CanonicalRunnerRuntime {
                         .insert("tokens".into(), tokens.clone());
                 }
                 self.initial_context.messages.push(message);
+                true
+            }
+            "add_dependency_output" => {
+                self.initial_context.dependencies.push(json!({
+                    "agent_id": string_value(event, "agent_id"),
+                    "content": string_value(event, "content"),
+                }));
                 true
             }
             "add_knowledge_message" => {
@@ -1325,12 +1361,37 @@ impl CanonicalRunnerRuntime {
                     .unwrap_or(false);
                 self.feature_policy()
                     .insert("memory_enabled".into(), json!(enabled));
+                let propose = event
+                    .get("propose_memory")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                // Only sent when on, so kernels that predate the field still accept the run.
+                if propose {
+                    self.feature_policy()
+                        .insert("propose_memory_enabled".into(), json!(true));
+                } else {
+                    self.feature_policy().remove("propose_memory_enabled");
+                }
+                if enabled && event.get("recall").and_then(Value::as_bool) == Some(true) {
+                    let mut policy = self
+                        .config
+                        .get("memory_policy")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    policy.insert("recall".into(), json!(true));
+                    self.config.insert("memory_policy".into(), Value::Object(policy));
+                }
                 if enabled {
+                    // The binding is the kernel-enforced gate: memory syscalls whose capability
+                    // bit is off are refused in the kernel. Absent bits default to granted.
+                    let granted =
+                        |bit: &str| event.get(bit).and_then(Value::as_bool) != Some(false);
                     self.config.insert(
                         "memory_access".into(),
                         json!({
                             "binding_id": self.memory_binding_id,
-                            "capabilities": { "read": true, "write": true },
+                            "capabilities": { "read": granted("read"), "write": granted("write") },
                         }),
                     );
                 }
@@ -1415,6 +1476,15 @@ impl CanonicalRunnerRuntime {
             }
             "set_memory_policy" => {
                 let mut policy = Map::new();
+                if self
+                    .config
+                    .get("memory_policy")
+                    .and_then(|policy| policy.get("recall"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    policy.insert("recall".into(), json!(true));
+                }
                 for key in [
                     "stale_warning_days",
                     "retrieval_top_k",
@@ -1535,9 +1605,13 @@ impl CanonicalRunnerRuntime {
             self.config
                 .insert("governance_policy".into(), Value::Object(governance));
         }
-        if let Some(context_policy) = config.get("context_policy") {
-            self.config
-                .insert("context_policy".into(), context_policy.clone());
+        // Merge field by field: earlier host events (knowledge budget, delegated tiers) also
+        // write here, and a later configure_run must not silently drop them.
+        if let Some(Value::Object(context_policy)) = config.get("context_policy") {
+            let target = self.context_policy();
+            for (key, value) in context_policy {
+                target.insert(key.clone(), value.clone());
+            }
         }
         if let Some(signal_policy) = config.get("signal_policy") {
             let mut signal = object(Some(signal_policy));
@@ -1653,6 +1727,13 @@ impl CanonicalRunnerRuntime {
     }
 
     fn workflow_spec(&self, raw: Map<String, Value>) -> Value {
+        self.workflow_spec_from(raw, None)
+    }
+
+    /// Lower a workflow spec to the canonical DAG. An anonymous node's id is positional
+    /// (`wf-node<i>`), or `<prefix>-<i>` for an appended batch, so ids stay unique across batches:
+    /// the kernel refuses an append whose id is already declared.
+    fn workflow_spec_from(&self, raw: Map<String, Value>, id_prefix: Option<&str>) -> Value {
         let nodes = raw
             .get("nodes")
             .and_then(|v| v.as_array())
@@ -1668,7 +1749,10 @@ impl CanonicalRunnerRuntime {
                     .and_then(|v| v.as_str())
                     .filter(|id| !id.is_empty())
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("wf-node{index}"))
+                    .unwrap_or_else(|| match id_prefix {
+                        Some(prefix) => format!("{prefix}-{index}"),
+                        None => format!("wf-node{index}"),
+                    })
             })
             .collect();
         let lowered: Vec<Value> = nodes
@@ -1736,6 +1820,49 @@ impl CanonicalRunnerRuntime {
             .collect();
         json!({ "nodes": lowered })
     }
+}
+
+impl CanonicalRunnerRuntime {
+    /// Lower model-authored `start_workflow` / `submit_workflow_nodes` arguments to the canonical
+    /// DAG shape, as Node and Python do. Arguments that do not lower are forwarded verbatim, so the
+    /// kernel's syscall decoder answers the model with a rejection.
+    fn lower_workflow_syscalls(&self, message: &mut Value) {
+        let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for call in calls {
+            let name = call.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let Some(arguments) = call.get("arguments").and_then(Value::as_object).cloned() else {
+                continue;
+            };
+            let lowered = match name.as_str() {
+                "start_workflow" => {
+                    let spec = arguments
+                        .get("spec")
+                        .and_then(Value::as_object)
+                        .filter(|spec| !spec.is_empty())
+                        .cloned()
+                        .unwrap_or(arguments);
+                    self.workflow_spec(spec)
+                }
+                "submit_workflow_nodes" => {
+                    let nodes = arguments.get("nodes").cloned().unwrap_or_else(|| json!([]));
+                    let spec = self.workflow_spec_from(
+                        object(Some(&json!({ "nodes": nodes }))),
+                        Some(&append_prefix()),
+                    );
+                    json!({ "nodes": spec.get("nodes").cloned().unwrap_or_else(|| json!([])) })
+                }
+                _ => continue,
+            };
+            call["arguments"] = lowered;
+        }
+    }
+}
+
+/// A batch-scoped id prefix for anonymous appended nodes; it cannot collide with a declared id.
+fn append_prefix() -> String {
+    format!("wf-append-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
 pub(crate) async fn canonical_kernel_apply(
@@ -1810,7 +1937,6 @@ fn protocol_action_from_wire(
                 unreachable!("call_provider effect must project to provider action");
             };
             HostEffect::CallProvider {
-                context_effect: call.clone(),
                 context: rendered_context_from_wire(&call.context)?,
                 tools: call
                     .tools
@@ -1876,44 +2002,79 @@ fn protocol_action_from_wire(
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::SpawnTasks { payload: spawn, .. } = canonical else {
                 unreachable!("spawn_tasks effect must project to spawn action");
             };
-            HostEffect::SpawnWorkflow {
-                nodes: spawn
-                    .tasks
-                    .iter()
-                    .map(|task| {
-                        let role = task
-                            .spec
-                            .role
-                            .and_then(|role| serde_json::to_value(role).ok())
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_else(|| "custom".into());
-                        let isolation = task
-                            .spec
+            let mut dependency_outputs = std::collections::BTreeMap::new();
+            let nodes = spawn
+                .tasks
+                .iter()
+                .map(|task| {
+                    let metadata = task.spec.metadata.get();
+                    let wire_name = |value: Option<Value>, fallback: &str| {
+                        value
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_else(|| fallback.into())
+                    };
+                    let role = wire_name(
+                        task.spec.role.and_then(|role| serde_json::to_value(role).ok()),
+                        "custom",
+                    );
+                    let isolation = wire_name(
+                        task.spec
                             .isolation
-                            .and_then(|isolation| serde_json::to_value(isolation).ok())
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_else(|| "shared".into());
-                        deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
-                            agent_id: task.task_id.as_str().to_string(),
-                            goal: task.spec.goal.clone(),
-                            role,
-                            isolation,
-                            context_inheritance: "none".into(),
-                            model_hint: None,
-                            trust: "trusted".into(),
-                            output_schema: None,
-                            reducer: None,
-                            input_agent_ids: Vec::new(),
-                            judge_match: None,
-                            loop_max_iters: None,
-                            classify_labels: Vec::new(),
-                            token_budget: None,
-                            max_turns: None,
-                            max_wall_ms: None,
-                        }
-                    })
-                    .collect(),
+                            .and_then(|isolation| serde_json::to_value(isolation).ok()),
+                        "shared",
+                    );
+                    let context_inheritance = wire_name(
+                        task.spec
+                            .context_inheritance
+                            .and_then(|inheritance| serde_json::to_value(inheritance).ok()),
+                        "none",
+                    );
+                    // The kernel composes the dependency section of the brief.
+                    let goal = match metadata.get("dependency_brief").and_then(Value::as_str) {
+                        Some(brief) if !brief.is_empty() => format!("{}\n\n{brief}", task.spec.goal),
+                        _ => task.spec.goal.clone(),
+                    };
+                    let outputs: std::collections::BTreeMap<String, String> = metadata
+                        .get("dependency_outputs")
+                        .and_then(Value::as_object)
+                        .map(|outputs| {
+                            outputs
+                                .iter()
+                                .filter_map(|(id, output)| Some((id.clone(), output.as_str()?.to_string())))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !outputs.is_empty() {
+                        dependency_outputs.insert(task.task_id.as_str().to_string(), outputs);
+                    }
+                    deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
+                        agent_id: task.task_id.as_str().to_string(),
+                        goal,
+                        role,
+                        isolation,
+                        context_inheritance,
+                        model_hint: metadata.get("model_hint").and_then(Value::as_str).map(str::to_string),
+                        trust: "trusted".into(),
+                        output_schema: metadata.get("output_schema").cloned(),
+                        input_agent_ids: metadata
+                            .get("input_agent_ids")
+                            .and_then(Value::as_array)
+                            .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                            .unwrap_or_default(),
+                        dependency_context: Default::default(),
+                        token_budget: metadata.get("token_budget").and_then(Value::as_u64),
+                        max_turns: metadata
+                            .get("max_turns")
+                            .and_then(Value::as_u64)
+                            .map(|turns| turns.min(u32::MAX as u64) as u32),
+                        max_wall_ms: metadata.get("max_wall_ms").and_then(Value::as_u64),
+                    }
+                })
+                .collect();
+            HostEffect::SpawnWorkflow {
+                nodes,
                 budget: None,
+                dependency_outputs,
             }
         }
         EffectKind::PreemptTasks(_) => {
@@ -1939,6 +2100,10 @@ fn protocol_action_from_wire(
             };
             HostEffect::PersistMemory {
                 memory: memory_record_from_wire(&persist.memory),
+                model_proposal: matches!(
+                    persist.memory.causation,
+                    deepstrike_core::runtime::kernel::wire::syscall::SyscallCausation::ProviderTool(_)
+                ),
             }
         }
         EffectKind::QueryMemory(_) => {
@@ -1969,6 +2134,17 @@ fn protocol_action_from_wire(
                     min_score: None,
                 },
                 requested_k: query.requested_k as usize,
+                record_id: query
+                    .query
+                    .record_id
+                    .as_ref()
+                    .map(|record_id| record_id.as_str().to_string()),
+                recall_sprint: match &query.query.causation {
+                    deepstrike_core::runtime::kernel::wire::syscall::SyscallCausation::KernelRecall(
+                        recall,
+                    ) => Some(recall.sprint),
+                    _ => None,
+                },
             }
         }
         EffectKind::ArchivePageOut(_) => {
@@ -2058,8 +2234,6 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
                     .transpose()?,
                 turns_used: result.turns_used,
                 total_tokens_used: usage_tokens(&agent.usage),
-                loop_continue: None,
-                classify_branch: None,
                 pace_decision: result.pace_decision.as_ref().map(|pace| PaceDecision {
                     action: match pace.action {
                         deepstrike_core::runtime::kernel::wire::PaceAction::Continue => {
@@ -2076,7 +2250,6 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
                     reason: pace.reason.clone(),
                     coerced_from: pace.coerced_from.clone(),
                 }),
-                tournament_winner: None,
             })
         }
         KernelTerminal::Workflow(workflow) => Ok(LoopResult {
@@ -2094,20 +2267,14 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
             final_message: None,
             turns_used: workflow.usage.turns,
             total_tokens_used: usage_tokens(&workflow.usage),
-            loop_continue: None,
-            classify_branch: None,
             pace_decision: None,
-            tournament_winner: None,
         }),
         KernelTerminal::Cancelled(cancelled) => Ok(LoopResult {
             termination: TerminationReason::UserAbort,
             final_message: None,
             turns_used: cancelled.usage.turns,
             total_tokens_used: usage_tokens(&cancelled.usage),
-            loop_continue: None,
-            classify_branch: None,
             pace_decision: None,
-            tournament_winner: None,
         }),
         KernelTerminal::Failed(failed) => {
             let termination = if failed.failure.code
@@ -2122,10 +2289,7 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
                 final_message: None,
                 turns_used: failed.usage.turns,
                 total_tokens_used: usage_tokens(&failed.usage),
-                loop_continue: None,
-                classify_branch: None,
                 pace_decision: None,
-                tournament_winner: None,
             })
         }
     }
@@ -2551,6 +2715,76 @@ fn string_field(map: &Map<String, Value>, key: &str) -> String {
 }
 
 /// §22.13 · the canonical input for a host-authored memory write awaiting the kernel's admission.
+/// Why a candidate answer failed the PersistMemory effect.
+#[derive(Debug)]
+struct MemoryCandidateFailure {
+    message: String,
+    retryable: bool,
+}
+
+/// M2 · how a host's answer for a write it holds as a candidate resolves the PersistMemory effect.
+/// Mirrors the node bridge: `pending` resolves with a candidate receipt and persists nothing,
+/// `accepted` resolves like `memory_persist_result`, any other answer (`rejected`) fails
+/// non-retryably, and a transport error fails retryably so the same candidate id is redelivered.
+fn memory_candidate_resolution(
+    event: &Value,
+    binding_id: &str,
+) -> std::result::Result<Value, MemoryCandidateFailure> {
+    let fail = |message: String, retryable: bool| MemoryCandidateFailure { message, retryable };
+    if let Some(error) = event.get("error").filter(|v| !v.is_null()) {
+        return Err(fail(
+            error
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string()),
+            true,
+        ));
+    }
+    let text = |key: &str| {
+        event
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+    };
+    match text("status") {
+        Some("pending") => match (text("candidate_id"), text("receipt_id")) {
+            (Some(candidate_id), Some(receipt_id)) => Ok(json!({
+                "kind": "memory_persisted",
+                "candidate": {
+                    "binding_id": binding_id,
+                    "candidate_id": candidate_id,
+                    "receipt_id": receipt_id,
+                },
+            })),
+            _ => Err(fail(
+                "memory candidate receipt names no candidate_id/receipt_id".into(),
+                false,
+            )),
+        },
+        Some("accepted") => match (text("record_ref"), text("digest")) {
+            (Some(record_ref), Some(digest)) => Ok(json!({
+                "kind": "memory_persisted",
+                "receipt": {
+                    "binding_id": binding_id,
+                    "record_ref": record_ref,
+                    "digest": digest,
+                },
+            })),
+            _ => Err(fail(
+                "memory candidate accepted without record_ref/digest".into(),
+                false,
+            )),
+        },
+        _ => Err(fail(
+            format!(
+                "memory candidate rejected: {}",
+                text("reason_code").unwrap_or("unspecified")
+            ),
+            false,
+        )),
+    }
+}
+
 fn admit_memory_write_input(event: &Value) -> Value {
     json!({ "kind": "host_control", "command": {
         "kind": "admit_memory_write",
@@ -2625,13 +2859,41 @@ mod tests {
         );
     }
 
+    /// The same host receipts are exercised by Node, Python and WASM. This pure mapping
+    /// test checks the terminal outcome and closed result union, not kernel idempotency.
+    #[test]
+    fn memory_candidate_bridge_shared_receipts() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/abi/memory_candidate_receipts.json"
+        ))
+        .expect("the shared candidate receipt fixture parses");
+        for case in fixture["cases"].as_array().expect("receipt cases") {
+            let outcome = match super::memory_candidate_resolution(
+                &case["event"],
+                fixture["binding_id"].as_str().expect("binding id"),
+            ) {
+                Ok(result) => json!({ "status": "succeeded", "result": result }),
+                Err(failure) => json!({
+                    "status": "failed",
+                    "failure": {
+                        "kind": "storage_unavailable",
+                        "message": failure.message,
+                        "retryable": failure.retryable,
+                    },
+                }),
+            };
+            let expected = &case["expected"];
+            // Exact equality forbids a result containing both candidate and receipt arms.
+            assert_eq!(&outcome, expected, "receipt case {}", case["id"]);
+        }
+    }
+
     fn test_options() -> CanonicalRunnerOptions {
         CanonicalRunnerOptions {
             max_context_tokens: 128_000,
             max_turns: None,
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest: None,
             memory_binding_id: "test-binding".into(),
             persist_payload: None,
         }
@@ -3463,7 +3725,6 @@ mod tests {
             max_turns: Some(8),
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest: None,
             memory_binding_id: "restart-memory".into(),
             persist_payload: None,
         }
@@ -3488,7 +3749,6 @@ mod tests {
             std::sync::Arc::new(FileKernelJournal::new(dir.join("kernel-journal")));
         RuntimeRunner::new_with_kernel_journal(
             RuntimeOptions {
-                artifact_set_digest: None,
                 provider: Box::new(PingThenFinishProvider),
                 execution_plane: Some(Box::new(plane)),
                 session_log: Some(session_log),
@@ -3504,6 +3764,7 @@ mod tests {
                 memory_scope: None,
                 system_prompt: None,
                 initial_memory: vec![],
+                dependency_outputs: Default::default(),
                 skill_dir: None,
                 memory_store: None,
                 knowledge_source: None,
@@ -3528,6 +3789,8 @@ mod tests {
                 stable_core_tool_ids: vec![],
                 pre_query_memory: None,
                 on_milestone_evaluate: None,
+                memory_runtime_policy: None,
+                memory_candidate_sink: None,
             },
             journal,
         )
@@ -3544,6 +3807,8 @@ mod tests {
                 agent_id: None,
                 system_prompt: None,
                 attachments: vec![],
+                route: None,
+                metadata: None,
             },
         )
         .await

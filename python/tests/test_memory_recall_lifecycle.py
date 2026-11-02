@@ -2,13 +2,14 @@
 
 The prefetch path used to call ``memory_store.search`` directly and hand-assemble a history
 message, so ``memory_recalled`` never fired for prefetched hits — recall counts froze and
-promotions could never trigger. Prefetch now routes each query through the kernel's
-``query_memory → memory_query_result`` effect: the kernel injects each routed hit into history
-itself (``[MEMORY …]``, one message per hit — same shape as an in-run query) and derives the
-recall lifecycle statelessly from the routed hits. The store stays a pure query; the runner
+promotions could never trigger. Prefetch now lands each hit as a keyed ``memory:<record_id>``
+knowledge entry (``[MEMORY …]``, one entry per hit) and the kernel derives the recall lifecycle
+statelessly from the hits. The store stays a pure query; the runner
 mirrors ``memory_recalled → record_recall`` and surfaces the kernel's edge-triggered
 ``promotion_suggested``. Mirrors node/tests/memory-recall-lifecycle.test.ts.
 """
+
+from dataclasses import replace
 
 import pytest
 
@@ -111,11 +112,12 @@ async def collect_text(stream) -> str:
 async def test_initial_prefetch_routes_through_kernel():
     """Initial prefetch → record_recall(1) + kernel-shaped injection."""
     store = TrackingStore(0)
-    captured = {"turns": ""}
+    captured = {"turns": "", "knowledge": ""}
 
     def on_context(context: RenderedContext):
         if not captured["turns"]:
             captured["turns"] = repr(context.turns)
+            captured["knowledge"] = context.system_knowledge or ""
 
     runner = make_runner(store, provider=TextProvider(on_context))
     await collect_text(runner.run(goal="use the fact", session_id="t5-initial"))
@@ -124,21 +126,46 @@ async def test_initial_prefetch_routes_through_kernel():
     assert len(store.recall_calls[0]) == 1
     assert store.recall_calls[0][0].record_id == "record-t5"
     assert store.recall_calls[0][0].recall_count == 1
-    # Kernel injection shape: one `[MEMORY …]` message per hit — the old hand-assembled
-    # combined `[memory …]` message is gone.
-    assert "[MEMORY record_id=record-t5" in captured["turns"]
-    assert "LONGTERM_FACT_T5" in captured["turns"]
-    assert "[memory record_id=" not in captured["turns"]
+    # Kernel injection shape: one keyed `[MEMORY …]` knowledge entry per hit, never a history turn.
+    assert "[MEMORY record_id=record-t5" in captured["knowledge"]
+    assert "[MEMORY record_id=" not in captured["turns"]
+    # An index line, not the record: the content is read on demand with `memory(record_id)`.
+    assert "t5 fixture" in captured["knowledge"]
+    assert "LONGTERM_FACT_T5" not in captured["knowledge"]
+    assert "[memory record_id=" not in captured["knowledge"]
+
+
+@pytest.mark.asyncio
+async def test_prefetched_hit_is_the_canonical_recall_turn_and_is_audited():
+    """M5 · the knowledge entry is the canonical recall text; the prefetch logs its hits."""
+    store = TrackingStore(0)
+    captured = {"knowledge": None}
+
+    def on_context(context: RenderedContext):
+        if captured["knowledge"] is None:
+            captured["knowledge"] = context.system_knowledge or ""
+
+    runner = make_runner(store, provider=TextProvider(on_context))
+    await collect_text(runner.run(goal="use the fact", session_id="t5-projection"))
+
+    recall_lines = [line for line in captured["knowledge"].split("\n") if line.startswith("[MEMORY ")]
+    assert recall_lines == [
+        "[MEMORY record_id=record-t5 kind=reference trust=host_verified] t5 fixture",
+    ]
+    audited = [e.event for e in await runner._opts.session_log.read("t5-projection")
+               if e.event.get("kind") == "memory_retrieval_result"]
+    assert len(audited) == 1
+    assert [hit["record"]["record_id"] for hit in audited[0]["hits"]] == ["record-t5"]
 
 
 @pytest.mark.asyncio
 async def test_two_prefetch_queries_same_record_recall_and_inject_once():
     store = TrackingStore(0)
-    captured = {"turns": ""}
+    captured = {"knowledge": ""}
 
     def on_context(context: RenderedContext):
-        if not captured["turns"]:
-            captured["turns"] = repr(context.turns)
+        if not captured["knowledge"]:
+            captured["knowledge"] = context.system_knowledge or ""
 
     runner = make_runner(
         store, provider=TextProvider(on_context),
@@ -151,7 +178,7 @@ async def test_two_prefetch_queries_same_record_recall_and_inject_once():
 
     assert len(store.recall_calls) == 1
     assert len(store.recall_calls[0]) == 1
-    assert captured["turns"].count("[MEMORY record_id=record-t5") == 1
+    assert captured["knowledge"].count("[MEMORY record_id=record-t5") == 1
 
 
 @pytest.mark.asyncio

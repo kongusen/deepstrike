@@ -81,31 +81,6 @@ DeepStrike 帮助开发者搭建能完成实际任务的 AI 助手。它可以�
 
 可以从一个助手和几个工具开始，按应用需要增加能力。各 SDK 支持的模型和集成范围有所不同。
 
-## 让每次改进有依据
-
-当你修改助手的指令、知识、工具或规则时，需要判断这些变化是否值得采用。DeepStrike 的 **Evaluation Runtime** 思路，是把评估与实际执行的任务联系起来。
-
-![评估输入绑定：上下文状态、策略、计划、渲染快照、提示词计量与模型路由关联到实际执行输入和评估证据](./docs/public/readme/evaluation-zh.svg)
-
-图中的绑定回答“这份评估对应哪份执行输入”。ArtifactSet 的版本沿革在任务起点单独绑定；绑定验证不会自动重放所有模型请求。
-
-| 你关心的问题 | 0.2.71 提供的支持 |
-| --- | --- |
-| **这个结果基于什么产生？** | 把一次任务与当时选用的资料、指令和模型配置关联起来，便于追查。 |
-| **任务中断后，还能检查过程吗？** | 保留恢复和重现任务决策所需的记录，以及工具和模型的调用过程。 |
-| **换一套配置，效果有没有改善？** | 把你使用的测试资料、评分方式、对比结果和检查记录，关联到新旧两套配置。 |
-| **这次采用的改动经过什么检查？** | 把候选改动、检查结果和批准决定连在一起，验证新任务采用这套配置的依据。 |
-
-应用负责执行评估并提供成功标准，DeepStrike 验证记录之间的关系与必要检查。人工审查、测试程序和模型评审都可以成为证据来源；框架本身不独立保证答案正确。
-
-开发者用于验证这些变更记录的 API 名称是 `EvolutionRuntime`。具体机制见 [评估输入](./docs/architecture/evaluation-context.md) 与 [受控演进](./docs/architecture/evolution-runtime.md)。
-
-### 改动如何进入下一次任务
-
-![受控演进：提案、评估证据、批准决定、激活绑定、新任务起点、执行](./docs/public/readme/evolution-zh.svg)
-
-应用提出候选配置并提供评估证据。`EvolutionRuntime` 检查版本沿革、证据与准入条件，验证通过后才返回激活绑定。新配置从下一次任务开始生效，运行中的任务继续使用原有 ArtifactSet。
-
 ## 从哪里开始
 
 选择适合你的 SDK：[Node.js](./node/README.md) · [Python](./python/README.md) · [Rust](./rust/README.md) · [WASM](./wasm/README.md)。
@@ -172,8 +147,8 @@ DeepStrike 是供开发者接入应用的框架。你需要提供模型访问、
 | 接入工具与外部服务 | [工具与执行](./docs/guides/execution-plane-and-tools.md) |
 | 添加专业指引与项目记忆 | [Skill](./docs/guides/skills.md) · [Memory](./docs/guides/memory.md) |
 | 控制助手可以做什么 | [治理](./docs/guides/governance.md) |
-| 恢复与检查任务 | [Session 与恢复](./docs/guides/session-replay-and-recovery.md) · [执行验证](./docs/architecture/verifiable-runtime.md) |
-| 理解架构及其术语 | [运行时语言字典](./docs/architecture/runtime-language.md) · [Context](./docs/architecture/evaluation-context.md) · [Evolution Runtime](./docs/architecture/evolution-runtime.md) |
+| 恢复与检查任务 | [Session 与恢复](./docs/guides/session-replay-and-recovery.md) |
+| 理解架构及其术语 | [运行时语言字典](./docs/architecture/runtime-language.md) |
 | 参与项目开发 | [贡献指南](./CONTRIBUTING.md) · [API 参考](./docs/reference/index.md) · [安全问题](./SECURITY.md) |
 
 ## 许可证

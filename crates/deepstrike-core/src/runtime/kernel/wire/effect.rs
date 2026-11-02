@@ -25,7 +25,6 @@ use std::fmt;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::context::execution::ContextCandidate;
 use crate::context::measurement::ToolMeasurement;
 use crate::types::durable_content::DurableContent;
 
@@ -359,9 +358,6 @@ impl fmt::Display for EffectKindTag {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallProviderEffect {
-    /// Frozen kernel facts; the host binds its actual provider route and preflight measurement
-    /// through the canonical Context ABI before dispatching this projection.
-    pub context_candidate: Box<ContextCandidate>,
     pub context: RenderedContext,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
@@ -583,6 +579,10 @@ pub struct CanonicalMemoryQuery {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kinds: Vec<MemoryKind>,
+    /// A point fetch: the host answers with this record or with nothing, never with a search.
+    /// Recall prefetch pushes index lines only, and this is how the model reads one in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<MemoryRecordRef>,
     pub accepted_at_ms: WireU64,
     pub causation: SyscallCausation,
 }
@@ -1033,7 +1033,22 @@ pub struct TaskPreemptFailed {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryPersistedSuccess {
-    pub receipt: MemoryPersistReceipt,
+    /// The record the store now holds. Exactly one of `receipt` and `candidate` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<MemoryPersistReceipt>,
+    /// The host accepted the write as a candidate awaiting review; nothing is persisted. Terminal
+    /// for the effect: a later resolution of the same effect is unowned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<MemoryCandidateReceipt>,
+}
+
+/// The host's acknowledgement that a memory write was recorded as a pending candidate (M2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryCandidateReceipt {
+    pub binding_id: MemoryBindingId,
+    pub candidate_id: String,
+    pub receipt_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1057,6 +1072,12 @@ pub struct MemoryRecall {
     pub name: String,
     pub kind: MemoryKind,
     pub content: String,
+    /// The record's one-line description; a kernel recall shows it in the index line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The record's provenance trust label (`host_verified`, `untrusted`, ...).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trust: String,
     /// Observation-only relevance score. Finite by construction and never a branch input —
     /// thresholds that gate kernel decisions use fixed-point `Ppm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1424,22 +1445,8 @@ mod tests {
             description: "read a file".to_string(),
             parameters: BoundedJson::null(),
         }];
-        let (mut context_candidate, _) = crate::context::manager::ContextManager::new(100_000)
-            .prepare_candidate(
-                "op-1".into(),
-                "op-1:step:1".into(),
-                1,
-                crate::evolution::ContentDigest::from_bytes(b"test-policy"),
-            )
-            .unwrap();
-        context_candidate.rendered_snapshot = crate::evolution::ContentDigest::from_bytes(
-            super::super::record::canonical_bytes(&(&context, &tools))
-                .unwrap()
-                .as_slice(),
-        );
         vec![
             EffectKind::CallProvider(CallProviderEffect {
-                context_candidate: Box::new(context_candidate),
                 context,
                 tools,
             }),
@@ -1492,6 +1499,7 @@ mod tests {
                 query: CanonicalMemoryQuery {
                     text: "release".to_string(),
                     kinds: vec![MemoryKind::Project],
+                    record_id: None,
                     accepted_at_ms: WireU64::new(1_700_000_000_000),
                     causation: causation(),
                 },
@@ -1579,14 +1587,17 @@ mod tests {
                 }],
             }),
             EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
-                receipt: MemoryPersistReceipt {
+                receipt: Some(MemoryPersistReceipt {
                     binding_id: MemoryBindingId::new("binding-a").unwrap(),
                     record_ref: MemoryRecordRef::new("memory:01J8Y2QK7C4N0W").unwrap(),
                     digest: digest(),
-                },
+                }),
+                candidate: None,
             }),
             EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
                 recalls: vec![MemoryRecall {
+                    description: String::new(),
+                    trust: String::new(),
                     record_ref: MemoryRecordRef::new("memory:01J8Y2QK7C4N0X").unwrap(),
                     name: "release pipeline".to_string(),
                     kind: MemoryKind::Project,
@@ -2482,5 +2493,49 @@ mod tests {
                 "effect rejection goldens must cover {required}"
             );
         }
+    }
+
+    /// The node bridge resolves a pending candidate as `{ kind: "memory_persisted", candidate }`.
+    /// That JSON must decode to the candidate arm, with no receipt.
+    #[test]
+    fn a_memory_candidate_outcome_decodes_from_the_bridge_wire_shape() {
+        let success: EffectSuccess = serde_json::from_value(json!({
+            "kind": "memory_persisted",
+            "candidate": {
+                "binding_id": "node-memory",
+                "candidate_id": "cand-1",
+                "receipt_id": "rcpt-1",
+            },
+        }))
+        .unwrap();
+        let EffectSuccess::MemoryPersisted(persisted) = success else {
+            panic!("a memory outcome decodes to the memory arm");
+        };
+        assert!(
+            persisted.receipt.is_none(),
+            "a pending candidate carries no record receipt"
+        );
+        let candidate = persisted.candidate.expect("the candidate arm is present");
+        assert_eq!(candidate.candidate_id, "cand-1");
+        assert_eq!(candidate.receipt_id, "rcpt-1");
+    }
+
+    /// A receipt-only outcome from before M2 still decodes, so existing hosts are unaffected.
+    #[test]
+    fn a_receipt_only_memory_outcome_still_decodes() {
+        let success: EffectSuccess = serde_json::from_value(json!({
+            "kind": "memory_persisted",
+            "receipt": {
+                "binding_id": "node-memory",
+                "record_ref": "rec-1",
+                "digest": format!("sha256:{}", "0".repeat(64)),
+            },
+        }))
+        .unwrap();
+        let EffectSuccess::MemoryPersisted(persisted) = success else {
+            panic!("a memory outcome decodes to the memory arm");
+        };
+        assert!(persisted.receipt.is_some());
+        assert!(persisted.candidate.is_none());
     }
 }

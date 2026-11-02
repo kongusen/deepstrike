@@ -50,6 +50,9 @@ export interface AnthropicRequestPlan {
   transport: "stable" | "beta"
   params: Record<string, unknown>
   cacheSlots: { system: boolean; tools: boolean; messages: boolean }
+  /** For each wire message, the index of the rendered turn it came from; the volatile state turn
+   *  and the empty-history placeholder are `-1`, and always come last. */
+  wireTurns: number[]
 }
 
 export type AnthropicStreamChunk = Record<string, any>
@@ -215,12 +218,16 @@ function toolResult(result: CanonicalToolResult): Record<string, unknown> {
 }
 
 function canonicalMessage(message: CanonicalMessage): Record<string, unknown> | undefined {
+  // A turn that carries a server compaction block goes back as the API sent it: the block is what
+  // tells the API to drop everything before it.
+  const native = message.providerReplay?.native_blocks
   if (
     message.role === "assistant"
-    && message.toolCalls?.length
-    && message.providerReplay?.native_blocks?.length
+    && native?.length
+    && (message.toolCalls?.length || native.some(block => block.type === "compaction"))
   ) {
-    return { role: "assistant", content: ensureAssistantToolText(message.providerReplay.native_blocks) }
+    // Copies: request-time annotations such as `cache_control` must not land on the stored replay.
+    return { role: "assistant", content: ensureAssistantToolText(native.map(block => ({ ...block }))) }
   }
   const content: Array<Record<string, unknown>> = []
   for (const item of message.blocks) {
@@ -266,6 +273,8 @@ function ensureAssistantToolText(
   blocks: Array<Record<string, unknown>>,
 ): Array<Record<string, unknown>> {
   if (!blocks.some(block => block.type === "tool_use")) return blocks
+  // A compaction block must stay first in its turn; no placeholder goes in front of it.
+  if (blocks.some(block => block.type === "compaction")) return blocks
   if (blocks.some(block => block.type === "text" && String(block.text ?? "").trim())) return blocks
   if (blocks.some(block => block.type === "thinking")) return blocks
   return [{ type: "text", text: "Tool call requested." }, ...blocks]
@@ -377,15 +386,41 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
   buildRequest(input: CanonicalAdapterInput): AnthropicRequestPlan {
     const strategy = cacheStrategy(input.extensions)
     const system = systemBlocks(input.context, strategy)
-    const messages = input.context.turns
-      .map(canonicalMessage)
-      .filter((message): message is Record<string, unknown> => message !== undefined)
-    applyMessageCacheControl(messages, input.context.frozenPrefixLen, strategy)
+    let messages: Array<Record<string, unknown>> = []
+    let wireTurns: number[] = []
+    input.context.turns.forEach((turn, index) => {
+      const message = canonicalMessage(turn)
+      if (!message) return
+      messages.push(message)
+      wireTurns.push(index)
+    })
+    // The API ignores everything before a compaction block, so it is not sent.
+    let head = -1
+    for (let index = messages.length - 1; index >= 0 && head < 0; index--) {
+      const content = messages[index].content
+      if (Array.isArray(content) && (content as Array<Record<string, unknown>>).some(block => block.type === "compaction")) {
+        head = index
+      }
+    }
+    if (head > 0) {
+      messages = messages.slice(head)
+      wireTurns = wireTurns.slice(head)
+    }
+    const frozenPrefixLen = typeof input.context.frozenPrefixLen === "number" && head > 0
+      ? input.context.frozenPrefixLen - head
+      : input.context.frozenPrefixLen
+    applyMessageCacheControl(messages, frozenPrefixLen, strategy)
     if (input.context.stateTurn) {
       const stateMessage = canonicalMessage(input.context.stateTurn)
-      if (stateMessage) messages.push(stateMessage)
+      if (stateMessage) {
+        messages.push(stateMessage)
+        wireTurns.push(-1)
+      }
     }
-    if (!messages.length) messages.push({ role: "user", content: "Proceed." })
+    if (!messages.length) {
+      messages.push({ role: "user", content: "Proceed." })
+      wireTurns.push(-1)
+    }
     const tools = requestTools(input, system, strategy)
     const wire = extensionsForWire(input.extensions)
     // Per-turn thinking intensity: project onto Anthropic's native wire shape.
@@ -413,6 +448,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       transport: betas.length ? "beta" : "stable",
       params,
       cacheSlots: countSlots(system, tools, messages),
+      wireTurns,
     }
   }
 
@@ -537,6 +573,12 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
           thinking: String(state.nativeBlocks[chunk.index]?.thinking ?? "") + delta.thinking,
         }
         events.push({ type: "thinking_delta", delta: delta.thinking } as ThinkingDelta)
+      } else if (delta.type === "compaction_delta") {
+        // The summary arrives whole in one delta; it is replayed, never shown.
+        state.nativeBlocks[chunk.index] = {
+          ...state.nativeBlocks[chunk.index],
+          content: String(state.nativeBlocks[chunk.index]?.content ?? "") + String(delta.content ?? ""),
+        }
       } else if (delta.type === "signature_delta") {
         state.nativeBlocks[chunk.index] = {
           ...state.nativeBlocks[chunk.index],

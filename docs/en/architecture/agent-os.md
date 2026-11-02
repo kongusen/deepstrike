@@ -88,19 +88,22 @@ Root agent and every sub-agent / workflow node share one `TaskTable`. `AgentProc
 
 Context is partitioned address space — not an append-only chat log. Compression, handles, and capability manifests live here.
 
-## Six harness patterns as first-class nodes
+## Six harness patterns
 
 ![Dynamic Workflow Orchestration DAG](/agent_os_workflow_dag.svg)
 
+Three of the six patterns are fixed-shape DAGs the kernel schedules directly. The other three are
+control flow: a host program or the model decides which nodes to submit next, and the kernel admits
+each spawn.
 
-| Pattern | Kernel primitive | SDK template |
-|---------|------------------|--------------|
-| **Classify-and-act** | `classify` node | `classify_instruction()` |
+| Pattern | How it runs | SDK entry |
+|---------|-------------|-----------|
 | **Fan-out-and-synthesize** | N workers → synthesize barrier | `fanout_synthesize()` |
 | **Adversarial verification** | isolated verify TCBs | `verify_rules()` |
 | **Generate-and-filter** | N implement → verify barrier | `generate_and_filter()` |
-| **Tournament** | parallel entrants → judge bracket | `tournament` node |
-| **Loop until done** | `loop` + `SubmitNodes` | `loop_instruction()` |
+| **Classify-and-act** | the classifier submits only the chosen branch | runtime `submit_workflow_nodes` |
+| **Tournament** | a host program generates entrants and judges pairs | `runDynamicWorkflow()` |
+| **Loop until done** | a host program loops, or each round submits the next | `runDynamicWorkflow()` / `submit_workflow_nodes` |
 
 See [Dynamic workflows](/en/guides/workflow).
 

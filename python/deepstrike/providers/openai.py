@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta, UsageEvent
 from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, stable_prompt_cache_key, to_openai_message_params, ThinkingTagStreamExtractor, wire_request_extensions
-from .replay import ReasoningReplayMixin, assistant_replay_key
+from .replay import ReasoningReplayMixin, reasoning_replay_key
 from .replay_validator import validate_openai_chat_replay
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
@@ -207,7 +207,8 @@ class OpenAIProvider(ReasoningReplayMixin):
                 self.remember_reasoning_for_turn(content, tool_calls, reasoning.reasoning_content)
             return
         if dialect.replay_strategy == "deepseek":
-            if not reasoning.reasoning_content.strip():
+            # A tool-call turn the model answered without reasoning still replays its empty reasoning.
+            if not reasoning.reasoning_content.strip() and not tool_calls:
                 return
             envelope: dict[str, Any] = {
                 "provider": dialect.provider_id, "protocol": "openai-chat",
@@ -246,7 +247,7 @@ class OpenAIProvider(ReasoningReplayMixin):
             require_non_empty_reasoning_for_tool_calls=require_reasoning,
             degrade_missing_reasoning=degrade,
             replay_for_assistant=lambda content, tool_calls: self._replay_fields.get(
-                assistant_replay_key(content, tool_calls)
+                reasoning_replay_key(content, tool_calls)
             ),
         )
         serialized = to_openai_message_params(context, getattr(self, "_resolved_runtime", None))
@@ -376,7 +377,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         )
 
     def _replay_for_assistant(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
-        return self._replay_fields.get(assistant_replay_key(content, tool_calls))
+        return self._replay_fields.get(reasoning_replay_key(content, tool_calls))
 
     async def _complete_with_adapter(
         self,

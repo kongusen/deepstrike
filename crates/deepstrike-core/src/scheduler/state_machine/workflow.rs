@@ -403,12 +403,6 @@ impl LoopStateMachine {
         Vec<String>,
         Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
     ) {
-        // A2 tournament: a controller node whose deps are satisfied fans out into entrant children
-        // (and spawns no agent of its own) before we read the ready set — so its entrants/judges
-        // are picked up by the same run-queue spawn loop as any other node.
-        if let Some(run) = self.workflow.as_mut() {
-            run.expand_ready_controllers();
-        }
         let ready = self
             .workflow
             .as_mut()

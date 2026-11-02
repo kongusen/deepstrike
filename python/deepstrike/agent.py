@@ -204,7 +204,9 @@ class AgentSession:
             ttl_days=value.get("ttl_days"),
         )
         runner = await self._runner("memory", max_turns=1)
-        await runner.write_memory(record, session_id=record.provenance.session_id, agent_id=self.agent.name)
+        written = await runner.write_memory(record, session_id=record.provenance.session_id, agent_id=self.agent.name)
+        if not written:
+            raise RuntimeError(f'agent "{self.agent.name}" memory write denied')
         return record
 
     async def recall(self, query: str, *, top_k: int = 8, kinds: list[str] | None = None,
@@ -546,11 +548,9 @@ class Agent:
                 result["status"] = "failed"
         attempts = next((event for event in reversed(events) if event.get("kind") == "provider_attempt"), {})
         measured = next((event for event in reversed(events) if event.get("kind") == "prompt_measured"), {})
-        prepared = next((event for event in reversed(events) if event.get("kind") == "context_prepared"), {})
         evidence = {
             **({"route": attempts.get("route")} if attempts.get("route") is not None else {}),
             **({"measurement": measured.get("measurement")} if measured.get("measurement") is not None else {}),
-            **({"context_binding": prepared.get("preparation", {}).get("binding")} if isinstance(prepared.get("preparation"), dict) and prepared["preparation"].get("binding") is not None else {}),
         }
         if evidence:
             result["evidence"] = evidence

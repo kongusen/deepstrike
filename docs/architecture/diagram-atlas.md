@@ -28,13 +28,13 @@ Reason、Act、Adjudicate、Execute、Observe 与 Delta 都是显式状态转换
 
 ### Workflow 数据流
 
-类型化流水线展示 DAG 边如何把持久输出从隔离 Agent 传入零 Token Reducer，再交给写作与验证节点。
+类型化流水线展示 DAG 边如何把持久输出从隔离 Agent 交给写作与验证节点。
 
 ![Workflow DAG 数据流](/agent_os_workflow_dag.svg)
 
 ### 动态工作流词汇
 
-静态加载、运行时增长、一等控制节点、调度屏障、信任、预算与恢复组成同一个机制。
+静态加载、运行时增长、调度屏障、信任、预算与恢复组成同一个机制。
 
 ![动态工作流机制](/workflow_mechanisms.svg)
 
@@ -44,11 +44,11 @@ Reason、Act、Adjudicate、Execute、Observe 与 Delta 都是显式状态转换
 
 ![Syscall 治理漏斗](/governance_pipeline.svg)
 
-### 结构化输出与 Reducer
+### 结构化输出
 
-内核携带 Schema 契约，宿主负责有界验证重试，确定性 Reducer 不调用 LLM。
+内核携带 Schema 契约，宿主负责有界验证重试。
 
-![结构化输出与 Reducer](/reducers_mechanisms.svg)
+![结构化输出](/reducers_mechanisms.svg)
 
 ### Milestone
 

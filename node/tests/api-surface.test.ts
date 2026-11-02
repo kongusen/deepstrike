@@ -24,14 +24,14 @@ describe("root surface", () => {
       // moved to subpaths
       "runAgent", "runFanout", "RuntimeRunner", "LocalExecutionPlane", "InMemorySessionLog", "FileSessionLog",
       "AgentPool", "ManagedTaskScope", "operationAbortSignal",
-      "OpenAIChatProvider", "DeepSeekProvider", "builtinReducers", "SubAgentOrchestrator",
+      "OpenAIChatProvider", "DeepSeekProvider", "SubAgentOrchestrator",
       "WorktreeExecutionPlane", "McpProxyPlane", "MemoryStore", "WorkingMemory",
       "HarnessLoop", "EvalLoopHarness", "judge", "osProfile", "ReplayProvider", "PermissionManager",
       // internalized (kernel boundary / low-level builders)
       "workflowSpecToKernel", "agentRunSpecToKernel", "governancePolicyToKernelEvent",
-      "kernelObservationToSessionEvent", "loopInstruction", "buildEvalMessages", "fanoutSynthesize",
+      "kernelObservationToSessionEvent", "buildEvalMessages", "fanoutSynthesize",
       "KERNEL_ROLE_MAP",
-      "EvolutionRuntime", "createEvolutionRuntimeAdapter", "KernelJournal", "ProviderRequestPlan",
+      "KernelJournal", "ProviderRequestPlan",
     ]) {
       expect(root).not.toHaveProperty(name)
     }
@@ -49,8 +49,8 @@ describe("subpath barrels", () => {
     for (const n of ["DeepSeekProvider", "DeepSeekAnthropicProvider", "KimiAnthropicProvider", "MiniMaxOpenAIProvider"])
       expect(providers).not.toHaveProperty(n)
   })
-  it("workflow carries orchestration + reducers + contracts", () => {
-    for (const n of ["SubAgentOrchestrator", "spawnStandalone", "builtinReducers", "ContractBuilder", "HandoffBus"])
+  it("workflow carries orchestration + contracts", () => {
+    for (const n of ["SubAgentOrchestrator", "spawnStandalone", "ContractBuilder", "HandoffBus"])
       expect(workflow).toHaveProperty(n)
   })
   it("planes carries the specialized planes", () => {
@@ -58,7 +58,7 @@ describe("subpath barrels", () => {
       expect(planes).toHaveProperty(n)
   })
   it("memory carries durable + working memory", () => {
-    for (const n of ["WorkingMemory", "DurableMemory", "InMemoryMemoryStore", "rankMemories", "extractSessionMemories", "parseExtractedMemories"])
+    for (const n of ["WorkingMemory", "DurableMemory", "InMemoryMemoryStore", "rankMemories"])
       expect(memory).toHaveProperty(n)
   })
   it("harness carries the eval harnesses + judge", () => {

@@ -76,9 +76,10 @@ impl RenewalPolicy {
             start = unit.start;
         }
         for (index, msg) in messages.iter().enumerate().skip(start) {
-            renewed.history.push(
+            renewed.history.push_tagged(
                 msg.clone(),
                 partitions.history.measured_tokens(index, engine),
+                partitions.history.tag(index),
             );
         }
 

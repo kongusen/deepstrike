@@ -127,22 +127,86 @@ impl CanonicalOperationDriver {
                 self.continue_after(context, action, root_kind)
             }
             EffectSuccess::MemoryPersisted(persisted) => {
-                self.commit_memory_write(effect_id, Some(&persisted.receipt), None)
+                match (&persisted.receipt, &persisted.candidate) {
+                    (Some(receipt), None) => {
+                        self.commit_memory_write(context, effect_id, Some(receipt), None)
+                    }
+                    (None, Some(candidate)) => {
+                        self.commit_memory_candidate(context, effect_id, candidate)
+                    }
+                    _ => Err(KernelFault::new(
+                        KernelFaultCode::UnexpectedEffectOutcome,
+                        "a memory write resolves with exactly one of a receipt or a candidate",
+                    )),
+                }
             }
             EffectSuccess::MemoryQueried(queried) => {
                 let root_kind = self.require_root_kind()?;
-                let Some(query) = self.pending_memory_queries.remove(effect_id) else {
+                let Some(query) = self.pending_memory_queries.get(effect_id).cloned() else {
                     return Err(unowned_resolution(effect_id, "memory query"));
                 };
+                // A point fetch names the only record the host may answer with: anything else is a
+                // search the kernel did not ask for, refused before a byte enters history.
+                if let Some(record_id) = &query.record_id
+                    && (queried.recalls.len() > 1
+                        || queried
+                            .recalls
+                            .iter()
+                            .any(|recall| recall.record_ref.as_str() != record_id))
+                {
+                    return Err(KernelFault::new(
+                        KernelFaultCode::UnexpectedEffectOutcome,
+                        format!(
+                            "a fetch of memory record {record_id} must resolve with that record \
+                             or none"
+                        ),
+                    ));
+                }
+                self.pending_memory_queries.remove(effect_id);
                 let turn = self.engine_mut()?.turn;
+                if let Some(record_id) = &query.record_id
+                    && queried.recalls.is_empty()
+                {
+                    // Unlike an empty search, a fetch that finds nothing is an answer the model
+                    // needs: the id it read in an index line no longer resolves.
+                    let content = format!(
+                        "[MEMORY record_ref={record_id}] not found: it was deleted, expired, or is \
+                         outside this memory scope."
+                    );
+                    let engine = self.engine_mut()?;
+                    let tokens = engine.ctx.engine.count(&content).max(1);
+                    engine.ctx.push_history(CoreMessage::user(content), tokens);
+                }
+                if let Some(record_id) = &query.record_id
+                    && !queried.recalls.is_empty()
+                {
+                    self.engine_mut()?.ctx.note_memory_expanded(record_id);
+                }
                 let mut recalled = Vec::with_capacity(queried.recalls.len());
                 let mut priors = Vec::with_capacity(queried.recalls.len());
+                let mut index_lines = Vec::new();
                 for recall in &queried.recalls {
                     priors.push(crate::mm::memory::MemoryRecallPrior {
                         record_id: recall.record_ref.as_str().to_string(),
                         recall_count: recall.recall_count.get(),
                         pinned: recall.pinned,
                     });
+                    recalled.push(recall.record_ref.as_str().to_string());
+                    // Plan task 2.1 · a kernel recall lands an index line per record as keyed
+                    // knowledge; the model reads a record in full with `memory(record_id)`.
+                    if query.recall {
+                        index_lines.push((
+                            recall.record_ref.as_str().to_string(),
+                            crate::context::manager::ContextManager::recall_index_line(
+                                recall.record_ref.as_str(),
+                                wire_memory_kind_label(recall.kind),
+                                &recall.trust,
+                                &recall.description,
+                                &recall.name,
+                            ),
+                        ));
+                        continue;
+                    }
                     // §22.13 · the host answers with records, never with authority: the recall is
                     // rendered into history as content the model reads, and nothing about it
                     // rewrites this operation's binding, trust or provenance.
@@ -155,14 +219,18 @@ impl CanonicalOperationDriver {
                     let engine = self.engine_mut()?;
                     let tokens = engine.ctx.engine.count(&content).max(1);
                     engine.ctx.push_history(CoreMessage::user(content), tokens);
-                    recalled.push(recall.record_ref.as_str().to_string());
                 }
                 // The recalls are in history now, so the turn that asked for them resumes with a
                 // rendered context that contains them. The observation is pushed *after* the
                 // resume, which clears the buffer at its head: a fact recorded before it would be
                 // erased by the very continuation it describes.
                 let engine = self.engine_mut()?;
-                let action = engine.resume_after_preload();
+                let action = if query.recall {
+                    engine.ctx.push_recalled(index_lines);
+                    engine.resume_after_recall()
+                } else {
+                    engine.resume_after_preload()
+                };
                 // §5k · other effects this kernel published are still outstanding — resuming the
                 // turn now would emit a provider call that outruns work the host still owes (the
                 // sibling effect of a mixed syscall batch). The last of them to settle re-runs
@@ -175,7 +243,11 @@ impl CanonicalOperationDriver {
                 engine.observations.push(KernelObservation::MemoryQueried {
                     turn,
                     scope: binding_scope(&query.binding_id),
-                    query: query.text.clone(),
+                    // The journal keeps one query string; a fetch records which record it named.
+                    query: match &query.record_id {
+                        Some(record_id) => format!("record_id={record_id}"),
+                        None => query.text.clone(),
+                    },
                     requested_k: query.requested_k as usize,
                     requires_async_response: false,
                 });
@@ -430,7 +502,7 @@ impl CanonicalOperationDriver {
                 Ok(self.quiet_step())
             }
             EffectKindTag::PersistMemory => {
-                self.commit_memory_write(effect_id, None, Some(host_failure_text(failure)))
+                self.commit_memory_write(context, effect_id, None, Some(host_failure_text(failure)))
             }
             // The recall did not happen. The turn that asked for it resumes without it — a memory
             // search that found nothing and a memory store that was unreachable are the same shape
@@ -443,7 +515,11 @@ impl CanonicalOperationDriver {
                 let error = host_failure_text(failure);
                 let engine = self.engine_mut()?;
                 let turn = engine.turn;
-                let action = engine.resume_after_preload();
+                let action = if query.recall {
+                    engine.resume_after_recall()
+                } else {
+                    engine.resume_after_preload()
+                };
                 engine
                     .observations
                     .push(KernelObservation::MemoryQueryFailed {
@@ -550,6 +626,7 @@ impl CanonicalOperationDriver {
     /// size, trust or provenance the kernel did not derive.
     pub(super) fn commit_memory_write(
         &mut self,
+        context: &PlanContext<'_>,
         effect_id: &EffectId,
         receipt: Option<&super::super::effect::MemoryPersistReceipt>,
         failure: Option<String>,
@@ -559,33 +636,102 @@ impl CanonicalOperationDriver {
         let Some(authored) = self.pending_memory_writes.remove(effect_id) else {
             return Err(unowned_resolution(effect_id, "memory write"));
         };
-        let engine = self.engine_mut()?;
-        let turn = engine.turn;
-        match (receipt, failure) {
-            (Some(receipt), _) => {
-                engine.observations.push(KernelObservation::MemoryWritten {
+        let turn = self.engine_mut()?.turn;
+        let (observation, outcome) = match (receipt, failure) {
+            (Some(receipt), _) => (
+                KernelObservation::MemoryWritten {
                     turn,
                     record_id: receipt.record_ref.as_str().to_string(),
                     scope: binding_scope(&authored.binding_id),
                     memory_kind: core_memory_kind(authored.kind),
-                    name: authored.name,
+                    name: authored.name.clone(),
                     size_bytes: authored.size_bytes,
-                });
-            }
-            (None, Some(error)) => {
-                engine
-                    .observations
-                    .push(KernelObservation::MemoryWriteFailed {
-                        turn,
-                        // No record exists to name, so the audit fact names the *intent* — the
-                        // kernel-authored key — instead of a host id it never received.
-                        record_id: authored.name,
-                        error,
-                    });
-            }
+                },
+                format!("stored as record {}.", receipt.record_ref),
+            ),
+            (None, Some(error)) => (
+                KernelObservation::MemoryWriteFailed {
+                    turn,
+                    // No record exists to name, so the audit fact names the *intent* — the
+                    // kernel-authored key — instead of a host id it never received.
+                    record_id: authored.name.clone(),
+                    error: error.clone(),
+                },
+                format!("not stored: {error}"),
+            ),
             (None, None) => unreachable!("a memory resolution is either a receipt or a failure"),
+        };
+        self.settle_memory_write(context, &authored, observation, &outcome)
+    }
+
+    /// M2 · the host recorded the write as a pending candidate. The effect is terminal here: no
+    /// record exists, so nothing is observed as written. For a child request the pending
+    /// candidate is a host-facing audit fact only (the child has already completed); a model's own
+    /// `propose_memory` also reads it back, so it never mistakes "in review" for "stored". The
+    /// entry leaves `pending_memory_writes`, freeing the one PersistMemory slot DEC-3 allows; a
+    /// redelivered resolution replays under DEC-1.
+    pub(super) fn commit_memory_candidate(
+        &mut self,
+        context: &PlanContext<'_>,
+        effect_id: &EffectId,
+        candidate: &super::super::effect::MemoryCandidateReceipt,
+    ) -> Result<PlannedStep, KernelFault> {
+        self.require_root_kind()?;
+        let Some(authored) = self.pending_memory_writes.remove(effect_id) else {
+            return Err(unowned_resolution(effect_id, "memory write"));
+        };
+        if candidate.candidate_id.is_empty() || candidate.receipt_id.is_empty() {
+            return Err(KernelFault::new(
+                KernelFaultCode::UnexpectedEffectOutcome,
+                "a memory candidate receipt must name its candidate and receipt ids",
+            ));
         }
-        Ok(self.quiet_step())
+        let turn = self.engine_mut()?.turn;
+        let observation = KernelObservation::MemoryCandidatePending {
+            turn,
+            candidate_id: candidate.candidate_id.clone(),
+            name: authored.name.clone(),
+        };
+        let outcome = format!(
+            "pending review as candidate {}; it is not stored until the host accepts it.",
+            candidate.candidate_id
+        );
+        self.settle_memory_write(context, &authored, observation, &outcome)
+    }
+
+    /// Records a settled memory write. A child request's write is an audit fact and nothing more:
+    /// its author has completed, so the step is quiet. The model's own proposal is different —
+    /// the turn that made it awaits the outcome — so the outcome is rendered into history, as a
+    /// memory recall is, and that turn resumes once nothing else it published is outstanding.
+    fn settle_memory_write(
+        &mut self,
+        context: &PlanContext<'_>,
+        authored: &AuthoredMemoryWrite,
+        observation: KernelObservation,
+        outcome: &str,
+    ) -> Result<PlannedStep, KernelFault> {
+        if !authored.model_facing {
+            self.engine_mut()?.observations.push(observation);
+            return Ok(self.quiet_step());
+        }
+        let root_kind = self.require_root_kind()?;
+        let engine = self.engine_mut()?;
+        let content = format!("[MEMORY PROPOSAL name={}] {outcome}", authored.name);
+        let tokens = engine.ctx.engine.count(&content).max(1);
+        engine.ctx.push_history(CoreMessage::user(content), tokens);
+        let action = engine.resume_after_preload();
+        // §5k · a sibling effect of the same batch is still owed; the last of them to settle
+        // resumes the turn instead.
+        let action = if context.pending.is_empty() {
+            action
+        } else {
+            LoopAction::AwaitingResume
+        };
+        // Pushed after the resume, which clears the buffer at its head.
+        engine.observations.push(observation);
+        let mut step = self.continue_after(context, action, root_kind)?;
+        step.focus = self.focus.clone();
+        Ok(step)
     }
 
     /// §7.10 rule 4 · a body the host paged back in.

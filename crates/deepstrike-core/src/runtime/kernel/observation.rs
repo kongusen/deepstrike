@@ -43,6 +43,30 @@ pub enum KernelObservation {
         required_tokens: u32,
         max_tokens: u32,
     },
+    /// Context lifecycle metrics for the finished run (plan task 4.1), emitted once at termination.
+    /// `regret`: evicted knowledge keys that were pushed again. `waste_tokens`: knowledge tokens
+    /// never referenced (evicted or still resident). `cache_loss_tokens`: history tokens whose
+    /// cache a mid-run system[1] promotion discarded. `recalled` / `recall_expanded`: memory
+    /// records the kernel recalled, and how many of them the model read with `memory(record_id)`.
+    /// `items`: every knowledge item of the run with its origin, use and why it left.
+    LifecycleReport {
+        turn: u32,
+        knowledge_entries: u32,
+        knowledge_referenced: u32,
+        regret: u32,
+        waste_tokens: u64,
+        cache_loss_tokens: u64,
+        #[serde(default)]
+        recalled: u32,
+        #[serde(default)]
+        recall_expanded: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<crate::context::item::ItemRecord>,
+        /// History items by origin: admitted, still in history at the end, read back with
+        /// `read_result`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        history: Vec<crate::context::item::OriginTally>,
+    },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in
     /// `tokens_freed`); an upsert-only sweep has empty `removed_keys`.
@@ -383,6 +407,13 @@ pub enum KernelObservation {
         turn: u32,
         record_id: String,
         error: String,
+    },
+    /// M2 · the write was recorded as a pending candidate awaiting review. It is not a memory:
+    /// the model must not treat it as remembered.
+    MemoryCandidatePending {
+        turn: u32,
+        candidate_id: String,
+        name: String,
     },
     /// Memory query request (Phase 7).
     MemoryQueried {

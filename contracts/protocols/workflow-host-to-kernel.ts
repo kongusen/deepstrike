@@ -27,7 +27,7 @@ export const WORKFLOW_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
           depPolicy: "dep_policy",
         },
         drops: ["agent", "context"],
-        derived: ["kind"],
+        derived: [],
         nested: [
           { source: "task", target: "task", kind: "project", note: "Bare goals normalize to RuntimeTask JSON with criteria defaulted." },
           { source: "schedulingFactors", target: "scheduling_factors", kind: "project", note: "Host scheduling inputs are validated and lowered to snake_case kernel fields." },
@@ -86,7 +86,7 @@ export const WORKFLOW_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
   lossiness: "intentional",
   validation: {
     mode: "behavioral-tests",
-    reason: "Workflow ABI and control-flow tests cover node lowering, snake_case fields, and root composition.",
-    testRefs: [{ path: "node/tests/workflow-boundary.test.ts", selectors: ["workflow host-to-kernel boundary"] }, { path: "node/tests/workflow-control-flow.test.ts", selectors: ["workflowNodeSpecToKernel: control-flow kinds"] }, { path: "node/tests/workflow-optimization.test.ts", selectors: ["W-N2 / W-N7: spawn descriptors carry data edges and per-node caps"] }],
+    reason: "Workflow ABI tests cover node lowering, snake_case fields, and root composition.",
+    testRefs: [{ path: "node/tests/workflow-boundary.test.ts", selectors: ["workflow host-to-kernel boundary"] }, { path: "node/tests/workflow-definition.test.ts", selectors: ["workflowNodeSpecToKernel lowers a node's context to the kernel dependency_context"] }, { path: "node/tests/workflow-optimization.test.ts", selectors: ["W-N2 / W-N7: spawn descriptors carry data edges and per-node caps"] }],
   },
 }

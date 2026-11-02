@@ -16,12 +16,9 @@ test("SPC-028-46 root keeps runtime internals behind subpaths", () => {
     "KernelJournal",
     "ProviderRequestPlan",
     "ProviderAttempt",
-    "ContextPrepared",
-    "EvolutionRuntime",
     "ReactiveSession",
     "InMemoryEventStream",
     "InMemoryGroupBudgetStore",
-    "VerifiableOperation",
     "AgentDefinition",
     "RuntimeBinding",
   ]) {

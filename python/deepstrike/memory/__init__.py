@@ -1,3 +1,26 @@
+from .runtime_policy import (
+    MemoryRetrievalPolicy, MemoryWritePolicy, MemoryRuntimePolicy,
+    ResolvedMemoryRuntimePolicy, resolve_memory_runtime_policy,
+)
+from .attestation import (
+    Ed25519MemoryCandidateSourceVerifier, HmacMemoryCandidateSourceVerifier, MemoryCandidateAttestation, admit_memory_candidate, memory_candidate_attestation_canonical_payload, memory_candidate_attestation_digest, sign_memory_candidate_attestation,
+    verify_memory_candidate_source,
+)
+from .durable_candidate_sink import (
+    FileMemoryCandidateSink, MemoryCandidateLedgerEntry, MemoryCandidateOutboxEvent, MemoryCandidateVerificationAttempt,
+)
+from .candidate_sink import (
+    MemoryCandidateSource, MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink,
+    PendingMemoryCandidateReceipt, AcceptedMemoryCandidateReceipt, RejectedMemoryCandidateReceipt,
+    InMemoryMemoryCandidateSink, memory_candidate_duplicate_reason, memory_candidate_id, memory_candidate_payload_digest,
+)
+from .recall_projection import memory_fetch_recall
+from .lifecycle import (
+    MemoryLease, MemoryLeaseRejection, MemoryWriteBudget, consume_memory_lease_write,
+    memory_record_expired, memory_scope_matches, revoke_memory_lease,
+    scope_matches_memory_deletion, verify_memory_lease,
+)
+from .durable_lifecycle_store import FileMemoryLifecycleStore
 from .working import WorkingMemory
 from .protocols import (
     MemoryStore, Memory, MemorySearchOptions, SessionData, MemoryRecord, MemoryRecall, MemoryRecallLifecycle, MemoryQuery,
@@ -7,13 +30,34 @@ from .durable import DurableMemory
 from .in_memory_store import InMemoryMemoryStore
 from .retention import memory_retention_score
 from .ranking import RankedMemory, rank_memories
-from .extraction import extract_session_memories, parse_extracted_memories
 
 __all__ = [
+    "MemoryRetrievalPolicy",
+    "MemoryWritePolicy",
+    "MemoryRuntimePolicy",
+    "ResolvedMemoryRuntimePolicy",
+    "resolve_memory_runtime_policy",
+    "MemoryCandidateSource",
+    "MemoryCandidate",
+    "MemoryCandidateReceipt",
+    "MemoryCandidateSink",
+    "PendingMemoryCandidateReceipt",
+    "AcceptedMemoryCandidateReceipt",
+    "RejectedMemoryCandidateReceipt",
+    "InMemoryMemoryCandidateSink",
+    "Ed25519MemoryCandidateSourceVerifier", "HmacMemoryCandidateSourceVerifier", "MemoryCandidateAttestation", "admit_memory_candidate", "memory_candidate_attestation_canonical_payload", "memory_candidate_attestation_digest", "sign_memory_candidate_attestation", "verify_memory_candidate_source",
+    "FileMemoryCandidateSink", "MemoryCandidateLedgerEntry", "MemoryCandidateOutboxEvent", "MemoryCandidateVerificationAttempt",
+    "memory_candidate_id",
+    "memory_candidate_duplicate_reason",
+    "memory_candidate_payload_digest",
+    "memory_fetch_recall",
+    "MemoryLease", "MemoryLeaseRejection", "MemoryWriteBudget", "consume_memory_lease_write", "FileMemoryLifecycleStore",
+    "memory_record_expired", "memory_scope_matches", "revoke_memory_lease",
+    "scope_matches_memory_deletion", "verify_memory_lease",
+
     "WorkingMemory",
     "MemoryStore", "Memory", "MemorySearchOptions", "DurableMemory", "SessionData", "MemoryRecord", "MemoryRecall", "MemoryRecallLifecycle", "MemoryQuery",
     "MemoryScope", "MemoryProvenance", "MemoryKind", "MemoryAuthor", "MemoryTrustLevel",
     "InMemoryMemoryStore", "memory_retention_score",
     "RankedMemory", "rank_memories",
-    "extract_session_memories", "parse_extracted_memories",
 ]

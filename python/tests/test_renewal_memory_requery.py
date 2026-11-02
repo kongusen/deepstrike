@@ -2,8 +2,9 @@
 
 A sprint renewal drops the old history — including earlier memory hits — so the runner re-fires
 the ``pre_query_memory`` prefetch on the live ``renewed`` observation (``phase="renewal"``).
-Hits land in ``history`` as ordinary turns, never in ``knowledge``. Pre-K4 hooks that don't
-accept ``phase`` keep working (signature-sniffed).
+A running operation accepts history only through effects or external events, so the turn-1 and
+the renewal hits both enter as keyed ``memory:<record_id>`` knowledge entries carrying the
+canonical recall index (M5). Pre-K4 hooks that don't accept ``phase`` keep working (signature-sniffed).
 """
 
 import json
@@ -17,10 +18,11 @@ from deepstrike.tools.registry import tool
 from deepstrike.memory.protocols import MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope
 
 RECALL = "LONGTERM_FACT_FOR_SPRINT"
+RECALL_TURN = f"[MEMORY record_id=record-renewal kind=reference trust=host_verified] {RECALL}"
 SCOPE = MemoryScope("agent-k4", "renewal")
 RECALL_HIT = MemoryRecall(MemoryRecord(
-    record_id="record-renewal", scope=SCOPE, name="renewal", kind="reference", content=RECALL,
-    description="fixture", provenance=MemoryProvenance(author="host", trust="host_verified"),
+    record_id="record-renewal", scope=SCOPE, name="renewal", kind="reference", content="full renewal record",
+    description=RECALL, provenance=MemoryProvenance(author="host", trust="host_verified"),
     created_at=1, updated_at=1, confidence=0.9,
 ), 0.9, "fixture")
 
@@ -43,7 +45,7 @@ class FakeMemoryStore:
 
 
 @pytest.mark.asyncio
-async def test_renewal_refires_prefetch_with_phase_and_lands_in_history():
+async def test_renewal_refires_prefetch_with_phase_and_lands_in_context():
     phases: list[str | None] = []
     st = {"saw_renewal": False, "saw_recall_after_renewal": False, "call": 0}
 
@@ -59,7 +61,9 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_history():
 
         async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
             st["call"] += 1
-            if st["saw_renewal"] and RECALL in (context.system_knowledge or ""):
+            # Renewal carries knowledge over, so the turn-1 entry may still be there; the
+            # re-fetch upserts the same key, which the ``phase`` record proves.
+            if st["saw_renewal"] and RECALL_TURN in (context.system_knowledge or ""):
                 st["saw_recall_after_renewal"] = True
             if st["call"] <= 10 and not st["saw_recall_after_renewal"]:
                 yield ToolCallEvent(id=f"b{st['call']}", name="bulk", arguments={})
@@ -95,3 +99,6 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_history():
     assert phases[0] == "initial"
     assert "renewal" in phases
     assert st["saw_recall_after_renewal"] is True
+    # M5 · every prefetch, initial and renewal, is audited with the hits it injected.
+    retrievals = [e for e in events if e.event.get("kind") == "memory_retrieval_result"]
+    assert len(retrievals) == len(phases)

@@ -459,6 +459,17 @@ export interface ProviderDescriptor {
     supported: boolean
     requiresStrictPairing: boolean
   }
+  /** Context tiers this provider performs natively as configured. The runner hands each one to
+   *  the provider and the kernel skips its own; renewal is never delegated. */
+  nativeContext?: NativeContextTiers
+}
+
+/** Context-management tiers a provider can perform server-side. */
+export interface NativeContextTiers {
+  /** Old tool results are cleared before the model sees them. */
+  toolResultClearing?: boolean
+  /** Earlier history is summarized server-side. */
+  compaction?: boolean
 }
 
 /** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */
@@ -506,7 +517,7 @@ export interface ProviderTransportTelemetry {
 export interface ReplayabilityAssessment {
   /** True when every reasoning-requiring tool-call turn has replay available. */
   ok: boolean
-  /** Tool-call ids whose turn lacks the required non-empty reasoning replay. */
+  /** Tool-call ids whose turn lacks the reasoning replay the provider requires. */
   offendingCallIds: string[]
 }
 
@@ -628,14 +639,6 @@ export interface LLMProvider {
  */
 export interface AsyncSummarizer {
   summarize(archived: ModelMessage[], action: string): Promise<string>
-}
-
-/**
- * Durable-memory summarizer for semantic `page_out` events (Layer 5 contract).
- * The kernel emits `page_out { tier_hint: "semantic" }`; the SDK persists an LLM summary to MemoryStore.
- */
-export interface MemorySummarizer {
-  summarize(archived: ModelMessage[], context: { action?: string }): Promise<string>
 }
 
 export interface TaskUpdate {

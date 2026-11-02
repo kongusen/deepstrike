@@ -342,6 +342,17 @@ pub struct InitialContext {
     /// authority must declare it here explicitly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requested_capabilities: Vec<crate::types::capability::Capability>,
+    /// Plan task 3.1 · the outputs of the workflow nodes this run depends on. Only a preview is in
+    /// the brief; `read_result(call_id="dep:<agent_id>")` reads one in full.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<DependencyOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyOutput {
+    pub agent_id: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

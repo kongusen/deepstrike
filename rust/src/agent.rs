@@ -34,7 +34,6 @@ impl AgentWorkflow {
     }
 
     pub fn ready_batch(&mut self) -> Vec<usize> {
-        self.run.expand_ready_controllers();
         self.run.ready_batch()
     }
 
@@ -94,7 +93,6 @@ pub struct AgentRunResult {
     pub iterations: u32,
     pub total_tokens: u64,
     pub usage: Option<AgentUsage>,
-    pub evidence: Option<AgentEvidence>,
     pub output_validation: Option<OutputValidation>,
 }
 
@@ -149,13 +147,6 @@ fn validate_output(text: &str, schema: &serde_json::Value) -> OutputValidation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentUsage {
     pub total_tokens: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AgentEvidence {
-    pub context_binding: Option<serde_json::Value>,
-    pub route: Option<serde_json::Value>,
-    pub measurement: Option<serde_json::Value>,
 }
 
 /// A single typed snapshot of the durable session replay surface.
@@ -319,7 +310,6 @@ impl AgentSession {
         result.usage = Some(AgentUsage {
             total_tokens: result.total_tokens,
         });
-        result.evidence = self.latest_evidence().await?;
         if let Some(schema) = &options.output_schema {
             result.output_validation = Some(validate_output(&result.output, schema));
         }
@@ -410,14 +400,17 @@ impl AgentSession {
             .history()
             .await?
             .into_iter()
-            .filter(|entry| {
-                matches!(
-                    entry.event,
-                    deepstrike_core::runtime::session::SessionEvent::WorkflowBatchSpawned { .. }
-                        | deepstrike_core::runtime::session::SessionEvent::WorkflowSpawnFailed { .. }
-                        | deepstrike_core::runtime::session::SessionEvent::WorkflowCompleted { .. }
-                        | deepstrike_core::runtime::session::SessionEvent::WorkflowNodesSubmitted { .. }
-                )
+            .filter(|entry| match &entry.event {
+                deepstrike_core::runtime::session::SessionEvent::WorkflowBatchSpawned {
+                    ..
+                }
+                | deepstrike_core::runtime::session::SessionEvent::WorkflowCompleted { .. } => true,
+                // Workflow facts with no session kind of their own are kept as envelopes.
+                deepstrike_core::runtime::session::SessionEvent::KernelObservation {
+                    observation_kind,
+                    ..
+                } => observation_kind.starts_with("workflow_"),
+                _ => false,
             })
             .collect();
         let mut node_outcomes = Vec::new();
@@ -443,11 +436,21 @@ impl AgentSession {
         self.runner.latest_session_seq(&self.session_id).await
     }
 
+    /// Write one host-authored record through the runner's write funnel. A write the kernel
+    /// refuses (or a candidate sink rejects) is an error, not a silently unstored record.
     pub async fn remember(&self, memory: MemoryRecord) -> Result<()> {
-        self.runner
+        let record_id = memory.record_id.clone();
+        if self
+            .runner
             .write_memory(memory, Some(&self.session_id), None)
-            .await
-            .map(|_| ())
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(crate::Error::Other(format!(
+                "memory write denied for record {record_id}: refused by the kernel or the candidate sink, or no memory store is bound"
+            )))
+        }
     }
 
     pub async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecall>> {
@@ -469,29 +472,6 @@ impl AgentSession {
             } else {
                 None
             }
-        }))
-    }
-
-    async fn latest_evidence(&self) -> Result<Option<AgentEvidence>> {
-        let entry = self.history().await?.into_iter().rev().find(|entry| {
-            matches!(
-                entry.event,
-                deepstrike_core::runtime::session::SessionEvent::ContextPrepared { .. }
-            )
-        });
-        let Some(entry) = entry else {
-            return Ok(None);
-        };
-        let deepstrike_core::runtime::session::SessionEvent::ContextPrepared {
-            preparation, ..
-        } = entry.event
-        else {
-            unreachable!();
-        };
-        Ok(Some(AgentEvidence {
-            context_binding: serde_json::to_value(preparation.binding).ok(),
-            route: Some(preparation.provider_route),
-            measurement: serde_json::to_value(preparation.prompt_measurement).ok(),
         }))
     }
 }

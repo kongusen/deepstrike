@@ -14,7 +14,7 @@ import type {
   StreamEvent,
   ToolSchema,
 } from "../types.js"
-import { assistantReplayKey } from "../runtime/provider-replay.js"
+import { reasoningReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys, stablePromptCacheKey } from "./base.js"
 import {
@@ -119,7 +119,7 @@ export class OpenAIChatProvider implements LLMProvider {
     const offendingCallIds = context.turns.flatMap(message => {
       if (message.role !== "assistant" || !message.toolCalls?.length) return []
       const replay = this.peekProviderReplay(message)
-      return typeof replay?.reasoning_content === "string" && replay.reasoning_content.trim()
+      return typeof replay?.reasoning_content === "string"
         ? []
         : message.toolCalls.map(call => call.id)
     })
@@ -134,7 +134,7 @@ export class OpenAIChatProvider implements LLMProvider {
   }
 
   peekProviderReplay(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined {
-    const replay = this.replayStore.get(assistantReplayKey(message))
+    const replay = this.replayStore.get(reasoningReplayKey(message))
     if (!replay || !("reasoning_content" in replay || "reasoning_details" in replay)) return undefined
     if (this.dialect.id === "qwen" && replay.reasoning_content !== undefined) {
       return { protocol: "openai-chat", reasoning_content: String(replay.reasoning_content ?? "") }
@@ -145,7 +145,7 @@ export class OpenAIChatProvider implements LLMProvider {
   seedProviderReplay(message: Pick<ModelMessage, "content" | "toolCalls">, replay: ProviderReplay): void {
     if (replay.protocol !== "openai-chat"
       || (replay.reasoning_content === undefined && replay.reasoning_details === undefined)) return
-    this.replayStore.set(assistantReplayKey(message), this.dialect.id === "qwen"
+    this.replayStore.set(reasoningReplayKey(message), this.dialect.id === "qwen"
       ? { protocol: "openai-chat", reasoning_content: replay.reasoning_content }
       : replay)
   }
@@ -154,7 +154,7 @@ export class OpenAIChatProvider implements LLMProvider {
     message: Pick<ModelMessage, "content" | "toolCalls">,
     replay: ProviderReplay | undefined,
   ): void {
-    if (replay) this.replayStore.set(assistantReplayKey(message), replay)
+    if (replay) this.replayStore.set(reasoningReplayKey(message), replay)
   }
 
   private adapterInput(

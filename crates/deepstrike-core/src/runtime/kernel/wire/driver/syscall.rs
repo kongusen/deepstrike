@@ -108,9 +108,13 @@ impl CanonicalOperationDriver {
                 engine.ctx.update_task(core_task_update(&update.update));
                 Ok(SyscallOutcome::default())
             }
-            SyscallRequest::RequestMemoryWrite(write) => {
-                self.plan_memory_write(context, causation, &write.proposal, effect_index)
-            }
+            SyscallRequest::RequestMemoryWrite(write) => self.plan_memory_write(
+                context,
+                causation,
+                &write.proposal,
+                effect_index,
+                planned_effects,
+            ),
             SyscallRequest::RequestMemoryQuery(query) => self.plan_memory_query(
                 context,
                 causation,
@@ -386,6 +390,7 @@ impl CanonicalOperationDriver {
         causation: &SyscallCausation,
         proposal: &super::super::syscall::MemoryWriteProposal,
         effect_index: &mut u32,
+        planned_effects: &[KernelEffect],
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let Some(binding) = context.config.memory_access.clone() else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
@@ -421,6 +426,36 @@ impl CanonicalOperationDriver {
                 error,
             )));
         }
+        // DEC-3 admits one pending PersistMemory. A child request that hits it stays a fault, but
+        // the model's own proposal is answered like a parallel memory query — reused when it is
+        // the same proposal, refused with a retry hint when not — before it can spend quota.
+        let model_facing = matches!(causation, SyscallCausation::ProviderTool(_));
+        if model_facing
+            && let Some(pending) =
+                context
+                    .pending
+                    .iter()
+                    .chain(planned_effects)
+                    .find_map(|effect| match &effect.effect {
+                        EffectKind::PersistMemory(write) => Some(write),
+                        _ => None,
+                    })
+        {
+            if pending.binding == binding
+                && pending.memory.name == proposal.name
+                && pending.memory.kind == proposal.kind
+                && pending.memory.content == proposal.content
+            {
+                return Ok(SyscallOutcome {
+                    ack: Some("This proposal is already pending review; its outcome is added to this conversation before your next turn.".into()),
+                    ..Default::default()
+                });
+            }
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "write_memory",
+                "Another memory proposal is already pending review. Propose this one again after its outcome arrives.",
+            )));
+        }
         let disposition = engine.gate_memory_write_proposal();
         if !disposition.is_allowed() {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
@@ -436,6 +471,7 @@ impl CanonicalOperationDriver {
             name: proposal.name.clone(),
             kind: proposal.kind,
             size_bytes: proposal.content.len() as u32,
+            model_facing,
         };
         let effect = EffectKind::PersistMemory(PersistMemoryEffect {
             binding,
@@ -485,7 +521,21 @@ impl CanonicalOperationDriver {
         // The retrieval width is the operation's policy, clamped — the host does not re-decide it
         // and a model cannot widen it by asking for more.
         let ceiling = context.config.memory_policy.retrieval_top_k;
-        let requested_k = proposal.limit.unwrap_or(ceiling).clamp(1, ceiling);
+        let record_id = match &proposal.record_id {
+            Some(id) => Some(MemoryRecordRef::new(id.clone()).map_err(|error| {
+                SyscallRefusal::Rejected(SyscallRejection::new(
+                    "query_memory",
+                    format!("malformed record_id: {}", error.message),
+                ))
+            })?),
+            None => None,
+        };
+        // A point fetch answers with one record at most, whatever width was asked for.
+        let requested_k = if record_id.is_some() {
+            1
+        } else {
+            proposal.limit.unwrap_or(ceiling).clamp(1, ceiling)
+        };
         if let Some(pending) = context
             .pending
             .iter()
@@ -498,6 +548,7 @@ impl CanonicalOperationDriver {
             if pending.binding == binding
                 && pending.query.text == proposal.text
                 && pending.query.kinds == proposal.kinds
+                && pending.query.record_id == record_id
                 && pending.requested_k == requested_k
             {
                 return Ok(SyscallOutcome {
@@ -514,12 +565,15 @@ impl CanonicalOperationDriver {
             binding_id: binding.binding_id.clone(),
             text: proposal.text.clone(),
             requested_k,
+            record_id: record_id.as_ref().map(|id| id.as_str().to_string()),
+            recall: false,
         };
         let effect = EffectKind::QueryMemory(QueryMemoryEffect {
             binding,
             query: CanonicalMemoryQuery {
                 text: proposal.text.clone(),
                 kinds: proposal.kinds.clone(),
+                record_id,
                 accepted_at_ms: context.input.observed_at_ms,
                 causation: causation.clone(),
             },
@@ -558,6 +612,21 @@ impl CanonicalOperationDriver {
         effect_index: &mut u32,
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        engine.ctx.note_read_back(handle_id.as_str());
+        // Plan task 3.1 · a dependency output is held by this kernel: the read answers with the
+        // body itself, with no host effect.
+        if let Some(agent_id) = handle_id.as_str().strip_prefix("dep:") {
+            let Some(body) = engine.ctx.dependency_bodies.get(agent_id) else {
+                return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                    READ_RESULT_TOOL_NAME,
+                    format!("this run has no dependency output from {agent_id}"),
+                )));
+            };
+            return Ok(SyscallOutcome {
+                ack: Some(format!("[PAYLOAD handle_id={handle_id}]\n{body}")),
+                ..Default::default()
+            });
+        }
         if let Some(handle) = engine.ctx.handles.all().iter().find(|handle| {
             handle.source.as_deref() == Some(handle_id.as_str())
                 || handle.id.to_string() == handle_id.as_str()

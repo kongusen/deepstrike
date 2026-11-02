@@ -118,17 +118,8 @@ class LoopResult:
   turns_used: int
   total_tokens_used: int
   final_message: Any | None = None
-  # loop-control loop stop signal: a loop iteration sets False to end the loop before `max_iters`. None
-  # (every non-loop result) ⇒ no opinion → run to the cap. Sent only when set.
-  loop_continue: bool | None = None
-  # A#2 classify routing: a classifier node reports the chosen branch label; the kernel runs that
-  # branch and prunes the rest. Sent only when set.
-  classify_branch: str | None = None
-  # A#2 tournament verdict: a judge reports the winning entrant's agent id. Sent only when set.
-  tournament_winner: str | None = None
   # ③ loop-agent pacing: the kernel-adjudicated after-round decision, surfaced by the orchestrator
-  # from the child's done event ({"action", "delay_ms"?, "reason", "coerced_from"?}). For a loop-node
-  # iteration this is the only continuation vocabulary (stop → loop_continue=False).
+  # from the child's done event ({"action", "delay_ms"?, "reason", "coerced_from"?}).
   # SDK-internal — stripped by ``sub_agent_result_to_kernel``.
   pace_decision: Any | None = None
   # H4: quality judgment is observable independently from kernel run health.
@@ -274,14 +265,6 @@ def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
     "turns_used": result.result.turns_used,
     "total_tokens_used": result.result.total_tokens_used,
   }
-  # A#2: control-flow signals — additive, omitted on the wire when unset so a plain spawn's result is
-  # byte-identical to before. The kernel reads each only for the matching node kind.
-  if getattr(result.result, "loop_continue", None) is not None:
-    res["loop_continue"] = result.result.loop_continue
-  if getattr(result.result, "classify_branch", None) is not None:
-    res["classify_branch"] = result.result.classify_branch
-  if getattr(result.result, "tournament_winner", None) is not None:
-    res["tournament_winner"] = result.result.tournament_winner
   if result.result.attempt is not None:
     attempt = result.result.attempt
     verdict = attempt.get("verdict")
@@ -329,18 +312,6 @@ class WorkflowNodeSpec:
   trust: NodeTrust = "trusted"
   # G3: JSON Schema the node's output must conform to (validated + retried SDK-side).
   output_schema: dict[str, Any] | None = None
-  # G2: make this a deterministic reduce node — runs no LLM agent; the runner routes it to the
-  # registered reducer of this name over its ``depends_on`` nodes' outputs.
-  reducer: str | None = None
-  # loop-control: make this a *loop* node — re-run its agent up to ``loop["max_iters"]`` times. An iteration
-  # may end the loop early by reporting ``loop_continue=False`` (the runner solicits this).
-  loop: dict[str, Any] | None = None
-  # A#2: make this a *classify* node — ``classify={"branches": [{"label", "nodes": [idx]}]}``. Its
-  # agent picks exactly one branch label; that branch's nodes run and the others are pruned.
-  classify: dict[str, Any] | None = None
-  # A#2: make this a *tournament controller* — ``tournament={"entrants": [task, ...]}``. Generate each
-  # entrant in parallel, then pairwise-judge to one winner (this node's goal is the criterion). ≥2.
-  tournament: dict[str, Any] | None = None
   # M4/G5: cap this node's child run at ``token_budget`` cumulative tokens (the per-node "use N tokens").
   token_budget: int | None = None
   # O3: cap this node's child run at ``max_turns`` provider turns (falls back to the parent's).
@@ -408,19 +379,11 @@ class WorkflowSpawnInfo:
   trust: str | None = None
   # G3: JSON Schema the node's output must conform to (carried verbatim from the spec).
   output_schema: dict[str, Any] | None = None
-  # G2: for a reduce node, the registered reducer name.
-  reducer: str | None = None
-  # The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data). A reduce
-  # node's registered function consumes them; every other node gets its deps' outputs in context.
+  # The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data): the node
+  # gets its deps' outputs in context.
   input_agent_ids: list[str] = field(default_factory=list)
-  # A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose outputs this
-  # judge compares (``{"left", "right"}``). The runner reports the winner as ``tournament_winner``.
-  judge_match: dict[str, str] | None = None
-  # loop-control: present only for a *loop* iteration spawn — the loop's ``max_iters``. Marks the spawn as a
-  # loop iteration so the runner solicits + reports a ``loop_continue`` stop signal.
-  loop_max_iters: int | None = None
-  # A#2: present only for a *classify* spawn — the branch labels the classifier must choose among.
-  classify_labels: list[str] = field(default_factory=list)
+  # The kernel-composed dependency section that follows the node's goal.
+  dependency_brief: str = ""
   # M4/G5: the node's per-node cumulative token cap, if set — the runner caps the child run here.
   token_budget: int | None = None
   # O3: per-node turn cap → the child run's ``max_turns``.
@@ -476,28 +439,6 @@ def _workflow_task_to_kernel(t: str | dict[str, Any]) -> dict[str, Any]:
   return kernel_task
 
 
-def _node_kind_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any] | None:
-  """Lower a node's control-flow kind to the kernel's serde-tagged NodeKind JSON, or None for a plain
-  spawn. ``reducer`` / ``loop`` / ``classify`` / ``tournament`` are mutually exclusive."""
-  declared = sum(
-    1 for v in (n.reducer, n.loop, n.classify, n.tournament) if v is not None
-  )
-  if declared > 1:
-    raise ValueError("a workflow node may declare at most one of: reducer, loop, classify, tournament")
-  if n.reducer is not None:
-    return {"type": "reduce", "reducer": n.reducer}
-  if n.loop is not None:
-    return {"type": "loop", "max_iters": n.loop["max_iters"]}
-  if n.classify is not None:
-    return {
-      "type": "classify",
-      "branches": [{"label": b["label"], "nodes": list(b["nodes"])} for b in n.classify["branches"]],
-    }
-  if n.tournament is not None:
-    return {"type": "tournament", "entrants": [_workflow_task_to_kernel(e) for e in n.tournament["entrants"]]}
-  return None
-
-
 def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
   """Map one host ``WorkflowNodeSpec`` to its snake_case canonical JSON. Shared by the workflow root and
   ``submit_workflow_nodes`` (R3-1) so the two encodings never drift."""
@@ -517,10 +458,6 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
     node["trust"] = n.trust
   if getattr(n, "output_schema", None):
     node["output_schema"] = n.output_schema
-  # A#2/G2: loop / classify / tournament / reduce lower to a serde-tagged NodeKind; spawn omits it.
-  kind = _node_kind_to_kernel(n)
-  if kind is not None:
-    node["kind"] = kind
   # M4/G5: per-node token cap (additive; omitted when unset).
   if getattr(n, "token_budget", None) is not None:
     node["token_budget"] = n.token_budget
@@ -618,18 +555,10 @@ start_workflow_tool: dict[str, Any] = {
 
 def workflow_node_to_spec(node: WorkflowSpawnInfo, parent_session_id: str) -> AgentRunSpec:
   """Build a sub-agent run spec for a kernel-generated workflow node."""
-  import re
-
-  # W-N6 transcript-as-carry: a loop node's iterations share ONE stable session id (the ``-i{k}``
-  # suffix names the spawn, not the session), so iteration k replays the transcript of 0..k-1 —
-  # "do the next increment" actually sees the previous increments. The agent_id keeps the
-  # per-iteration suffix (kernel completion routing).
-  is_loop_iteration = getattr(node, "loop_max_iters", None) is not None
-  session_node_id = re.sub(r"-i\d+$", "", node.agent_id) if is_loop_iteration else node.agent_id
   return AgentRunSpec(
     identity=AgentIdentity(
       agent_id=node.agent_id,
-      session_id=f"{parent_session_id}-{session_node_id}",
+      session_id=f"{parent_session_id}-{node.agent_id}",
       is_sub_agent=True,
       parent_session_id=parent_session_id,
     ),
@@ -643,11 +572,6 @@ def workflow_node_to_spec(node: WorkflowSpawnInfo, parent_session_id: str) -> Ag
     # O3: carry the node's turn / wall-clock caps (the orchestrator already honors these).
     max_turns=getattr(node, "max_turns", None),
     max_wall_ms=getattr(node, "max_wall_ms", None),
-    # DW-3 one continuation vocabulary: a loop ITERATION runs with the pacing trap armed, so the
-    # agent signals continue/stop through the kernel-adjudicated `pace` meta-tool instead of a
-    # text-sniffed JSON blob. One iteration = one round; the DAG (not max_rounds) caps iterations,
-    # and default stop means "ended without pacing" = done — the CC silence-is-completion contract.
-    loop_round={"default_action": "stop"} if is_loop_iteration else None,
   )
 
 
@@ -681,7 +605,7 @@ def fanout_synthesize(workers: list, synthesize) -> WorkflowSpec:
     for w in workers
   ]
   nodes.append(WorkflowNodeSpec(
-    task=_as_task(synthesize), role="plan", isolation="shared", context_inheritance="full",
+    task=_as_task(synthesize), role="plan", isolation="shared", context_inheritance="system_only",
     depends_on=list(range(len(workers))),
   ))
   return WorkflowSpec(nodes=nodes)
@@ -690,7 +614,7 @@ def fanout_synthesize(workers: list, synthesize) -> WorkflowSpec:
 def generate_and_filter(generators: list, filter) -> WorkflowSpec:  # noqa: A002
   """N parallel Implement generators feeding a single Verify filter/dedupe step (barrier)."""
   nodes = [
-    WorkflowNodeSpec(task=_as_task(g), role="implement", isolation="worktree", context_inheritance="full")
+    WorkflowNodeSpec(task=_as_task(g), role="implement", isolation="worktree", context_inheritance="system_only")
     for g in generators
   ]
   nodes.append(WorkflowNodeSpec(
@@ -717,18 +641,15 @@ def verify_rules(rules: list, skeptic=None) -> WorkflowSpec:
   return WorkflowSpec(nodes=nodes)
 
 
-def gen_eval(worker, evaluate, max_iters: int = 3, extract_skill_on_pass: bool = True) -> WorkflowSpec:
-  """Generate→evaluate quality gate (the EvalPipeline successor, #6): a ``loop`` worker node (re-run
-  up to ``max_iters``, stopping early on a ``loop_continue=False`` self-signal) + a bias-resistant
+def gen_eval(worker, evaluate, extract_skill_on_pass: bool = True) -> WorkflowSpec:
+  """Generate→evaluate quality gate (the EvalPipeline successor, #6): a worker node + a bias-resistant
   ``verify`` eval node gated on it, carrying the kernel's verdict ``output_schema``. Mirrors the
-  kernel ``gen_eval`` template. For the iterative retry-with-feedback variant, drive it with
-  ``AttemptLoop``."""
+  kernel ``gen_eval`` template. For retry-with-feedback, drive it with ``AttemptLoop``."""
   from deepstrike._kernel import verdict_output_schema
   schema = json.loads(verdict_output_schema(extract_skill_on_pass))
   return WorkflowSpec(nodes=[
     WorkflowNodeSpec(
-      task=_as_task(worker), role="implement", isolation="worktree", context_inheritance="full",
-      loop={"max_iters": max(1, max_iters)},
+      task=_as_task(worker), role="implement", isolation="worktree", context_inheritance="system_only",
     ),
     WorkflowNodeSpec(
       task=_as_task(evaluate), role="verify", isolation="read_only", context_inheritance="none",

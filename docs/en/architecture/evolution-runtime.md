@@ -1,5 +1,7 @@
 # 0.2.70 Evolution Runtime
 
+> **Historical design (removed 2026-11-01).** The context evidence layer described here (`ContextCandidate`, `ContextExecutionInput`, `context_prepared`, shared evidence, the Evolution Runtime and artifact-set binding) has been removed from the kernel and all four SDKs. Crash recovery relies on the journal and checkpoints alone. See the [context-lifecycle-first plan](../../plans/context-lifecycle-first.md) for the rationale.
+
 0.2.70 advances the Framework Verifiable Runtime into an Evolution Runtime. The framework can prove which artifact set produced a new operation, why a candidate was proposed, which evaluation evidence was used, and why a promotion decision allowed activation.
 
 ```text

@@ -1,0 +1,734 @@
+{
+  "id": "kernel-observation-projection",
+  "domain": "kernel_observation_projection",
+  "input": {
+    "cases": [
+      {
+        "name": "compressed",
+        "turn": 4,
+        "options": {
+          "next_archive_start": 3,
+          "latest_seq": 7,
+          "preserved_refs": [
+            "ref-1"
+          ]
+        },
+        "observation": {
+          "kind": "compressed",
+          "turn": 4,
+          "action": "auto_compact",
+          "rho_after": 0.4,
+          "summary": "abcdefghij",
+          "archived_count": 3
+        }
+      },
+      {
+        "name": "compressed_no_new_entries",
+        "turn": 4,
+        "options": {
+          "next_archive_start": 8,
+          "latest_seq": 7
+        },
+        "observation": {
+          "kind": "compressed",
+          "turn": 4,
+          "action": "snip_compact",
+          "rho_after": 0.4,
+          "summary": null,
+          "archived_count": 0
+        }
+      },
+      {
+        "name": "compressed_unknown_action",
+        "turn": 4,
+        "options": {
+          "next_archive_start": 0,
+          "latest_seq": 2
+        },
+        "observation": {
+          "kind": "compressed",
+          "turn": 4,
+          "action": "none",
+          "rho_after": 0.4,
+          "summary": null,
+          "archived_count": 1
+        }
+      },
+      {
+        "name": "renewed_uses_call_turn",
+        "turn": 6,
+        "observation": {
+          "kind": "renewed",
+          "sprint": 2
+        }
+      },
+      {
+        "name": "lifecycle_report",
+        "turn": 7,
+        "observation": {
+          "kind": "lifecycle_report",
+          "turn": 7,
+          "knowledge_entries": 4,
+          "knowledge_referenced": 3,
+          "regret": 1,
+          "waste_tokens": 120,
+          "cache_loss_tokens": 0,
+          "recalled": 2,
+          "recall_expanded": 1,
+          "items": [
+            {
+              "key": "memory:rec-1",
+              "origin": "memory_recall",
+              "tokens": 18,
+              "value": { "injected_turn": 1, "ref_count": 1, "expanded": true },
+              "end": "expired"
+            }
+          ],
+          "history": [
+            { "origin": "tool_result", "items": 3, "tokens": 900, "resident_items": 1, "resident_tokens": 300, "read_back": 1 }
+          ]
+        }
+      },
+      {
+        "name": "rollbacked_turn_zero",
+        "turn": 5,
+        "observation": {
+          "kind": "rollbacked",
+          "turn": 0,
+          "checkpoint_history_len": 2,
+          "reason": {
+            "kind": "timeout"
+          }
+        }
+      },
+      {
+        "name": "capability_changed",
+        "turn": 1,
+        "observation": {
+          "kind": "capability_changed",
+          "turn": 1,
+          "added": [
+            "skill:debugging"
+          ],
+          "removed": [],
+          "change_kind": "mount",
+          "capability_id": "skill:debugging",
+          "mounted_by": "kernel"
+        }
+      },
+      {
+        "name": "milestone_advanced",
+        "turn": 2,
+        "observation": {
+          "kind": "milestone_advanced",
+          "turn": 2,
+          "phase_id": "p1",
+          "capabilities_unlocked": [
+            "write"
+          ]
+        }
+      },
+      {
+        "name": "milestone_blocked",
+        "turn": 2,
+        "observation": {
+          "kind": "milestone_blocked",
+          "turn": 2,
+          "phase_id": "p1",
+          "reason": "criteria unmet"
+        }
+      },
+      {
+        "name": "checkpoint_taken",
+        "turn": 1,
+        "observation": {
+          "kind": "checkpoint_taken",
+          "turn": 1,
+          "history_len": 3
+        }
+      },
+      {
+        "name": "entropy_sample",
+        "turn": 3,
+        "observation": {
+          "kind": "entropy_sample",
+          "turn": 3,
+          "score": 0.25,
+          "rho": 0.5,
+          "repeat_pressure": 0.125,
+          "failure_rate": 0,
+          "rollbacks_in_window": 0,
+          "window_turns": 4
+        }
+      },
+      {
+        "name": "entropy_alert",
+        "turn": 3,
+        "observation": {
+          "kind": "entropy_alert",
+          "turn": 3,
+          "score": 0.75,
+          "threshold": 0.5
+        }
+      },
+      {
+        "name": "agent_process_changed",
+        "turn": 1,
+        "observation": {
+          "kind": "agent_process_changed",
+          "turn": 1,
+          "agent_id": "wf-node0",
+          "parent_task_id": "task-1",
+          "role": "worker",
+          "isolation": "fresh",
+          "context_inheritance": "none",
+          "state": "done",
+          "permitted_capability_ids": [
+            "read_file"
+          ],
+          "result_termination": "completed"
+        }
+      },
+      {
+        "name": "tool_gated",
+        "turn": 1,
+        "observation": {
+          "kind": "tool_gated",
+          "turn": 1,
+          "call_id": "call-1",
+          "tool": "rm",
+          "reason": "approval required"
+        }
+      },
+      {
+        "name": "signal_delivery_disposed",
+        "turn": 1,
+        "observation": {
+          "kind": "signal_delivery_disposed",
+          "turn": 1,
+          "operation_id": "op-1",
+          "delivery_id": "d-1",
+          "attempt": 1,
+          "signal_id": "sig-1",
+          "disposition": "delivered",
+          "queue_depth": 0
+        }
+      },
+      {
+        "name": "budget_exceeded",
+        "turn": 4,
+        "observation": {
+          "kind": "budget_exceeded",
+          "turn": 4,
+          "operation_id": "op-1",
+          "reservation_id": "res-1",
+          "budget": "max_turns"
+        }
+      },
+      {
+        "name": "budget_exceeded_without_reservation",
+        "turn": 4,
+        "observation": {
+          "kind": "budget_exceeded",
+          "turn": 4,
+          "operation_id": "op-1",
+          "budget": "tokens"
+        }
+      },
+      {
+        "name": "budget_usage_reported",
+        "turn": 4,
+        "observation": {
+          "kind": "budget_usage_reported",
+          "turn": 4,
+          "operation_id": "op-1",
+          "reservation_id": "res-1",
+          "tokens": 100,
+          "subagents": 1,
+          "rounds": 2
+        }
+      },
+      {
+        "name": "operation_cancelled",
+        "turn": 4,
+        "observation": {
+          "kind": "operation_cancelled",
+          "turn": 4,
+          "operation_id": "op-1",
+          "reason": "deadline",
+          "pending_call_ids": [
+            "call-1"
+          ]
+        }
+      },
+      {
+        "name": "suspended",
+        "turn": 1,
+        "observation": {
+          "kind": "suspended",
+          "turn": 1,
+          "reason": "approval",
+          "pending_calls": [
+            "call-1"
+          ]
+        }
+      },
+      {
+        "name": "resumed",
+        "turn": 1,
+        "observation": {
+          "kind": "resumed",
+          "turn": 1,
+          "approved": [
+            "call-1"
+          ],
+          "denied": []
+        }
+      },
+      {
+        "name": "page_in_requested_is_dropped",
+        "turn": 1,
+        "observation": {
+          "kind": "page_in_requested",
+          "turn": 1,
+          "query": "x"
+        }
+      },
+      {
+        "name": "page_out_archived",
+        "turn": 2,
+        "observation": {
+          "kind": "page_out_archived",
+          "turn": 2,
+          "action": "micro_compact",
+          "summary": "earlier",
+          "tier": "warm",
+          "message_count": 4,
+          "archive_ref": "archive-1"
+        }
+      },
+      {
+        "name": "memory_written",
+        "turn": 1,
+        "observation": {
+          "kind": "memory_written",
+          "turn": 1,
+          "record_id": "t1:ns:project:note",
+          "scope": {
+            "tenant_id": "t1",
+            "namespace": "ns"
+          },
+          "memory_kind": "project",
+          "name": "note",
+          "size_bytes": 13
+        }
+      },
+      {
+        "name": "memory_candidate_pending",
+        "turn": 1,
+        "observation": {
+          "kind": "memory_candidate_pending",
+          "turn": 1,
+          "candidate_id": "mc_1",
+          "name": "note"
+        }
+      },
+      {
+        "name": "memory_queried",
+        "turn": 1,
+        "observation": {
+          "kind": "memory_queried",
+          "turn": 1,
+          "scope": {
+            "tenant_id": "t1",
+            "namespace": "ns"
+          },
+          "query": "note",
+          "requested_k": 3,
+          "requires_async_response": true
+        }
+      },
+      {
+        "name": "memory_validation_failed",
+        "turn": 1,
+        "observation": {
+          "kind": "memory_validation_failed",
+          "turn": 1,
+          "record_id": "r1",
+          "error": "too large"
+        }
+      },
+      {
+        "name": "memory_write_failed",
+        "turn": 1,
+        "observation": {
+          "kind": "memory_write_failed",
+          "turn": 1,
+          "record_id": "r1",
+          "error": "store offline"
+        }
+      },
+      {
+        "name": "memory_query_failed",
+        "turn": 1,
+        "observation": {
+          "kind": "memory_query_failed",
+          "turn": 1,
+          "scope": {
+            "tenant_id": "t1",
+            "namespace": "ns"
+          },
+          "query": "note",
+          "error": "store offline"
+        }
+      },
+      {
+        "name": "workflow_batch_spawned",
+        "turn": 1,
+        "observation": {
+          "kind": "workflow_batch_spawned",
+          "turn": 1,
+          "nodes": [
+            {
+              "agent_id": "wf-node0",
+              "goal": "a"
+            },
+            {
+              "agent_id": "wf-node1",
+              "goal": "b"
+            }
+          ]
+        }
+      },
+      {
+        "name": "workflow_completed",
+        "turn": 3,
+        "observation": {
+          "kind": "workflow_completed",
+          "turn": 3,
+          "node_outcomes": [
+            {
+              "node_id": "wf-node0",
+              "status": "completed",
+              "termination": "completed"
+            }
+          ]
+        }
+      },
+      {
+        "name": "unmapped_observation_is_preserved",
+        "turn": 2,
+        "observation": {
+          "kind": "skill_admitted",
+          "turn": 2,
+          "name": "debugging",
+          "tokens": 120
+        }
+      },
+      {
+        "name": "workflow_spawn_failed_is_preserved",
+        "turn": 2,
+        "observation": {
+          "kind": "workflow_spawn_failed",
+          "turn": 2,
+          "error": "no executor"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "canonical": {
+      "events": {
+        "compressed": {
+          "kind": "compressed",
+          "turn": 4,
+          "archived_seq_range": [
+            3,
+            7
+          ],
+          "action": "auto_compact",
+          "summary": "abcdefghij",
+          "summary_tokens": 3,
+          "preserved_refs": [
+            "ref-1"
+          ]
+        },
+        "compressed_no_new_entries": null,
+        "compressed_unknown_action": {
+          "kind": "compressed",
+          "turn": 4,
+          "archived_seq_range": [
+            0,
+            2
+          ],
+          "preserved_refs": []
+        },
+        "renewed_uses_call_turn": {
+          "kind": "context_renewed",
+          "turn": 6,
+          "sprint": 2,
+          "handoff_ref": ""
+        },
+        "lifecycle_report": {
+          "kind": "context_lifecycle_reported",
+          "turn": 7,
+          "knowledge_entries": 4,
+          "knowledge_referenced": 3,
+          "regret": 1,
+          "waste_tokens": 120,
+          "cache_loss_tokens": 0,
+          "recalled": 2,
+          "recall_expanded": 1,
+          "items": [
+            {
+              "key": "memory:rec-1",
+              "origin": "memory_recall",
+              "tokens": 18,
+              "value": { "injected_turn": 1, "ref_count": 1, "expanded": true },
+              "end": "expired"
+            }
+          ],
+          "history": [
+            { "origin": "tool_result", "items": 3, "tokens": 900, "resident_items": 1, "resident_tokens": 300, "read_back": 1 }
+          ]
+        },
+        "rollbacked_turn_zero": {
+          "kind": "rollbacked",
+          "turn": 0,
+          "checkpoint_history_len": 2,
+          "reason": {
+            "kind": "timeout"
+          }
+        },
+        "capability_changed": {
+          "kind": "capability_changed",
+          "turn": 1,
+          "added": [
+            "skill:debugging"
+          ],
+          "removed": [],
+          "change_kind": "mount",
+          "capability_id": "skill:debugging",
+          "mounted_by": "kernel"
+        },
+        "milestone_advanced": {
+          "kind": "milestone_advanced",
+          "turn": 2,
+          "phase_id": "p1",
+          "capabilities_unlocked": [
+            "write"
+          ]
+        },
+        "milestone_blocked": {
+          "kind": "milestone_blocked",
+          "turn": 2,
+          "phase_id": "p1",
+          "reason": "criteria unmet"
+        },
+        "checkpoint_taken": {
+          "kind": "checkpoint_taken",
+          "turn": 1,
+          "history_len": 3
+        },
+        "entropy_sample": {
+          "kind": "entropy_sample",
+          "turn": 3,
+          "score": 0.25,
+          "rho": 0.5,
+          "repeat_pressure": 0.125,
+          "failure_rate": 0,
+          "rollbacks_in_window": 0,
+          "window_turns": 4
+        },
+        "entropy_alert": {
+          "kind": "entropy_alert",
+          "turn": 3,
+          "score": 0.75,
+          "threshold": 0.5
+        },
+        "agent_process_changed": {
+          "kind": "agent_process_changed",
+          "turn": 1,
+          "agent_id": "wf-node0",
+          "parent_task_id": "task-1",
+          "role": "worker",
+          "isolation": "fresh",
+          "context_inheritance": "none",
+          "state": "done",
+          "permitted_capability_ids": [
+            "read_file"
+          ],
+          "result_termination": "completed"
+        },
+        "tool_gated": {
+          "kind": "tool_gated",
+          "turn": 1,
+          "call_id": "call-1",
+          "tool": "rm",
+          "reason": "approval required"
+        },
+        "signal_delivery_disposed": {
+          "kind": "signal_delivery_disposed",
+          "turn": 1,
+          "operation_id": "op-1",
+          "delivery_id": "d-1",
+          "attempt": 1,
+          "signal_id": "sig-1",
+          "disposition": "delivered",
+          "queue_depth": 0
+        },
+        "budget_exceeded": {
+          "kind": "budget_exceeded",
+          "turn": 4,
+          "budget": "max_turns",
+          "operation_id": "op-1",
+          "reservation_id": "res-1"
+        },
+        "budget_exceeded_without_reservation": {
+          "kind": "budget_exceeded",
+          "turn": 4,
+          "budget": "tokens",
+          "operation_id": "op-1"
+        },
+        "budget_usage_reported": {
+          "kind": "budget_usage_reported",
+          "turn": 4,
+          "operation_id": "op-1",
+          "reservation_id": "res-1",
+          "tokens": 100,
+          "subagents": 1,
+          "rounds": 2
+        },
+        "operation_cancelled": {
+          "kind": "operation_cancelled",
+          "turn": 4,
+          "operation_id": "op-1",
+          "reason": "deadline",
+          "pending_call_ids": [
+            "call-1"
+          ]
+        },
+        "suspended": {
+          "kind": "suspended",
+          "turn": 1,
+          "reason": "approval",
+          "pending_calls": [
+            "call-1"
+          ]
+        },
+        "resumed": {
+          "kind": "resumed",
+          "turn": 1,
+          "approved": [
+            "call-1"
+          ],
+          "denied": []
+        },
+        "page_in_requested_is_dropped": null,
+        "page_out_archived": {
+          "kind": "page_out",
+          "turn": 2,
+          "action": "micro_compact",
+          "summary": "earlier",
+          "tier_hint": "warm",
+          "message_count": 4,
+          "archive_ref": "archive-1"
+        },
+        "memory_written": {
+          "kind": "memory_written",
+          "turn": 1,
+          "record_id": "t1:ns:project:note",
+          "scope": {
+            "tenant_id": "t1",
+            "namespace": "ns"
+          },
+          "memory_kind": "project",
+          "name": "note",
+          "size_bytes": 13
+        },
+        "memory_candidate_pending": {
+          "kind": "memory_candidate_pending",
+          "turn": 1,
+          "candidate_id": "mc_1",
+          "source": "child_request",
+          "name": "note"
+        },
+        "memory_queried": {
+          "kind": "memory_queried",
+          "turn": 1,
+          "scope": {
+            "tenant_id": "t1",
+            "namespace": "ns"
+          },
+          "query": "note",
+          "requested_k": 3,
+          "requires_async_response": true
+        },
+        "memory_validation_failed": {
+          "kind": "memory_validation_failed",
+          "turn": 1,
+          "record_id": "r1",
+          "error": "too large"
+        },
+        "memory_write_failed": {
+          "kind": "memory_write_failed",
+          "turn": 1,
+          "record_id": "r1",
+          "error": "store offline"
+        },
+        "memory_query_failed": {
+          "kind": "memory_query_failed",
+          "turn": 1,
+          "scope": {
+            "tenant_id": "t1",
+            "namespace": "ns"
+          },
+          "query": "note",
+          "error": "store offline"
+        },
+        "workflow_batch_spawned": {
+          "kind": "workflow_batch_spawned",
+          "turn": 1,
+          "node_count": 2,
+          "node_ids": [
+            "wf-node0",
+            "wf-node1"
+          ]
+        },
+        "workflow_completed": {
+          "kind": "workflow_completed",
+          "turn": 3,
+          "node_outcomes": [
+            {
+              "node_id": "wf-node0",
+              "status": "completed",
+              "termination": "completed"
+            }
+          ],
+          "total_nodes": 1
+        },
+        "unmapped_observation_is_preserved": {
+          "kind": "kernel_observation",
+          "turn": 2,
+          "observation_kind": "skill_admitted",
+          "raw": {
+            "kind": "skill_admitted",
+            "turn": 2,
+            "name": "debugging",
+            "tokens": 120
+          }
+        },
+        "workflow_spawn_failed_is_preserved": {
+          "kind": "kernel_observation",
+          "turn": 2,
+          "observation_kind": "workflow_spawn_failed",
+          "raw": {
+            "kind": "workflow_spawn_failed",
+            "turn": 2,
+            "error": "no executor"
+          }
+        }
+      }
+    }
+  }
+}

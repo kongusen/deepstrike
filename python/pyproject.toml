@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "deepstrike"
-version = "0.2.77"
+version = "0.2.78"
 requires-python = ">=3.10"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -16,6 +16,7 @@ dependencies = [
     "openai>=2.6",
     "google-genai>=1.0",
     "dashscope>=1.20",
+    "cryptography>=42.0",
 ]
 
 [tool.maturin]

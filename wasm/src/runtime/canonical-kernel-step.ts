@@ -13,6 +13,7 @@ import {
   type KernelJournal,
 } from "./kernel-journal.js"
 import {
+  archivePresentationFromObservations,
   encodeCanonicalContentParts,
   kernelMessageToSdk,
   renderedContextToSdk,
@@ -58,6 +59,17 @@ export interface CanonicalTransition {
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {}
+}
+
+// Keep structured candidate errors compact and deterministic across SDKs.
+function memoryCandidateErrorJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(memoryCandidateErrorJson).join(",")}]`
+  if (value !== null && typeof value === "object") {
+    const object = value as Record<string, unknown>
+    return `{${Object.keys(object).sort().map(key =>
+      `${JSON.stringify(key)}:${memoryCandidateErrorJson(object[key])}`).join(",")}}`
+  }
+  return JSON.stringify(value)
 }
 
 function totalUsageTokens(terminal: Record<string, unknown>): number {
@@ -123,7 +135,7 @@ function canonicalDoneFromTerminal(terminal: Record<string, unknown>): KernelRun
 }
 
 /** Adapt the core-owned KernelProjection JSON into the WASM action surface. */
-export function canonicalActionFromProjectionJson(raw: string): KernelRunnerAction | null {
+export function canonicalActionFromProjectionJson(raw: string, observations: readonly KernelObservation[] = []): KernelRunnerAction | null {
   const projection = asObject(JSON.parse(raw))
   const state = String(projection.state ?? "idle")
   if (state === "idle") return null
@@ -161,7 +173,6 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
       kind: "call_provider",
       effectId,
       context: renderedContextToSdk(context),
-      contextEffect: payload,
       tools: (Array.isArray(payload.tools) ? payload.tools : []).map(raw => {
         const tool = asObject(raw)
         return {
@@ -250,6 +261,7 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
     }
     return {
       kind: "archive_page_out",
+      ...archivePresentationFromObservations(observations),
       effectId,
       handleId: String(payload.handle_id ?? ""),
       payload: {
@@ -573,7 +585,6 @@ export interface CanonicalRunnerRuntimeOptions {
   maxTurns?: number
   maxTotalTokens?: number
   maxWallMs?: number
-  artifactSetDigest?: string
   memoryBindingId?: string
   persistPayload?: (callId: string, content: string, previewBytes: number) => Promise<{
     payloadRef: string
@@ -886,6 +897,7 @@ export class CanonicalRunnerRuntime {
     messages: Array<Record<string, unknown>>
     knowledge: Array<Record<string, unknown>>
     capabilities: Array<Record<string, unknown>>
+    dependencies?: Array<{ agent_id: string; content: string }>
   } = { messages: [], knowledge: [], capabilities: [] }
   private configured = false
   private started = false
@@ -915,9 +927,6 @@ export class CanonicalRunnerRuntime {
     this.host = new CanonicalKernelHost(kernel, journal, operationId)
     this.memoryBindingId = options.memoryBindingId ?? "wasm-memory"
     this.config = {
-      ...(options.artifactSetDigest
-        ? { artifact_set_binding: { artifact_set_digest: options.artifactSetDigest } }
-        : {}),
       execution_policy: {
         max_context_tokens: options.maxContextTokens,
         ...(options.maxTurns !== undefined ? { max_turns: options.maxTurns } : {}),
@@ -1302,6 +1311,51 @@ export class CanonicalRunnerRuntime {
                 },
               })
         break
+      case "memory_candidate_result":
+        // M2 · the host's answer for a write it holds as a candidate. `pending` is terminal for the
+        // effect and carries no record: nothing is persisted, and the kernel must not present it as
+        // remembered. `accepted` names the record the store now holds, as `memory_persist_result`
+        // does. Malformed receipts and rejections fail non-retryably; a non-null error takes
+        // precedence and fails retryably (the same candidate id is redelivered).
+        if (event.error !== undefined && event.error !== null) {
+          input = this.failedEffect(event, "storage_unavailable", typeof event.error === "string" ? event.error : memoryCandidateErrorJson(event.error), true)
+          break
+        }
+        if (event.status === "pending") {
+          input = typeof event.candidate_id !== "string" || !event.candidate_id
+            || typeof event.receipt_id !== "string" || !event.receipt_id
+            ? this.failedEffect(event, "storage_unavailable", "memory candidate receipt names no candidate_id/receipt_id", false)
+            : this.succeededEffect(event, {
+                kind: "memory_persisted",
+                candidate: {
+                  binding_id: this.memoryBindingId,
+                  candidate_id: event.candidate_id,
+                  receipt_id: event.receipt_id,
+                },
+              })
+          break
+        }
+        if (event.status === "accepted") {
+          input = typeof event.record_ref !== "string" || !event.record_ref
+            || typeof event.digest !== "string" || !event.digest
+            ? this.failedEffect(event, "storage_unavailable", "memory candidate accepted without record_ref/digest", false)
+            : this.succeededEffect(event, {
+                kind: "memory_persisted",
+                receipt: {
+                  binding_id: this.memoryBindingId,
+                  record_ref: event.record_ref,
+                  digest: event.digest,
+                },
+              })
+          break
+        }
+        input = this.failedEffect(
+          event,
+          "storage_unavailable",
+          `memory candidate rejected: ${typeof event.reason_code === "string" && event.reason_code ? event.reason_code : "unspecified"}`,
+          false,
+        )
+        break
       case "memory_query_result":
         input = event.error
           ? this.failedEffect(event, "storage_unavailable", String(event.error), true)
@@ -1318,6 +1372,10 @@ export class CanonicalRunnerRuntime {
                   name: String(record.name ?? ""),
                   kind: String(record.kind ?? "reference"),
                   content: String(record.content ?? ""),
+                  ...(typeof record.description === "string" && record.description.trim()
+                    ? { description: record.description } : {}),
+                  ...(typeof asObject(record.provenance).trust === "string"
+                    ? { trust: String(asObject(record.provenance).trust) } : {}),
                   ...(typeof hit.score === "number" ? { score: hit.score } : {}),
                   // M3: the store reports the count it holds; the kernel derives the next one.
                   ...(Number(record.recall_count) > 0
@@ -1506,6 +1564,7 @@ export class CanonicalRunnerRuntime {
         this.absorbTransition(transition)
         this.lastAction = canonicalActionFromProjectionJson(
           this.host.kernel.projectPlannedStepJson(JSON.stringify(transition.plannedStep)),
+          transition.plannedStep.observations as KernelObservation[] | undefined,
         )
       }
       if (this.lastAction?.kind !== "unsupported_effect") return this.lastAction
@@ -1691,6 +1750,12 @@ export class CanonicalRunnerRuntime {
           ...(event.tokens !== undefined ? { tokens: Number(event.tokens) } : {}),
         })
         return true
+      case "add_dependency_output":
+        (this.initialContext.dependencies ??= []).push({
+          agent_id: String(event.agent_id ?? ""),
+          content: String(event.content ?? ""),
+        })
+        return true
       case "add_knowledge_message":
         this.initialContext.knowledge.push({
           content: String(event.content ?? ""),
@@ -1707,10 +1772,16 @@ export class CanonicalRunnerRuntime {
         return true
       case "set_memory_enabled":
         this.featurePolicy().memory_enabled = Boolean(event.enabled)
+        // Only sent when on, so kernels that predate the field still accept memory-enabled runs.
+        if (event.propose_memory) this.featurePolicy().propose_memory_enabled = true
+        else delete this.featurePolicy().propose_memory_enabled
+        if (event.enabled && event.recall) {
+          this.config.memory_policy = { ...asObject(this.config.memory_policy), recall: true }
+        }
         if (event.enabled) {
           this.config.memory_access = {
             binding_id: this.memoryBindingId,
-            capabilities: { read: true, write: true },
+            capabilities: { read: event.read !== false, write: event.write !== false },
           }
         }
         return true
@@ -1719,6 +1790,7 @@ export class CanonicalRunnerRuntime {
         return true
       case "set_memory_policy":
         this.config.memory_policy = {
+          ...(asObject(this.config.memory_policy).recall ? { recall: true } : {}),
           ...(event.stale_warning_days !== undefined ? { stale_warning_days: event.stale_warning_days } : {}),
           ...(event.retrieval_top_k !== undefined ? { retrieval_top_k: event.retrieval_top_k } : {}),
           ...(event.validation_enabled !== undefined ? { validation_enabled: event.validation_enabled } : {}),

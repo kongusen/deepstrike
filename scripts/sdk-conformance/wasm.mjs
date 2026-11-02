@@ -19,6 +19,8 @@ if (process.argv.length !== 3 || !isAbsolute(process.argv[2])) fail("usage: wasm
 
 const sdk = await import(pathToFileURL(join(root, "wasm", "dist", "index.js")))
 const stopReason = await import(pathToFileURL(join(root, "wasm", "dist", "providers", "stop-reason.js")))
+const registry = await import(pathToFileURL(join(root, "wasm", "dist", "runtime", "session-event-registry.generated.js")))
+const eventLog = await import(pathToFileURL(join(root, "wasm", "dist", "runtime", "kernel-event-log.js")))
 
 class StructuredError extends Error {
   constructor(code, path, message) { super(message); this.code = code; this.path = path }
@@ -37,15 +39,6 @@ try {
 
 async function project(value) {
   switch (value.domain) {
-    case "context_execution": {
-      const adapter = await sdk.createNativeContextPreparationAdapter()
-      const prepared = adapter.prepare(value.input.request)
-      return {
-        input_digest: prepared.execution_input.input_digest,
-        plan_digest: prepared.plan.plan_id,
-        verified: adapter.verify(value.input.request.effect, prepared),
-      }
-    }
     case "durable_tool_result": {
       const input = value.input.fixture ? readReferenced(value.input.fixture) : value.input.value
       const result = sdk.decodeDurableToolResult(input)
@@ -109,10 +102,26 @@ async function project(value) {
       throw new StructuredError("invalid_provider_attempt", "/input", "provider_attempt_record input must carry attempt or record")
     }
     case "session_event_vocabulary": {
-      // F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
-      // The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
-      const kinds = [...sdk.SESSION_EVENT_KINDS].sort()
-      return { kinds, count: kinds.length }
+      // The registry-backed vocabulary (kinds + top-level fields), compile-time checked against
+      // the SessionEvent union. The runner compares it with this SDK's slice of the registry.
+      const kinds = {}
+      for (const kind of Object.keys(registry.SESSION_EVENT_REGISTRY).sort()) {
+        kinds[kind] = { required: [...registry.SESSION_EVENT_REGISTRY[kind].required], optional: [...registry.SESSION_EVENT_REGISTRY[kind].optional] }
+      }
+      return { kinds }
+    }
+    case "kernel_observation_projection": {
+      const events = {}
+      for (const item of value.input.cases) {
+        const options = item.options ?? {}
+        const event = eventLog.kernelObservationToSessionEvent(item.observation, item.turn, {
+          nextArchiveStart: options.next_archive_start,
+          latestSeq: options.latest_seq,
+          preservedRefs: options.preserved_refs,
+        })
+        events[item.name] = event === null ? null : JSON.parse(JSON.stringify(event))
+      }
+      return { events }
     }
     case "session_event": {
       const event = value.input.event

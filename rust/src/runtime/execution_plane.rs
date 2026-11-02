@@ -102,6 +102,25 @@ pub trait ExecutionPlane: Send + Sync {
     ) -> Pin<Box<dyn Stream<Item = Result<RunEvent>> + Send + 'a>>;
 }
 
+/// A shared plane is a plane: a workflow node's child run executes on its parent's.
+impl<T: ExecutionPlane + ?Sized> ExecutionPlane for Arc<T> {
+    fn schemas(&self) -> Vec<ToolSchema> {
+        (**self).schemas()
+    }
+
+    fn shutdown<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        (**self).shutdown()
+    }
+
+    fn execute_all<'a>(
+        &'a self,
+        calls: &'a [ToolCall],
+        ctx: RunContext<'a>,
+    ) -> Pin<Box<dyn Stream<Item = Result<RunEvent>> + Send + 'a>> {
+        (**self).execute_all(calls, ctx)
+    }
+}
+
 /// Executes tools in-process from a registry of `RegisteredTool`s.
 pub struct LocalExecutionPlane {
     tools: HashMap<String, Arc<RegisteredTool>>,
@@ -330,8 +349,13 @@ fn execute_all_local<'a>(
                         let text = entries
                             .iter()
                             .map(|e| format!(
-                                "[memory record_id={} score={:.3}] {}",
-                                e.record.record_id, e.score, e.record.content
+                                "[memory record_id={} trust={} score={:.3}] {}",
+                                e.record.record_id,
+                                serde_json::json!(e.record.provenance.trust)
+                                    .as_str()
+                                    .unwrap_or_default(),
+                                e.score,
+                                e.record.content
                             ))
                             .collect::<Vec<_>>()
                             .join("\n---\n");

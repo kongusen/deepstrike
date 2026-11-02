@@ -95,6 +95,14 @@ pub struct ContextConfig {
     /// (skills are governed by deactivation/lease, not the budget). `0.0` disables (no cap).
     /// Default: 0.25.
     pub knowledge_budget_ratio: f64,
+
+    // ── Provider delegation ──────────────────────────────────────────────────
+    /// The provider clears old tool results natively, so the kernel runs none of its own
+    /// tool-result tiers: idle time-decay, snip, micro-compact and the collapsed-preview projection.
+    pub delegate_tool_result_clearing: bool,
+    /// The provider compacts natively, so the kernel runs neither context collapse nor auto-compact.
+    /// Renewal is never delegated: it is decided on the full local history and stays the safety net.
+    pub delegate_compaction: bool,
 }
 
 impl Default for ContextConfig {
@@ -117,6 +125,8 @@ impl Default for ContextConfig {
             preserved_tool_results: 5,
             autocompact_buffer: 13_000,
             knowledge_budget_ratio: 0.25,
+            delegate_tool_result_clearing: false,
+            delegate_compaction: false,
         }
     }
 }

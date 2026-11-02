@@ -2,6 +2,7 @@ import { Agent, type AgentOptions } from "../src/agent.js"
 import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
 import { DurableMemory } from "../src/memory/durable.js"
 import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
+import { InMemorySessionLog } from "../src/runtime/session-log.js"
 
 class FakeProvider implements LLMProvider {
   async complete(_context: RenderedContext, _tools: never[]): Promise<ModelMessage> {
@@ -51,4 +52,34 @@ test("AgentSession shares the agent memory facade and preserves the session iden
   expect(record.provenance.session_id).toBe("memory-session")
   const hits = await session.recall("blue")
   expect(hits[0]?.record.record_id).toBe(record.record_id)
+})
+
+test("M4 · remember and recall go through the runner funnel and are audited in the session", async () => {
+  const memory = new DurableMemory(new InMemoryMemoryStore(), "agent", { tenant_id: "t", namespace: "n" })
+  const sessionLog = new InMemorySessionLog()
+  const agent = new Agent({ name: "audited", memory, runtimeBinding: { sessionLog } })
+  const session = agent.session("audited-session")
+  const record = await session.remember({ name: "color", content: "blue" })
+  const hits = await session.recall("blue")
+  expect(hits.map(hit => hit.record.record_id)).toEqual([record.record_id])
+  const kinds = (await sessionLog.read("audited-session")).map(entry => entry.event.kind)
+  expect(kinds).toEqual(["memory_written", "memory_retrieval_result"])
+})
+
+test("M4 · a write the kernel refuses is an error and reaches no store", async () => {
+  const store = new InMemoryMemoryStore()
+  const memory = new DurableMemory(store, "agent", { tenant_id: "t", namespace: "n" })
+  const agent = new Agent({ name: "denied", memory, runtimeBinding: { runtimeOptions: { memoryPolicy: { maxNameLength: 3 } } } })
+  await expect(agent.remember({ name: "too-long", content: "should be denied" })).rejects.toThrow(/memory write denied/)
+  expect(await agent.recall("should be denied")).toEqual([])
+})
+
+test("M4 · a disabled retrieval policy answers a facade recall with nothing", async () => {
+  const memory = new DurableMemory(new InMemoryMemoryStore(), "agent", { tenant_id: "t", namespace: "n" })
+  const agent = new Agent({
+    name: "recall-off", memory,
+    runtimeBinding: { runtimeOptions: { memoryRuntimePolicy: { retrieval: "disabled", modelWrites: "disabled" } } },
+  })
+  await agent.remember({ name: "color", content: "blue" })
+  expect(await agent.recall("blue")).toEqual([])
 })

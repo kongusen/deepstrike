@@ -1,0 +1,21 @@
+{
+  "record_digest_input": ["t", "n", "project", "brief-style", "", "host fact", "host", "host_verified", null, [], 0.5, [], false, null],
+  "payload_digest": "sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f",
+  "payload": [
+    "issuer-a",
+    "ed-key-1",
+    "agent",
+    "t",
+    "n",
+    "host-candidate",
+    "model_proposal",
+    "sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f",
+    1000,
+    2000,
+    "memory-attestation-v1"
+  ],
+  "canonical": "[\"issuer-a\",\"ed-key-1\",\"agent\",\"t\",\"n\",\"host-candidate\",\"model_proposal\",\"sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f\",1000,2000,\"memory-attestation-v1\"]",
+  "attestation_digest": "sha256:d69f2de333253735f34e09cd5ef2d8d9c2c71b9b066d302e9a7716bb8b19b63e",
+  "public_key": "6j7S_guJnZulLJ-QuYEzPkldfCrD2FFTi9FWylULVzY",
+  "signature": "ed25519:b42wqAxprX4GYjRzFACtrvLWI0Sripq1I1_bSL3ljMW7CuI-MyKfCtgLPzI2hgzozEQviagzpDIF21Izh2VQCA"
+}

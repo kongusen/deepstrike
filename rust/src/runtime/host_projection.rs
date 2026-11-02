@@ -25,7 +25,6 @@ pub(crate) struct HostAction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum HostEffect {
     CallProvider {
-        context_effect: deepstrike_core::runtime::kernel::wire::effect::CallProviderEffect,
         context: InternalRenderedContext,
         tools: Vec<ToolSchema>,
     },
@@ -39,6 +38,9 @@ pub(crate) enum HostEffect {
         nodes: Vec<WorkflowSpawnInfo>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<WorkflowBudget>,
+        /// Plan task 3.1 · per node, the dependency outputs its child run holds, by agent id.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        dependency_outputs: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     },
     PreemptSubAgents {
         agent_ids: Vec<String>,
@@ -46,10 +48,19 @@ pub(crate) enum HostEffect {
     },
     PersistMemory {
         memory: MemoryRecord,
+        /// The write came from the model's `propose_memory` tool rather than a child request.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        model_proposal: bool,
     },
     QueryMemory {
         query: MemoryQuery,
         requested_k: usize,
+        /// `memory(record_id)`: a point read of this record, answered with it or with nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record_id: Option<String>,
+        /// The kernel's own recall (plan task 2.1), with the sprint it serves: 0 at run start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recall_sprint: Option<u32>,
     },
     ArchivePageOut {
         turn: u32,

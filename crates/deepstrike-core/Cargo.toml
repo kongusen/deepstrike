@@ -17,18 +17,10 @@ deepstrike-tokenizer = { workspace = true }
 [dev-dependencies]
 pretty_assertions = "1"
 
-[[bin]]
-name = "deepstrike"
-path = "src/bin/deepstrike.rs"
-
 [[bench]]
 name = "kernel_baseline"
 harness = false
 
 [[bench]]
 name = "wait_index_baseline"
-harness = false
-
-[[bench]]
-name = "verifiable_baseline"
 harness = false

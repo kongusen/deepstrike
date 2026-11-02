@@ -1,13 +1,12 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
 import { estimateTextTokens } from "../token-estimate.js"
-import { createNativeContextPreparationAdapter } from "./context.js"
 import { THINKING_INTENSITY_EXTENSION_KEY, type ThinkingIntensity } from "../providers/thinking-config.js"
 import type {
   LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
-  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, MemorySummarizer,
-  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
+  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer,
+  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions, NativeContextTiers,
 } from "../types.js"
 import { createHash } from "node:crypto"
 import type {
@@ -18,9 +17,21 @@ import type {
   SessionData,
   MemoryQuery,
 } from "../memory/protocols.js"
-import { extractSessionMemories } from "../memory/extraction.js"
+import {
+  resolveMemoryRuntimePolicy,
+  type MemoryRuntimePolicy,
+  type ResolvedMemoryRuntimePolicy,
+} from "../memory/runtime-policy.js"
 import { validateMemory } from "../memory/agent.js"
+import {
+  memoryCandidateId,
+  type MemoryCandidateReceipt,
+  type MemoryCandidateSink,
+  type MemoryCandidateSource,
+} from "../memory/candidate-sink.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
+import { MemoryWriter } from "../memory/writer.js"
+import { memoryFetchRecall } from "../memory/recall-projection.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { Skill } from "../skill.js"
 import type { SkillMetadata } from "../skills/loader.js"
@@ -78,7 +89,7 @@ import {
 } from "./canonical-kernel-step.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
-  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome, WorkflowContextPolicy,
+  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
 import type { AgentCapabilityFilter } from "../types/agent.js"
@@ -98,11 +109,6 @@ function intersectCapabilityFilters(a?: AgentCapabilityFilter, b?: AgentCapabili
     ...(allowedKinds?.length ? { allowedKinds } : allowedKinds ? { allowedKinds: [] } : {}),
     ...(allowedIds?.length ? { allowedIds } : allowedIds ? { allowedIds: [] } : {}),
   }
-}
-
-export function stableSemanticArchiveName(effectId: string): string {
-  const stableEffectId = effectId.replace(/[^a-zA-Z0-9._:-]/g, "_")
-  return `page-out-${stableEffectId || "unknown"}`
 }
 
 function compressionAction(action?: string): Extract<SessionEvent, { kind: "compressed" }>["action"] {
@@ -132,11 +138,6 @@ import {
   schemaRetryInstruction,
   validateAgainstSchema,
 } from "./output-schema.js"
-import { resolveReducer, type ReducerRegistry } from "./reducers.js"
-import {
-  loopInstruction, classifyInstruction, judgeGoal, dependencyOutputsNote,
-  extractClassifyBranch, extractJudgeWinner,
-} from "./workflow-control-flow.js"
 import { governancePolicyToKernelEvent, type GovernancePolicy, type LivePolicyPatch } from "../governance.js"
 import {
   createProviderRequestPlanForProvider,
@@ -372,8 +373,6 @@ export interface RuntimeOptions {
   provider: LLMProvider
   /** Host-owned capability ceiling applied to the root run before skills or run profiles narrow it further. */
   capabilityFilter?: AgentCapabilityFilter
-  /** Host-owned artifact set identity captured in operation genesis. */
-  artifactSetDigest?: string
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
    *  `tokenBudget` flows here for its child run, so an expensive node self-terminates at the cap.
    *  Undefined ⇒ the kernel default. */
@@ -432,6 +431,10 @@ export interface RuntimeOptions {
    *  behavior difference. */
   nudges?: NudgeRule[]
   initialMemory?: string[]
+  /** Plan task 3.1 · outputs of the workflow nodes this run depends on, by agent id. The kernel
+   *  holds them; the model reads one with `read_result(call_id="dep:<agent_id>")`. Set by the
+   *  workflow driver for a node's child run. */
+  dependencyOutputs?: Record<string, string>
   /** Optional host ledger that admits dynamic context before kernel insertion. */
   contextManager?: ContextManager
   skillDir?: string
@@ -444,6 +447,12 @@ export interface RuntimeOptions {
    *  `allowedToolIds`, which the runner reads as "no gating"). Only takes effect when `skillDir` is set. */
   skillFilter?: string[]
   memoryStore?: MemoryStore
+  /** Optional durable lease/budget capability. Only physical `memoryStore.put` writes consume it;
+   *  candidate-sink submissions are not metered, since the host's review decides what is stored. */
+  memoryLifecycle?: import("../memory/lifecycle.js").MemoryLifecycleStore
+  /** M2: where a write path set to `"candidate_sink"` in `memoryRuntimePolicy` hands its writes.
+   *  Required as soon as any path is `"candidate_sink"`. */
+  memoryCandidateSink?: MemoryCandidateSink
   /** M4: advisory callback when a recalled record crosses the promotion threshold. The host/model
    *  decides whether to pin the record or promote its content into knowledge. */
   onPromotionSuggested?: (info: { recordId: string; recallCount: number }) => void
@@ -558,6 +567,12 @@ export interface RuntimeOptions {
    * `agentId`; storage location is configured on that host store, not in the kernel contract.
    */
   memoryPolicy?: MemoryPolicy
+  /**
+   * Host switches for the memory paths (contract M1). Omitted ⇒ every path stays enabled, as before.
+   * Each `"disabled"` is checked before the path's auxiliary provider call, so it costs nothing.
+   * `"candidate_sink"` hands that path's writes to `memoryCandidateSink` instead of the store.
+   */
+  memoryRuntimePolicy?: MemoryRuntimePolicy
   tokenizer?: string
   enablePlanTool?: boolean
   /** Storage for canonical opaque external payload locators. */
@@ -631,18 +646,6 @@ export interface RuntimeOptions {
     evalProvider: LLMProvider
     maxAttempts?: number
   }
-  /** G2: custom reducers for `NodeKind::Reduce` workflow nodes, merged over the built-ins
-   *  (`concat` / `dedupe_lines` / `merge_json_arrays` / `count`). A reduce node runs no LLM. */
-  reducers?: ReducerRegistry
-  /** Optional system prompt injected into durable-memory synthesis. */
-  memorySystemPrompt?: string
-  /** Custom LLM provider used for durable-memory consolidation. */
-  memoryProvider?: LLMProvider
-  /**
-   * Optional LLM summarizer for semantic page_out events. When unset, `memoryProvider`
-   * (or the runtime provider) is used to produce long-term summaries for MemoryStore.
-   */
-  memorySummarizer?: MemorySummarizer
   /**
    * Optional async LLM summarizer. When provided, a background call is fired
    * after each compression event to produce a richer semantic summary.
@@ -678,6 +681,18 @@ export function buildConfigureRunPolicyConfig(
     config.reliability = kernelReliabilityToKernel(options.kernelReliability)
   }
   return config
+}
+
+/** The kernel's wire form of the tiers a provider performs natively, or nothing when it performs
+ *  none — an operation that delegates nothing configures exactly as before. */
+export function delegatedContextTiers(
+  native: NativeContextTiers | undefined,
+): { tool_result_clearing?: true; compaction?: true } | undefined {
+  if (!native?.toolResultClearing && !native?.compaction) return undefined
+  return {
+    ...(native.toolResultClearing ? { tool_result_clearing: true as const } : {}),
+    ...(native.compaction ? { compaction: true as const } : {}),
+  }
 }
 
 function controlRequestRejection(
@@ -819,6 +834,9 @@ export class RuntimeRunner {
   private activeProviderInvocationId: string | undefined
   private providerRetryPending = false
 
+  /** Resolved `memoryRuntimePolicy` gates; `undefined` when the host set no policy. */
+  private readonly memoryRuntimeGates: ResolvedMemoryRuntimePolicy | undefined
+
   constructor(private readonly opts: RuntimeOptions) {
     const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
     if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
@@ -826,6 +844,10 @@ export class RuntimeRunner {
     }
     if (opts.kernelReliability) kernelReliabilityToKernel(opts.kernelReliability)
     if (opts.memoryPolicy) memoryPolicyToKernel(opts.memoryPolicy)
+    this.memoryRuntimeGates = resolveMemoryRuntimePolicy(opts.memoryRuntimePolicy)
+    if (this.memoryRuntimeGates?.modelWritesToCandidateSink && !opts.memoryCandidateSink) {
+      throw new Error('memory runtime policy modelWrites = "candidate_sink" needs RuntimeOptions.memoryCandidateSink')
+    }
     this.composedSystemPrompt = composeSystemPrompt(opts.systemPrompt, opts.instructions)
     this.providerRoute = resolveProviderRoute(opts.provider)
     this.usageAccountingPolicy = opts.usageAccountingPolicy ?? FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY
@@ -923,9 +945,111 @@ export class RuntimeRunner {
     })
   }
 
-  private async persistMemoryToStore(memory: MemoryRecord, agentId: string): Promise<void> {
-    if (!this.opts.memoryStore) throw new Error("memory persistence requires memoryStore")
-    await this.opts.memoryStore.put(agentId, memory)
+  /** The host's side of every memory write: lease, store and the candidate sink's receipt contract. */
+  private memoryWriter(): MemoryWriter {
+    return new MemoryWriter({
+      store: this.opts.memoryStore,
+      lifecycle: this.opts.memoryLifecycle,
+      sink: this.opts.memoryCandidateSink,
+    })
+  }
+
+  /**
+   * The host's answer to a PersistMemory effect, as the event the kernel bridge resolves it with.
+   * With `modelWrites: "candidate_sink"` the record goes to the candidate sink and the answer is a
+   * `memory_candidate_result`; the candidate id is derived from the operation and the effect, so a
+   * redelivery after a lost acknowledgement asks the sink for the same candidate (S04).
+   */
+  private async persistMemoryEffectResult(
+    operationId: string,
+    effectId: string,
+    canonicalMemory: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const agentId = this.opts.agentId
+    const record: MemoryRecord = {
+      record_id: `memory:${crypto.randomUUID()}`,
+      scope: this.opts.memoryScope ?? { tenant_id: "default", namespace: agentId ?? "default" },
+      name: String(canonicalMemory.name ?? ""),
+      kind: String(canonicalMemory.kind ?? "reference") as MemoryRecord["kind"],
+      content: String(canonicalMemory.content ?? ""),
+      description: String(canonicalMemory.description ?? ""),
+      provenance: {
+        author: "model",
+        trust: "untrusted",
+        evidence_refs: Array.isArray(canonicalMemory.evidence_refs)
+          ? canonicalMemory.evidence_refs.map(String)
+          : [],
+      },
+      created_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
+      updated_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
+      recall_count: 0,
+      confidence: 1,
+      links: [],
+      pinned: false,
+    }
+    if (this.memoryPathToCandidateSink("modelWrites")) {
+      try {
+        if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
+        const modelProposal = Boolean(canonicalMemory.causation && typeof canonicalMemory.causation === "object" && (canonicalMemory.causation as Record<string, unknown>).kind === "provider_tool")
+        const source: MemoryCandidateSource = modelProposal ? "model_proposal" : "child_request"
+        // Child requests keep their v2 identity so in-flight redeliveries still match the sink.
+        const candidateId = modelProposal
+          ? memoryCandidateId(["v3", agentId, "model_proposal", operationId, effectId, "0"])
+          : memoryCandidateId(["v2", agentId, "child_request", operationId, effectId, "0"])
+        const receipt = await this.memoryWriter().propose(agentId, { candidate_id: candidateId, source, record })
+        return { kind: "memory_candidate_result", effect_id: effectId, ...receipt }
+      } catch (cause) {
+        return { kind: "memory_candidate_result", effect_id: effectId, error: formatToolError(cause) }
+      }
+    }
+    try {
+      if (!this.memoryPathEnabled("modelWritesEnabled")) {
+        throw new Error("model memory writes are disabled by memoryRuntimePolicy.modelWrites")
+      }
+      if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
+      // The receipt names what the store now holds: the record's id and its content digest.
+      const receipt = await this.memoryWriter().persist(agentId, record, `model:${operationId}:${effectId}`)
+      return { kind: "memory_persist_result", effect_id: effectId, ...receipt }
+    } catch (cause) {
+      return { kind: "memory_persist_result", effect_id: effectId, error: formatToolError(cause) }
+    }
+  }
+
+  /** The audit fact for a sink's answer. Only an accepted candidate is a written record. */
+  private memoryCandidateEvent(
+    receipt: MemoryCandidateReceipt,
+    source: MemoryCandidateSource,
+    memory: MemoryRecord,
+  ): SessionEvent {
+    const turn = this.activeKernel?.turn() ?? 0
+    switch (receipt.status) {
+      case "pending":
+        return {
+          kind: "memory_candidate_pending", turn, candidate_id: receipt.candidate_id, source,
+          name: memory.name, receipt_id: receipt.receipt_id,
+        }
+      case "rejected":
+        return {
+          kind: "memory_candidate_rejected", turn, candidate_id: receipt.candidate_id, source,
+          name: memory.name, receipt_id: receipt.receipt_id, reason_code: receipt.reason_code,
+        }
+      case "accepted":
+        return {
+          kind: "memory_written", turn, record_id: receipt.record_ref, scope: memory.scope,
+          memory_kind: memory.kind, name: memory.name, size_bytes: Buffer.byteLength(memory.content, "utf8"),
+        }
+    }
+  }
+
+  /** Host memory-policy gate: a path is on unless the host set its switch to `"disabled"`. */
+  private memoryPathEnabled(path: keyof ResolvedMemoryRuntimePolicy): boolean {
+    return this.memoryRuntimeGates?.[path] ?? true
+  }
+
+  /** M2 · whether a write path hands its writes to the candidate sink. Off unless the host set the
+   *  path to `"candidate_sink"` — unlike the on/off gates, the default here is the store. */
+  private memoryPathToCandidateSink(path: "modelWrites"): boolean {
+    return this.memoryRuntimeGates?.[`${path}ToCandidateSink`] ?? false
   }
 
   private async retrieveMemoryFromStore(
@@ -933,6 +1057,7 @@ export class RuntimeRunner {
     requestedK: number,
     agentId: string,
   ): Promise<MemoryRecall[]> {
+    if (!this.memoryPathEnabled("retrievalEnabled")) return []
     if (!this.opts.memoryStore) throw new Error("memory queries require memoryStore")
     const policyLimit = this.opts.memoryPolicy?.retrievalTopK
     const limit = policyLimit === undefined ? requestedK : Math.min(requestedK, policyLimit)
@@ -941,50 +1066,29 @@ export class RuntimeRunner {
       .slice(0, limit)
   }
 
-  /**
-   * Route a host-originated renewal prefetch into canonical knowledge commands. This is not an
-   * agent syscall: the host selects records from its store, then the kernel owns the write
-   * of live semantic context. `seenRecordIds` is the prefetch's dedupe horizon.
-   */
-  private async prefetchMemoryIntoKnowledge(
-    runtime: CanonicalRunnerRuntime,
+  /** `memory(record_id)`: a point read under the same retrieval gate as a search. */
+  private async fetchMemoryFromStore(
     query: MemoryQuery,
+    recordId: string,
     agentId: string,
-    sessionId: string | null | undefined,
-    seenRecordIds?: Set<string>,
-  ): Promise<{ hits: MemoryRecall[]; action: KernelRunnerAction | null }> {
-    let hits: MemoryRecall[] = []
-    try {
-      hits = await this.retrieveMemoryFromStore(query, query.top_k, agentId)
-      if (seenRecordIds) {
-        hits = hits.filter(hit => {
-          const id = hit.record.record_id
-          if (seenRecordIds.has(id)) return false
-          seenRecordIds.add(id)
-          return true
-        })
-      }
-      for (const hit of hits) {
-        // Route renewal recalls through the same host context admission path as every other
-        // dynamic knowledge entry. This keeps ContextManager budgets and ledger events in sync
-        // while preserving the canonical kernel knowledge command underneath.
-        await this.pushKnowledge(
-          { role: "system", content: hit.record.content, toolCalls: [] },
-          estimateTextTokens(hit.record.content),
-          { key: `memory:${hit.record.record_id}` },
-        )
-      }
-      await this.recordHostMemoryRecall(hits, agentId)
-      await this.logMemoryRetrievalResult(sessionId, hits)
-    } catch {
-      return { hits: [], action: runtime.resumeAction() }
-    }
-    return { hits, action: runtime.resumeAction() }
+  ): Promise<MemoryRecall[]> {
+    if (!this.memoryPathEnabled("retrievalEnabled")) return []
+    if (!this.opts.memoryStore) throw new Error("memory queries require memoryStore")
+    return memoryFetchRecall(await this.opts.memoryStore.get(agentId, recordId), query, Date.now())
   }
 
+  /**
+   * The one host write funnel. With `candidate`, the admitted write goes to the candidate sink
+   * instead of the store (M2): it returns true when the sink accepted the write or holds it for
+   * review, false when the sink rejected it.
+   */
   async writeMemory(
     memory: MemoryRecord,
-    opts: { sessionId?: string; agentId?: string } = {},
+    opts: {
+      sessionId?: string
+      agentId?: string
+      candidate?: { source: MemoryCandidateSource; candidateId: string }
+    } = {},
   ): Promise<boolean> {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
@@ -1002,7 +1106,15 @@ export class RuntimeRunner {
       }
       return false
     }
-    await this.persistMemoryToStore(memory, agentId)
+    if (opts.candidate) {
+      const { source, candidateId } = opts.candidate
+      const receipt = await this.memoryWriter().propose(agentId, { candidate_id: candidateId, source, record: memory })
+      if (sessionId) {
+        await this.opts.sessionLog.append(sessionId, this.memoryCandidateEvent(receipt, source, memory))
+      }
+      return receipt.status !== "rejected"
+    }
+    await this.memoryWriter().persist(agentId, memory, `host:${agentId}:${memory.record_id}`)
     if (sessionId) {
       await this.opts.sessionLog.append(sessionId, {
         kind: "memory_written",
@@ -1113,7 +1225,6 @@ export class RuntimeRunner {
         maxTurns: this.opts.maxTurns,
         maxTotalTokens: this.opts.maxTotalTokens,
         maxWallMs: this.opts.timeoutMs,
-        artifactSetDigest: this.opts.artifactSetDigest,
         memoryBindingId: `node-memory-${this.opts.agentId ?? "root"}`,
         persistPayload: async (callId, content, previewBytes) => {
           const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`
@@ -1193,6 +1304,10 @@ export class RuntimeRunner {
     // (Requires the 0.2.30 core that ships `configure_run`.)
     const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
     const config = buildConfigureRunPolicyConfig(this.opts, osProfile)
+    const delegated = delegatedContextTiers(this.opts.provider?.descriptor?.().nativeContext)
+    if (delegated) {
+      config.context_policy = { ...(config.context_policy as Record<string, unknown> | undefined), delegated_tiers: delegated }
+    }
     if (this.opts.promptBudget) {
       config.prompt_budget = {
         prompt_overhead_tokens: this.opts.promptBudget.promptOverheadTokens,
@@ -1448,43 +1563,25 @@ export class RuntimeRunner {
     parentSessionId: string,
     orchestrator: SubAgentOrchestrator,
     budget?: WorkflowBudget,
-    outputs?: Map<string, string>,
     abortSignal?: AbortSignal,
-    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
     workflowAgentTargets?: Map<string, string>,
     workflowNodeToolAccess?: Map<string, "inherit" | "filtered">,
     parentRunId?: string,
   ): Promise<SubAgentResult> {
-    // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
-    // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
-    if (node.reducer) {
-      return this.runReduceNode(node, outputs ?? new Map())
-    }
-
     const baseSpec = workflowNodeToSpec(node, parentSessionId)
     const manifest = workflowNodeToManifest(node, parentSessionId)
     // G4: surface the workflow's remaining budget to the node's agent so a coordinator can size its
     // `submit_workflow_nodes` batch to what is available (empty string ⇒ unbounded, no note).
     const budgetNote = workflowBudgetNote(budget)
-    // W-N2: a DAG edge carries data — every dependent node sees its dependencies' outputs (the
-    // kernel sends `input_agent_ids` for all dependents; judges/reduce keep their special paths).
-    const policy = contextPolicies?.get(node.agent_id) ?? contextPolicies?.get(node.agent_id.replace(/-i\d+$/, ""))
-    const include = policy?.include ?? ["dependency_outputs"]
-    const depsNote = include.includes("dependency_outputs")
-      ? dependencyOutputsNote(
-          node.input_agent_ids,
-          outputs,
-          policy?.maxTokens !== undefined ? Math.max(256, policy.maxTokens * 4) : 8_000,
-          policy?.dependencyMode ?? "full",
-        )
-      : ""
+    // A DAG edge carries data: the kernel composes the dependency section of the brief.
     const withBudget = (goal: string) =>
-      [goal, depsNote, budgetNote].filter(Boolean).join("\n\n")
+      [goal, node.dependency_brief, budgetNote].filter(Boolean).join("\n\n")
     const mkCtx = (goal: string): SubAgentRunContext => ({
       parentOpts: this.opts,
       parentSessionId,
       ...(parentRunId ? { parentRunId } : {}),
       spec: { ...baseSpec, goal: withBudget(goal) },
+      ...(node.dependency_outputs ? { dependencyOutputs: node.dependency_outputs } : {}),
       manifest,
       sessionLog: this.opts.sessionLog,
       // This child is a workflow node, so capability resolution applies workflow-node quarantine
@@ -1494,14 +1591,12 @@ export class RuntimeRunner {
       // by design — filtering on the missing list ran every DAG node TOOL-LESS); quarantined nodes
       // stay deny-all filtered (they read untrusted content).
       toolAccess: workflowNodeToolAccess?.get(node.agent_id)
-        ?? workflowNodeToolAccess?.get(node.agent_id.replace(/-i\d+$/, ""))
         ?? (node.trust === "quarantined" ? "filtered" : "inherit") as "filtered" | "inherit",
       // #2-B-ii: the per-node abort signal the driver fires when the kernel preempts this node.
       ...(abortSignal ? { abortSignal } : {}),
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
     })
     const targetName = workflowAgentTargets?.get(node.agent_id)
-      ?? workflowAgentTargets?.get(node.agent_id.replace(/-i\d+$/, ""))
     const runNode = async (goal: string): Promise<SubAgentResult> => {
       const context = mkCtx(goal)
       if (targetName) {
@@ -1514,46 +1609,6 @@ export class RuntimeRunner {
       }
       return orchestrator.run(context)
     }
-    const textOf = (r: SubAgentResult): string => {
-      const c = r.result.finalMessage?.content
-      return typeof c === "string" ? c : c != null ? JSON.stringify(c) : ""
-    }
-    const withSignal = (r: SubAgentResult, patch: Partial<SubAgentResult["result"]>): SubAgentResult =>
-      ({ ...r, result: { ...r.result, ...patch } })
-
-    // A#2 tournament judge: this node compares two entrants' produced outputs rather than running its
-    // own goal. Look up both candidates, run a judge over the controller's criterion, and report the
-    // winning entrant's agent id as `tournamentWinner` (the kernel advances the bracket with it).
-    if (node.judge_match) {
-      const out = outputs ?? new Map<string, string>()
-      const left = out.get(node.judge_match.left) ?? ""
-      const right = out.get(node.judge_match.right) ?? ""
-      const result = await runNode(judgeGoal(baseSpec.goal, left, right))
-      const winner = extractJudgeWinner(textOf(result))
-      const winnerId = winner === "right" ? node.judge_match.right : node.judge_match.left
-      return withSignal(result, { tournamentWinner: winnerId })
-    }
-
-    // loop-control loop iteration: run the increment under the armed pacing trap (workflowNodeToSpec set
-    // `loopRound`, and the iteration resumes the loop's stable session — transcript-as-carry).
-    // The kernel-adjudicated `pace` verb is the only continuation signal. Ending without a pace
-    // decision completes the loop.
-    if (node.loop_max_iters != null) {
-      const iteration = Number(/-i(\d+)$/.exec(node.agent_id)?.[1] ?? "0")
-      const result = await runNode(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters, iteration)}`)
-      const pace = result.result.paceDecision
-      return withSignal(result, { loopContinue: pace?.action === "continue" })
-    }
-
-    // A#2 classify: run the classifier, then extract the chosen branch label; the kernel runs that
-    // branch and prunes the rest. No recognizable choice ⇒ leave unset (kernel prunes all branches).
-    if (node.classify_labels && node.classify_labels.length) {
-      const labels = node.classify_labels
-      const result = await runNode(`${baseSpec.goal}\n\n${classifyInstruction(labels)}`)
-      const branch = extractClassifyBranch(textOf(result), labels)
-      return branch === undefined ? result : withSignal(result, { classifyBranch: branch })
-    }
-
     const schema = node.output_schema
     if (!schema) return runNode(baseSpec.goal)
 
@@ -1583,27 +1638,6 @@ export class RuntimeRunner {
         termination: "error",
         finalMessage: { role: "assistant", content: reason, toolCalls: [] },
       },
-    }
-  }
-
-  /**
-   * G2: execute a deterministic reduce node. Looks up the named reducer (built-ins overlaid with
-   * `opts.reducers`), runs it over the node's dependency outputs (gathered from `outputs`), and
-   * returns a synthetic completion carrying the reducer's output — no LLM, zero tokens. An unknown
-   * reducer or a thrown reducer fails the node (`Error` termination → the kernel starves dependents).
-   */
-  private runReduceNode(node: WorkflowSpawnInfo, outputs: Map<string, string>): SubAgentResult {
-    const ok = (content: string, termination: string): SubAgentResult => ({
-      agentId: node.agent_id,
-      result: { termination, finalMessage: { role: "assistant", content, toolCalls: [] }, turnsUsed: 0, totalTokensUsed: 0 },
-    })
-    const reducer = resolveReducer(node.reducer as string, this.opts.reducers)
-    if (!reducer) return ok(`unknown reducer "${node.reducer}"`, "error")
-    const inputs = (node.input_agent_ids ?? []).map(agentId => ({ agentId, output: outputs.get(agentId) ?? "" }))
-    try {
-      return ok(reducer(inputs), "completed")
-    } catch (err) {
-      return ok(`reducer "${node.reducer}" threw: ${formatToolError(err)}`, "error")
     }
   }
 
@@ -1682,7 +1716,6 @@ export class RuntimeRunner {
         parentSessionId,
         runtime,
         new Map(),
-        new Map(spec.nodes.flatMap((node, index) => node.context ? [[`wf-node${index}`, node.context] as const] : [])),
         spec.nodes,
         0,
       )
@@ -1801,9 +1834,6 @@ export class RuntimeRunner {
                   sessionId,
                   runtime,
                   new Map(),
-                  new Map(submission.spec.nodes.flatMap((node, index) => node.context
-                    ? [[`wf-node${index}`, node.context] as const]
-                    : [])),
                   submission.spec.nodes,
                   ((observations.find(observation => observation.kind === "workflow_nodes_submitted") as { base?: number } | undefined)?.base ?? 0),
                 ),
@@ -2074,7 +2104,6 @@ export class RuntimeRunner {
     parentSessionId: string,
     runtime: CanonicalRunnerRuntime,
     seedOutputs?: Map<string, string>,
-    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
     workflowNodes?: import("../types/agent.js").WorkflowNodeSpec[],
     workflowNodeBase = 0,
   ): Promise<WorkflowOutcome> {
@@ -2174,9 +2203,7 @@ export class RuntimeRunner {
         parentSessionId,
         orchestrator,
         nodeBudget,
-        outputs,
         controller.signal,
-        contextPolicies,
         workflowAgentTargets,
         workflowNodeToolAccess,
         parentRunId,
@@ -2276,10 +2303,6 @@ export class RuntimeRunner {
       termination: result.result.termination as WorkflowNodeOutcome["termination"],
       ...(result.result.finalMessage ? { output: result.result.finalMessage } : {}),
     })
-    // A loop iteration completes under `wf-node{N}-i{k}` but its dependents consume the STABLE
-    // node id `wf-node{N}` — alias it so the LAST iteration's output is what dependents see.
-    const stableId = result.agentId.replace(/-i\d+$/, "")
-    if (stableId !== result.agentId) outputs.set(stableId, outText)
     const observationStart = this.pendingObservations.length
     const completionAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
       kind: "sub_agent_completed",
@@ -2320,17 +2343,13 @@ export class RuntimeRunner {
         }))
       }
     }
-    // Persist node completion for resume recovery. W-1: the result-borne control signals ride
-    // along (a resumed classifier re-prunes; a recorded loop stop is honored) plus the output
-    // text (post-resume dependents/reduce still see this node's output).
+    // Persist node completion for resume recovery, with the output text so post-resume dependents
+    // still see this node's output.
     await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodeCompletedEvent({
       turn: runtime.turn(),
       agentId: result.agentId,
       status: workflowNodeStatusFromTermination(result.result.termination),
       termination: result.result.termination,
-      classifyBranch: result.result.classifyBranch,
-      tournamentWinner: result.result.tournamentWinner,
-      loopContinue: result.result.loopContinue,
       ...(result.result.finalMessage ? { output: result.result.finalMessage } : {}),
     }))
     return {
@@ -2717,6 +2736,14 @@ export class RuntimeRunner {
       })
     }
 
+    for (const [agentId, content] of Object.entries(this.opts.dependencyOutputs ?? {})) {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
+        kind: "add_dependency_output",
+        agent_id: agentId,
+        content,
+      })
+    }
+
     if (this.opts.initialMemory) {
       for (const [index, mem] of this.opts.initialMemory.entries()) {
         await this.pushKnowledge({ role: "system", content: mem, toolCalls: [] }, undefined, { key: `initial:${index}`, pinned: true })
@@ -2760,7 +2787,18 @@ export class RuntimeRunner {
     }
 
     if (this.opts.memoryStore && this.opts.agentId) {
-      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
+      // The kernel binding carries the same capability bits as the JS gates, so a model-driven
+      // syscall (child parent_requests) is refused in the kernel, not only skipped here.
+      await this.commitKernelApply(runtime, this.pendingObservations, {
+        kind: "set_memory_enabled",
+        enabled: true,
+        read: this.memoryPathEnabled("retrievalEnabled"),
+        write: this.memoryPathEnabled("modelWritesEnabled"),
+        // Proposals must land in review, never straight in the store.
+        propose_memory: Boolean(this.opts.memoryCandidateSink && this.memoryPathToCandidateSink("modelWrites")),
+        // The kernel recalls for the goal before the first call and after each renewal.
+        recall: Boolean(this.opts.memoryScope),
+      })
     }
     // Install optional memory policy. Maps the ergonomic camelCase option onto the kernel's
     // snake_case `set_memory_policy` event; omitted fields fall back to kernel defaults.
@@ -2868,7 +2906,6 @@ export class RuntimeRunner {
       }
     }
     this.currentGoal = goal
-    if (!resumeMidRun) await this.prefetchMemoryIntoInitialContext(runtime)
 
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before root start pushes the "[TASK STATE]" anchor. init_task does not
@@ -3061,18 +3098,6 @@ export class RuntimeRunner {
           this.providerRetryPending = action.kind === "call_provider"
           continue
         }
-
-        if (!promptMeasurement) throw new Error("context preparation requires prompt measurement")
-        const contextAdapter = createNativeContextPreparationAdapter()
-        const preparation = contextAdapter.prepare({
-          effect: action.contextEffect,
-          request_fingerprint: providerPlan.fingerprint,
-          provider_route: { ...this.providerRoute, request_fingerprint_scope: preparedRequest.scope },
-          prompt_measurement: promptMeasurement,
-        })
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "context_prepared", turn: runtime.turn(), effect_id: providerEffectId, preparation,
-        })
 
         const abortSignal = this.abortController?.signal
         try {
@@ -3380,45 +3405,11 @@ export class RuntimeRunner {
         })
 
       } else if (action.kind === "persist_memory") {
-        let error: string | undefined
-        const agentId = this.opts.agentId
-        const canonicalMemory = action.memory
-        const record: MemoryRecord = {
-          record_id: `memory:${crypto.randomUUID()}`,
-          scope: this.opts.memoryScope ?? { tenant_id: "default", namespace: agentId ?? "default" },
-          name: String(canonicalMemory.name ?? ""),
-          kind: String(canonicalMemory.kind ?? "reference") as MemoryRecord["kind"],
-          content: String(canonicalMemory.content ?? ""),
-          description: String(canonicalMemory.description ?? ""),
-          provenance: {
-            author: "model",
-            trust: "untrusted",
-            evidence_refs: Array.isArray(canonicalMemory.evidence_refs)
-              ? canonicalMemory.evidence_refs.map(String)
-              : [],
-          },
-          created_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
-          updated_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
-          recall_count: 0,
-          confidence: 1,
-          links: [],
-          pinned: false,
-        }
-        try {
-          if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
-          await this.persistMemoryToStore(record, agentId)
-        } catch (cause) {
-          error = formatToolError(cause)
-        }
-        action = await this.commitKernelAction(runtime, this.pendingObservations, {
-          kind: "memory_persist_result",
-          effect_id: action.effectId,
-          // The receipt names what the store now holds: the record's id and its content digest.
-          ...(error ? { error } : {
-            record_ref: record.record_id,
-            digest: `sha256:${createHash("sha256").update(record.content).digest("hex")}`,
-          }),
-        })
+        action = await this.commitKernelAction(
+          runtime,
+          this.pendingObservations,
+          await this.persistMemoryEffectResult(runtime.operationId, action.effectId, action.memory),
+        )
 
       } else if (action.kind === "query_memory") {
         const query: MemoryQuery = {
@@ -3435,9 +3426,15 @@ export class RuntimeRunner {
         let hits: MemoryRecall[] = []
         let error: string | undefined
         const agentId = this.opts.agentId
+        const recordId = typeof action.query.record_id === "string" ? action.query.record_id : undefined
+        const causation = action.query.causation as { kind?: string; sprint?: number } | undefined
         try {
           if (!agentId) throw new Error("memory queries require RuntimeOptions.agentId")
-          hits = await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
+          hits = causation?.kind === "kernel_recall"
+            ? await this.kernelRecallHits(query, action.requestedK, agentId, causation.sprint ? "renewal" : "initial")
+            : recordId === undefined
+              ? await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
+              : await this.fetchMemoryFromStore(query, recordId, agentId)
         } catch (cause) {
           error = formatToolError(cause)
         }
@@ -3450,7 +3447,6 @@ export class RuntimeRunner {
         if (!error) await this.logMemoryRetrievalResult(sessionId, hits)
 
       } else if (action.kind === "archive_page_out") {
-        const archiveEffectId = action.effectId
         const archiveMeta: {
           archiveStart: number
           compressedSeq: number
@@ -3492,7 +3488,6 @@ export class RuntimeRunner {
 
         const archived = action.archived ?? []
         const archiveAction = archiveMeta.action ?? "auto_compact"
-        const archiveTier = archiveMeta.tier
         const compressedSeq = archiveMeta.compressedSeq
         if (!error) this.activePageOutArchive = undefined
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
@@ -3512,11 +3507,6 @@ export class RuntimeRunner {
               archiveAction,
             )
             taskScope.spawn("compressed-summary-upgrade", upgrade)
-          }
-          if (archiveTier === "semantic" && archived.length > 0) {
-            taskScope.spawn("semantic-page-out", () => this.archiveSemanticPageOut(
-              archived, archiveAction, sessionId, archiveEffectId,
-            ))
           }
         }
 
@@ -3932,17 +3922,6 @@ export class RuntimeRunner {
             updatedAtMs: Date.now(),
           }
           await this.opts.memoryStore.saveSession(completedSession)
-          if (this.opts.memoryScope) {
-            const extracted = await extractSessionMemories(
-              this.opts.memoryProvider ?? this.opts.provider,
-              completedSession,
-              this.opts.memoryScope,
-              this.opts.memorySystemPrompt,
-            )
-            for (const memory of extracted) {
-              await this.writeMemory(memory, { sessionId, agentId: this.opts.agentId })
-            }
-          }
         } catch { /* non-fatal */ }
       }
     }
@@ -3970,93 +3949,28 @@ export class RuntimeRunner {
     }
   }
 
-  /** I4 + K4: fetch long-term memory hits for the current goal and land them in `history` as an
-   *  ordinary user turn — single-use retrieval content that decays with the compression pyramid,
-   *  never pinned into `knowledge`. Called once before turn 1 (`phase: "initial"`) and re-fired
-   *  after each sprint renewal (`phase: "renewal"`): renewal drops the old history INCLUDING the
-   *  earlier memory hits, so the new sprint gets a fresh recall pass. Errs-open throughout. */
-  private async prefetchMemoryIntoHistory(
-    runtime: CanonicalRunnerRuntime,
+  /** The kernel's own recall for the run goal (plan task 2.1). `preQueryMemory` may rewrite it
+   *  into several scoped queries; their hits are merged, one per record. */
+  private async kernelRecallHits(
+    query: MemoryQuery,
+    requestedK: number,
+    agentId: string,
     phase: "initial" | "renewal",
-  ): Promise<KernelRunnerAction | undefined> {
-    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return undefined
-    // P10: recall is default-on (CC session-start recall) — with no hook configured,
-    // the goal itself is the query. preQueryMemory stays as the targeting override.
-    const preQuery = this.opts.preQueryMemory
-      ?? ((ctx: { goal: string }) => [{
-        scope: this.opts.memoryScope!,
-        query: ctx.goal,
-        top_k: 5,
-        kinds: [],
-      }])
-    try {
-      const queries = await preQuery({
-        goal: this.currentGoal,
-        runSpec: this.opts.runSpec,
-        phase,
-      })
-      // Renewal prefetch is a host policy, not an agent syscall. Store selection stays host-side;
-      // each accepted hit enters the live run through a canonical seed-knowledge command.
-      //
-      // One prefetch = one dedupe horizon: a record hit by several short queries recalls and
-      // injects once. A renewal prefetch starts a fresh horizon — renewal dropped the earlier
-      // injection with the old history, so re-exposure is a genuine new recall.
-      const seenRecordIds = new Set<string>()
-      let resumed: KernelRunnerAction | undefined
-      for (const q of queries ?? []) {
-        if (!q.query.trim()) continue
-        const { action } = await this.prefetchMemoryIntoKnowledge(
-          runtime,
-          q,
-          this.opts.agentId,
-          this.durableSessionId(this.currentSessionId),
-          seenRecordIds,
-        )
-        resumed = action ?? resumed
+  ): Promise<MemoryRecall[]> {
+    const queries = this.opts.preQueryMemory
+      ? await this.opts.preQueryMemory({ goal: query.query, runSpec: this.opts.runSpec, phase }) ?? []
+      : [query]
+    const seen = new Set<string>()
+    const hits: MemoryRecall[] = []
+    for (const each of queries) {
+      if (!each.query.trim()) continue
+      for (const hit of await this.retrieveMemoryFromStore(each, each.top_k ?? requestedK, agentId)) {
+        if (seen.has(hit.record.record_id)) continue
+        seen.add(hit.record.record_id)
+        hits.push(hit)
       }
-      // Every seed command leaves the pending provider action authoritative; use the last view.
-      return resumed
-    } catch { /* errs-open — a faulty pre-fetch never breaks the run */ }
-    return undefined
-  }
-
-  private async prefetchMemoryIntoInitialContext(runtime: CanonicalRunnerRuntime): Promise<void> {
-    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
-    const preQuery = this.opts.preQueryMemory
-      ?? ((ctx: { goal: string }) => [{
-        scope: this.opts.memoryScope!,
-        query: ctx.goal,
-        top_k: 5,
-        kinds: [],
-      }])
-    try {
-      const queries = await preQuery({
-        goal: this.currentGoal,
-        runSpec: this.opts.runSpec,
-        phase: "initial",
-      })
-      const seen = new Set<string>()
-      const accepted: MemoryRecall[] = []
-      for (const query of queries ?? []) {
-        if (!query.query.trim()) continue
-        const hits = await this.retrieveMemoryFromStore(query, query.top_k, this.opts.agentId)
-        for (const hit of hits) {
-          if (seen.has(hit.record.record_id)) continue
-          seen.add(hit.record.record_id)
-          accepted.push(hit)
-          await this.commitKernelApply(runtime, this.pendingObservations, {
-            kind: "add_history_message",
-            message: {
-              role: "user",
-              content: `[MEMORY record_id=${hit.record.record_id} kind=${hit.record.kind}] ${hit.record.content}`,
-            },
-          })
-        }
-      }
-      await this.recordHostMemoryRecall(accepted, this.opts.agentId)
-    } catch {
-      // Prefetch is advisory; store/config failure never blocks the operation.
     }
+    return hits
   }
 
   private async appendObservations(
@@ -4113,75 +4027,8 @@ export class RuntimeRunner {
         }
         nextArchiveStart = compressedSeq + 1
       }
-      // K4: a sprint renewal dropped the old history — including any earlier memory hits — so
-      // re-run the preQueryMemory prefetch for the new sprint (live observations only: this
-      // consumer sits on the live drain path, same placement as the semantic page-out archival).
-      if (obs.kind === "renewed") {
-        await this.prefetchMemoryIntoHistory(runtime, "renewal")
-      }
     }
     return nextArchiveStart
-  }
-
-  private async archiveSemanticPageOut(
-    archived: ModelMessage[],
-    action: string | undefined,
-    sessionId: string,
-    effectId = "unknown",
-  ): Promise<void> {
-    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
-    await this.opts.sessionLog.append(sessionId, {
-      kind: "semantic_archive_pending",
-      effect_id: effectId,
-      ...(action ? { action } : {}),
-    })
-    try {
-    const summary = this.opts.memorySummarizer
-      ? await this.opts.memorySummarizer.summarize(archived, { action })
-      : await summarizeForLongTermMemory(
-        this.opts.memoryProvider ?? this.opts.provider,
-        archived,
-        this.opts.memorySystemPrompt,
-      )
-    // P2 write-funnel: route through the ONE gated WriteMemory syscall so validation,
-    // the rolling write quota, dedup, and the memory_written audit all apply. Score is
-    // advisory (0.6) — an automatic summary must never outrank curated content.
-    const now = Date.now()
-    const name = stableSemanticArchiveName(effectId)
-    const recordId = `${this.opts.memoryScope.tenant_id}:${this.opts.memoryScope.namespace}:project:${name}`
-    await this.writeMemory({
-      record_id: recordId,
-      scope: this.opts.memoryScope,
-      name,
-      kind: "project",
-      content: summary,
-      description: `auto summary of ${action ?? "compaction"} archive`,
-      provenance: {
-        session_id: sessionId,
-        author: "extraction",
-        trust: "untrusted",
-        evidence_refs: [],
-      },
-      created_at: now,
-      updated_at: now,
-      recall_count: 0,
-      confidence: 0.6,
-      links: [],
-      pinned: false,
-    }, { sessionId, agentId: this.opts.agentId })
-    await this.opts.sessionLog.append(sessionId, {
-      kind: "semantic_archive_completed",
-      effect_id: effectId,
-      record_id: recordId,
-    })
-    } catch (error) {
-      await this.opts.sessionLog.append(sessionId, {
-        kind: "semantic_archive_failed",
-        effect_id: effectId,
-        error: formatToolError(error),
-      })
-      throw error
-    }
   }
 
   private async upgradeCompressedSummary(
@@ -4264,29 +4111,6 @@ function attachmentsToKernelMessage(parts: ContentPart[]): Record<string, unknow
     return { type: "text", text: "" }
   })
   return { role: "user", content }
-}
-
-async function summarizeForLongTermMemory(
-  provider: LLMProvider,
-  archived: ModelMessage[],
-  systemPrompt?: string,
-): Promise<string> {
-  const transcript = archived
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n")
-  const context = {
-    systemText: [
-      systemPrompt,
-      "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
-    ].filter(Boolean).join("\n\n"),
-    turns: [{ role: "user" as const, content: transcript, toolCalls: [] }],
-  }
-  let text = ""
-  const state = provider.createRunState?.()
-  for await (const evt of provider.stream(context, [], undefined, state)) {
-    if (evt.type === "text_delta" && "delta" in evt) text += evt.delta
-  }
-  return text.trim() || transcript.slice(0, 2000)
 }
 
 /** Kernel-consumed meta-tools (e.g. `pace`) are answered by a synthetic tool result the kernel keeps

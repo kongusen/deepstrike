@@ -108,7 +108,8 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 | ------ | ------ | ------ |
 | Skill 正文（方法类，整个 run 复用） | `knowledge`，键 `skill:<name>` | 常驻，直到 deactivate / lease 到期 |
 | memory / knowledge 工具检索命中（事实类，用完即弃） | `history` 普通轮次 | 随压缩金字塔自然衰减 |
-| `pre_query_memory` 预取 | `history` 普通轮次 | 同上；renewal 后自动重查 |
+| `pre_query_memory` 初始预取 | `history` 普通轮次 | 同上；每个命中一条 canonical `[MEMORY ...]` turn |
+| `pre_query_memory` renewal 重查 | keyed `knowledge`，键 `memory:<record_id>` | 当前 sprint 可见；按 knowledge 边界 upsert |
 | 宿主钉住的参考材料 | `knowledge`（`push_knowledge(key=..., pinned=True)`） | pinned 不受预算驱逐 |
 
 **键控条目（K1）**：`push_knowledge(content, key="ref")` 同键重推为 upsert，`remove_knowledge("ref")` 定向移除。两者都**延迟到下一个 compaction/renewal 边界生效** —— `system[1]` 的既有字节只在 prompt-cache 前缀反正要重写的时刻改动（追加除外：追加只是延长缓存前缀，立即可见）。
@@ -117,7 +118,7 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 
 **Skill 卸载 / 租约（K3）**：`deactivate_skill(name)`（仅宿主驱动，无模型侧 unload）—— 工具集在下一次 provider 调用回宽，knowledge 钉在下一个边界摘除；`skill_lease_turns=N` 让每次激活 N 轮后自动走同一条路径。多阶段长任务不再单调累积早期阶段的 skill。
 
-**Renewal 记忆重查（K4）**：sprint renewal 会整体重建 history（连同早先的 memory 命中一起丢弃），`pre_query_memory` 钩子会以 `phase="renewal"` 自动重发一次，让新 sprint 从新鲜的召回开始（turn-1 那次为 `phase="initial"`）。
+**记忆召回（计划任务 2.1）**：召回由 kernel 发起。配置了 memory store、agentId 和 memoryScope 时，SDK 打开 `memory_policy.recall`，kernel 在第一次 provider 调用前和每次 sprint renewal 后，以当前目标为查询词发出 `query_memory` effect（causation 为 `kernel_recall`）。宿主只执行检索；`pre_query_memory` 钩子可以把这次查询改写成多条带 scope 的查询（`phase` 为 `"initial"` 或 `"renewal"`），命中按 record ID 合并。kernel 把每个命中写成 `memory:<record_id>` 键的 knowledge 索引行 `[MEMORY record_id=… kind=… trust=…] <description>`（没有 description 时用 name），不含记录正文；已在 knowledge 中的记录不重复写入。模型判断相关时用 `memory(record_id=…)` 读取全文。召回计数和 promotion 建议与模型查询走同一条 kernel 路径，每次召回写一个 `memory_retrieval_result` 审计事件。
 
 ```python
 RuntimeOptions(
@@ -129,6 +130,52 @@ runner.push_knowledge("API 速查表…", key="api-ref", pinned=True)   # K1：�
 runner.remove_knowledge("api-ref")                                  # 下一边界移除
 runner.deactivate_skill("debug")                                    # K3：显式卸载
 ```
+
+---
+
+## Level 6：交给 Provider 的压缩档位
+
+部分 Provider 能在服务端完成某一档压缩。Anthropic 的 context editing（`clear_tool_uses_20250919`）会在输入超过阈值时，清除较早的工具结果。如果内核也在本地做同样的事，两边会重复处理同一份上下文，还会打乱 prompt cache 前缀。
+
+Provider 配置为执行某一档时，会在 descriptor 里声明 `nativeContext`。runner 把它写入 kernel 配置的 `context_policy.delegated_tiers`，内核随之跳过对应的本地步骤：
+
+| 声明 | 内核跳过 | 仍然保留 |
+| ------ | ------ | ------ |
+| `tool_result_clearing` | Snip / Micro 压缩、idle TimeDecayMicro、handle 折叠预览 | Collapse / Auto 归档、renewal |
+| `compaction` | Collapse / Auto 归档（只委托这一档时降级为 Micro） | 工具结果清理、renewal |
+
+委托的档位只会被跳过，不会被升级成更重的档位。**Renewal 永不委托**：内核在完整的本地 history 上判断压力，压力取 Provider 观测值与本地估算值的较大者，所以服务端清理后上报的较小 input usage 不会压住续期，renewal 仍是安全网。
+
+只在 Anthropic Provider 上开启：
+
+```python
+AnthropicProvider(api_key, model="claude-opus-5-5", context_editing={"trigger_input_tokens": 100_000, "keep_tool_uses": 4})
+```
+
+```ts
+new AnthropicProvider({ apiKey, model: "claude-opus-5-5", contextEditing: { triggerInputTokens: 100_000, keepToolUses: 4 } })
+```
+
+WASM 用构造参数 `options.contextEditing`，Rust 用 `AnthropicProvider::with_context_editing`。未设置的字段使用 API 默认值。Provider 自动加上 `context-management-2025-06-27` beta，并把 edit 追加在调用方自带的 edits 之后；调用方已经传了 `clear_tool_uses` 时不重复添加。没有任何委托时，wire 配置与 golden fixture 字节不变。
+
+服务端阈值压缩（`compact_20260112`）同样可以交给 Anthropic：
+
+```python
+AnthropicProvider(api_key, model="claude-opus-5-5", context_editing=True, compaction={"trigger_input_tokens": 120_000})
+```
+
+```ts
+new AnthropicProvider({ apiKey, model: "claude-opus-5-5", contextEditing: true, compaction: { triggerInputTokens: 120_000 } })
+```
+
+WASM 用 `options.compaction`，Rust 用 `.with_compaction(AnthropicCompaction { .. })`。Provider 加上 `compact-2026-01-12` beta 并声明 `compaction`。两者同时开启时，`clear_tool_uses` 排在 `compact` 前面，让压缩触发值按清理后的输入计算。
+
+API 在输入达到阈值时，在 assistant 回复开头返回一个 `compaction` 块。之后的请求必须原样带回这个块，API 会忽略它之前的全部内容。内核 history 里只保存这一轮的文本，块本身存在 Provider 的 replay 里（流式和非流式都会捕获，会随 `llm_completed` 写进会话日志，恢复时重新注入）。渲染请求时，带 `compaction` 块的 assistant 轮按原生块回放，其余轮次不变。
+
+两点要注意：
+
+- 本地 history 并不会因此变短。内核压力仍取 Provider 观测值与本地估算值中的较大者，所以 renewal 照常在本地阈值触发。服务端阈值要设得低于内核的 renewal 阈值，否则服务端还没压缩，内核已经先续期了。
+- 内核如果改写了这一轮的文本（例如 `collapse_old_assistant_narration`），replay 就对不上了。此时块不会再发出，API 收到的是未压缩的完整历史，多花一些输入 token，但不会出错。
 
 ---
 

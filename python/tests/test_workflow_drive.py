@@ -469,68 +469,6 @@ async def test_g4_run_workflow_surfaces_budget_into_node_goal():
 
 # ── G2 deterministic compute (reduce nodes) ──────────────────────────────────────────────────────
 
-def test_g2_builtin_reducers():
-    from deepstrike import builtin_reducers
-
-    assert builtin_reducers["dedupe_lines"]([
-        {"agent_id": "a", "output": "x\ny\nx"},
-        {"agent_id": "b", "output": "y\nz"},
-    ]) == "x\ny\nz"
-    merged = builtin_reducers["merge_json_arrays"]([
-        {"agent_id": "a", "output": '[{"id":1},{"id":2}]'},
-        {"agent_id": "b", "output": '[{"id":2},{"id":3}]'},
-    ])
-    assert json.loads(merged) == [{"id": 1}, {"id": 2}, {"id": 3}]
-    assert builtin_reducers["count"]([
-        {"agent_id": "a", "output": "x"}, {"agent_id": "b", "output": "  "},
-    ]) == "1"
-
-
-def test_g2_reducer_lowers_to_kernel_node_kind():
-    from deepstrike import workflow_node_spec_to_kernel
-
-    k = workflow_node_spec_to_kernel(WorkflowNodeSpec(task="merge", role="implement", reducer="dedupe_lines", depends_on=[0, 1]))
-    assert k["kind"] == {"type": "reduce", "reducer": "dedupe_lines"}
-    assert k["depends_on"] == [0, 1]
-
-
-@pytest.mark.asyncio
-async def test_g2_run_workflow_fails_closed_on_reduce_node():
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=_StubProvider(),
-        session_log=InMemorySessionLog(),
-        execution_plane=LocalExecutionPlane(),
-        sub_agent_orchestrator=_StubOrchestrator(),
-        max_tokens=1000,
-    ))
-    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
-        WorkflowNodeSpec(task="worker A", role="explore"),
-        WorkflowNodeSpec(task="worker B", role="explore"),
-        WorkflowNodeSpec(task="merge", role="implement", reducer="dedupe_lines", depends_on=[0, 1]),
-    ]))
-    assert outcome.node_outcomes == []
-    assert outcome.rejection is not None
-    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
-
-
-@pytest.mark.asyncio
-async def test_g2_unknown_reducer_also_fails_closed_at_load():
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=_StubProvider(),
-        session_log=InMemorySessionLog(),
-        execution_plane=LocalExecutionPlane(),
-        sub_agent_orchestrator=_StubOrchestrator(),
-        max_tokens=1000,
-    ))
-    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
-        WorkflowNodeSpec(task="worker", role="explore"),
-        WorkflowNodeSpec(task="merge", role="implement", reducer="nope", depends_on=[0]),
-    ]))
-    assert outcome.node_outcomes == []
-    assert outcome.rejection is not None
-    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
-
-
 @pytest.mark.asyncio
 async def test_run_workflow_bootstraps_standalone():
     """No active run: run_workflow auto-bootstraps a kernel, drives the DAG, then tears it down."""

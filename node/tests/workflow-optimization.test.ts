@@ -1,6 +1,5 @@
 /** Dynamic-workflow optimization batch: node-observable kernel behavior and per-node caps. */
 import { workflowNodeSpecToKernel, workflowNodeToSpec } from "../src/types/agent.js"
-import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
 import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { createRunner, tool } from "./runtime/helpers.js"
@@ -57,21 +56,6 @@ describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", ()
     expect(outcome.nodeOutcomes[0]?.status).toBe("completed")
     expect(seen).toEqual([{ tokenBudget: 5000, maxTurns: 4, maxWallMs: 30_000 }])
   })
-
-  it("dependencyOutputsNote formats, clips, and skips empty outputs", () => {
-    const outputs = new Map([
-      ["wf-node0", "alpha findings"],
-      ["wf-node1", "x".repeat(9000)],
-    ])
-    const note = dependencyOutputsNote(["wf-node0", "wf-node1", "wf-node-missing"], outputs, 100)
-    expect(note).toContain("[dependency wf-node0 output]\nalpha findings")
-    expect(note).toContain("…[truncated]")
-    expect(note).not.toContain("wf-node-missing")
-    expect(dependencyOutputsNote([], outputs)).toBe("")
-    expect(dependencyOutputsNote(undefined, outputs)).toBe("")
-    expect(dependencyOutputsNote(["wf-node0"], outputs, 100, "reference")).toBe("[dependency references]\nwf-node0")
-    expect(dependencyOutputsNote(["wf-node1"], outputs, 100, "summary")).toContain("[summary truncated]")
-  })
 })
 
 describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny-all)", () => {
@@ -117,60 +101,6 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     expect(outcome.nodeOutcomes).toEqual([])
     expect(outcome.rejection?.reason).toContain("absent from canonical WorkflowNode: trust")
     expect(pings).toBe(0)
-  })
-})
-
-describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable session", () => {
-  /** Per ITERATION the child makes two calls: propose a pace verb, then file the report turn. */
-  function pacingLoopProvider(verbs: string[]): LLMProvider {
-    let call = 0
-    return {
-      async complete(): Promise<ModelMessage> {
-        return { role: "assistant", content: "done", toolCalls: [] }
-      },
-      async *stream(): AsyncIterable<StreamEvent> {
-        call += 1
-        const iteration = Math.ceil(call / 2) - 1
-        if (call % 2 === 1) {
-          yield {
-            type: "tool_call", id: `pace-${call}`, name: "pace",
-            arguments: { next: verbs[Math.min(iteration, verbs.length - 1)], reason: `iter ${iteration}` },
-          }
-          return
-        }
-        yield { type: "text_delta", delta: `iteration ${iteration} report` }
-      },
-    }
-  }
-
-  it("fails closed instead of silently running a loop node once", async () => {
-    const { runner, sessionLog } = createRunner(pacingLoopProvider(["continue", "stop"]))
-    const outcome = await runner.runWorkflow(
-      { nodes: [{ task: "polish until done", role: "implement", loop: { maxIters: 5 } }] },
-      { sessionId: "wfloop" },
-    )
-    expect(outcome.nodeOutcomes).toEqual([])
-    expect(outcome.rejection?.reason).toContain("absent from canonical WorkflowNode: kind")
-    expect(await sessionLog.read("wfloop-wf-node0")).toEqual([])
-  })
-
-  it("also rejects a silent loop before starting its child", async () => {
-    const silent: LLMProvider = {
-      async complete(): Promise<ModelMessage> {
-        return { role: "assistant", content: "done", toolCalls: [] }
-      },
-      async *stream(): AsyncIterable<StreamEvent> {
-        yield { type: "text_delta", delta: "all done in one pass" }
-      },
-    }
-    const { runner, sessionLog } = createRunner(silent)
-    const outcome = await runner.runWorkflow(
-      { nodes: [{ task: "one-shot polish", role: "implement", loop: { maxIters: 4 } }] },
-      { sessionId: "wfsilent" },
-    )
-    expect(outcome.nodeOutcomes).toEqual([])
-    expect(outcome.rejection?.reason).toContain("absent from canonical WorkflowNode: kind")
-    expect(await sessionLog.read("wfsilent-wf-node0")).toEqual([])
   })
 })
 

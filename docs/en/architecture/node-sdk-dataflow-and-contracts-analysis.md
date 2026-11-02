@@ -101,7 +101,7 @@ Old formal IR paths must not be treated as a second runtime authority. The `agen
 3. seeds provider replay and canonical `preload_history` from session events, loading archives through payload/compression stores;
 4. computes `AgentRunSpec`, applying capability filters, allowed-tool ceilings, baseline exposure, and verification contracts;
 5. applies governance, context, reliability, signal, and resource-quota policy as a composite `configure_run` input;
-6. prefetches long-term memory, seeds attachments, and commits `start_operation` to obtain the first kernel action.
+6. seeds attachments and commits `start_operation` to obtain the first kernel action (a memory recall when `memory_policy.recall` is on, else a provider call).
 
 Configuration is not an unstructured options bag. It is lowered into ordered, journaled inputs so recovery can rebuild canonical configuration from the journal/checkpoint rather than trust current host defaults.
 
@@ -154,7 +154,7 @@ Memory content is owned by the host store; the kernel owns effect and receipt pr
 
 ### 3.5 Workflow and dynamic workflow path
 
-`spawn_workflow` enters the workflow driver. The driver handles batches, dependency outputs, reducers, loops, tournaments, output schemas, child budgets, and target resolution. A target Agent is resolved on the host boundary and supplies its own provider and bindings.
+`spawn_workflow` enters the workflow driver. The driver handles batches, output schemas, child budgets, and target resolution. The kernel composes each node's dependency brief. A target Agent is resolved on the host boundary and supplies its own provider and bindings.
 
 Dynamic workflows use `RuntimeRunner.runDynamicWorkflow()` as the only public execution entry:
 

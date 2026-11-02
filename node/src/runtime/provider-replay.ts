@@ -50,6 +50,17 @@ export function assistantReplayKey(message: Pick<ModelMessage, "content" | "tool
 }
 
 /**
+ * The key an OpenAI-chat reasoning replay is stored under. A tool-call turn is identified by its
+ * tool calls alone: the kernel may rewrite an old turn's text (narration collapse, compaction) but
+ * never its calls, and a reasoning model rejects the turn if its reasoning cannot be found again.
+ */
+export function reasoningReplayKey(message: Pick<ModelMessage, "content" | "toolCalls">): string {
+  return message.toolCalls?.length
+    ? assistantReplayKey({ content: "", toolCalls: message.toolCalls })
+    : assistantReplayKey(message)
+}
+
+/**
  * A stored replay may only be seeded into a provider speaking the same wire
  * protocol. On a cross-protocol fallback (provider A -> provider B) the
  * incompatible envelope is skipped so B re-serializes neutral context instead

@@ -105,6 +105,18 @@ export interface MemoryStore {
   setPinned?(agentId: string, recordId: string, pinned: boolean): Promise<void>
 }
 
+/** Optional durable lifecycle capability for lease and memory-write accounting. */
+export interface MemoryLifecycleStore {
+  issueLease(lease: import("./lifecycle.js").MemoryLease): Promise<import("./lifecycle.js").MemoryLease>
+  getLease(agentId: string, scope: MemoryScope): Promise<import("./lifecycle.js").MemoryLease | undefined>
+  renewLease(agentId: string, leaseId: string, expiresAt: number, renewedAt: number): Promise<import("./lifecycle.js").MemoryLease>
+  consumeWrite(agentId: string, scope: MemoryScope, operationId: string, nowMs: number): Promise<import("./lifecycle.js").MemoryLifecycleWriteResult>
+  revokeLease(agentId: string, leaseId: string, revokedAt: number): Promise<import("./lifecycle.js").MemoryLease>
+  deleteRecord(agentId: string, scope: MemoryScope, recordId: string, deletionId: string, priorDigest?: string): Promise<import("./lifecycle.js").MemoryDeletionReceipt>
+  deleted(agentId?: string): Promise<import("./lifecycle.js").MemoryDeletionReceipt[]>
+  events(): Promise<import("./lifecycle.js").MemoryLifecycleEvent[]>
+}
+
 /** Memory query request (kernel → SDK). */
 export interface MemoryQuery {
   scope: MemoryScope

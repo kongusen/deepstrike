@@ -3,7 +3,7 @@
 code_refs:
   node: [Agent, AgentRunOptions, RunResult, LLMProvider]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, memory_provider, memory_summarizer, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions Reference
@@ -50,10 +50,8 @@ Node applications configure an executable Agent through `createAgent`; the facad
 | `skill_lease_turns` | K3: auto-deactivate a skill N turns after activation (toolset re-widens + knowledge pin boundary-swept); None = permanent |
 | `memory_store` | Long-term memory store |
 | `memory_policy` | Validation and retrieval config |
-| `pre_query_memory` | Pre-run memory prefetch hook |
+| `pre_query_memory` | Rewrites the kernel's goal recall (run start and each renewal) into scoped queries |
 | `knowledge_source` | External knowledge source |
-| `memory_provider` | Durable-memory extraction LLM |
-| `memory_summarizer` | Semantic archival summarizer |
 
 ## Governance
 
@@ -78,7 +76,6 @@ Node applications configure an executable Agent through `createAgent`; the facad
 | `worktree_manager` | Worktree isolation |
 | `sub_agent_orchestrator` | Custom spawn logic |
 | `sub_agent_harness` | Sub-agent harness retries |
-| `reducers` | Custom reduce nodes |
 | `milestone_policy` | Milestone policy |
 | `milestone_contract` | Top-level milestone |
 | `on_milestone_evaluate` | Milestone evaluation callback |

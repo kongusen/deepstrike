@@ -3,10 +3,9 @@
  *
  * The prefetch path used to call `memoryStore.search` directly and hand-assemble a history
  * message, so `memory_recalled` never fired for prefetched hits — recall counts froze and
- * promotions could never trigger. Prefetch now routes each query through the kernel's
- * `query_memory → memory_query_result` effect: the kernel injects each routed hit into
- * history itself (`[MEMORY …]`, one message per hit — same shape as an in-run query) and
- * derives the recall lifecycle statelessly from the routed hits. The store stays a pure
+ * promotions could never trigger. Prefetch now lands each hit as a keyed `memory:<record_id>`
+ * knowledge entry (`[MEMORY …]`, one entry per hit) and the kernel derives the recall lifecycle
+ * statelessly from the hits. The store stays a pure
  * query; the runner mirrors `memory_recalled → recordRecall` and surfaces the kernel's
  * edge-triggered `promotion_suggested`.
  */
@@ -14,8 +13,19 @@ import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { MemoryStore, MemoryRecall, MemoryRecallLifecycle } from "../src/memory/protocols.js"
 import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
+import type { MemoryRecord } from "../src/memory/protocols.js"
 
 const scope = { tenant_id: "agent-lifecycle", namespace: "t5" }
+
+// The same records and expected index lines in every SDK's recall-projection test: the body is
+// the description, or the name when there is none — never the content.
+const recallVectorRecord: MemoryRecord = {
+  record_id: "record-v", scope: { tenant_id: "t", namespace: "n" }, name: "fact", kind: "project", content: "prefers numbered sections",
+  description: "how briefs are laid out", provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
+  created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.5, links: [], pinned: false,
+}
+const RECALL_TURN_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
+const RECALL_TURN_NAME_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
 
 function record(recordId: string, content: string, recallCount: number) {
   return {
@@ -79,8 +89,12 @@ function runnerOpts(store: MemoryStore, extra: Record<string, unknown> = {}) {
 describe("T5 memory recall lifecycle is shared by every query route", () => {
   it("initial prefetch routes through the kernel: recordRecall(1) + kernel-shaped injection", async () => {
     const { store, recallCalls } = trackingStore(0)
+    let knowledge = ""
     let turnsJson = ""
-    const provider = textProvider(context => { turnsJson ||= JSON.stringify(context.turns) })
+    const provider = textProvider(context => {
+      knowledge ||= context.systemKnowledge ?? ""
+      turnsJson ||= JSON.stringify(context.turns)
+    })
     const { runner } = createRunner(provider, [], runnerOpts(store))
 
     await collectText(runner.run({ sessionId: "t5-initial", goal: "use the fact" }))
@@ -89,17 +103,36 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
     expect(recallCalls[0]).toEqual([
       expect.objectContaining({ record_id: "record-t5", recall_count: 1 }),
     ])
-    // Kernel injection shape: one `[MEMORY …]` message per hit — the old hand-assembled
-    // combined `[memory …]` message is gone.
-    expect(turnsJson).toContain("[MEMORY record_id=record-t5")
-    expect(turnsJson).toContain("LONGTERM_FACT_T5")
-    expect(turnsJson).not.toContain("[memory record_id=")
+    // Kernel injection shape: one keyed `[MEMORY …]` knowledge entry per hit, never a history turn.
+    expect(knowledge).toContain("[MEMORY record_id=record-t5")
+    expect(turnsJson).not.toContain("[MEMORY record_id=")
+    // An index line, not the record: the content is read on demand with `memory(record_id)`.
+    expect(knowledge).toContain("t5 fixture")
+    expect(knowledge).not.toContain("LONGTERM_FACT_T5")
+    expect(knowledge).not.toContain("[memory record_id=")
+  })
+
+  it("M5 · each prefetched hit is the canonical recall turn, and the prefetch is audited", async () => {
+    const { store } = trackingStore(0)
+    let knowledge: string | undefined
+    const provider = textProvider(context => { knowledge ??= context.systemKnowledge ?? "" })
+    const { runner, sessionLog } = createRunner(provider, [], runnerOpts(store))
+
+    await collectText(runner.run({ sessionId: "t5-projection", goal: "use the fact" }))
+
+    const recallLines = (knowledge ?? "").split("\n").filter(line => line.startsWith("[MEMORY "))
+    expect(recallLines).toEqual([
+      "[MEMORY record_id=record-t5 kind=reference trust=host_verified] t5 fixture",
+    ])
+    const audited = (await sessionLog.read("t5-projection")).filter(entry => entry.event.kind === "memory_retrieval_result")
+    expect(audited).toHaveLength(1)
+    expect(audited[0]?.event).toMatchObject({ hits: [expect.objectContaining({ record: expect.objectContaining({ record_id: "record-t5" }) })] })
   })
 
   it("two prefetch queries hitting the same record recall and inject it once", async () => {
     const { store, recallCalls } = trackingStore(0)
-    let turnsJson = ""
-    const provider = textProvider(context => { turnsJson ||= JSON.stringify(context.turns) })
+    let knowledge = ""
+    const provider = textProvider(context => { knowledge ||= context.systemKnowledge ?? "" })
     const { runner } = createRunner(provider, [], runnerOpts(store, {
       preQueryMemory: () => [
         { scope, query: "first angle", top_k: 5, kinds: [] },
@@ -111,7 +144,7 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
 
     expect(recallCalls).toHaveLength(1)
     expect(recallCalls[0]).toHaveLength(1)
-    expect(turnsJson.split("[MEMORY record_id=record-t5").length - 1).toBe(1)
+    expect(knowledge.split("[MEMORY record_id=record-t5").length - 1).toBe(1)
   })
 
   it("promotion fires exactly on the threshold crossing, and never re-fires past it", async () => {

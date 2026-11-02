@@ -158,7 +158,7 @@ Memory content 的 authority 在 host MemoryStore；kernel 只持有 effect、re
 
 ### 3.5 Workflow 分支
 
-普通 workflow 的 `spawn_workflow` action 进入 workflow driver；driver 负责批次、依赖输出、reducer、loop、tournament、output schema、子 agent 预算和 target resolver。指定 Agent 的解析发生在 host boundary，由目标 Agent 自己提供 provider 和 runtime binding。
+普通 workflow 的 `spawn_workflow` action 进入 workflow driver；driver 负责批次、output schema、子 agent 预算和 target resolver；节点的依赖 brief 由 kernel 生成。指定 Agent 的解析发生在 host boundary，由目标 Agent 自己提供 provider 和 runtime binding。
 
 动态 workflow 也使用同一个 `RuntimeRunner.runDynamicWorkflow()`：
 

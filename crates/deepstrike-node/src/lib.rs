@@ -1022,47 +1022,12 @@ pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
-/// Framework Verifiable Runtime bridge. The request contains byte arrays encoded by the SDK
-/// adapter; Rust core owns all inspect/verify/replay/fork semantics.
-#[napi]
-pub fn verifiable_operation_json(request: String) -> Result<String> {
-    ffi_guard("verifiableOperationJson", || {
-        deepstrike_core::runtime::verifiable::operation_json(&request).map_err(Error::from_reason)
-    })
-}
-
-/// Framework Evolution Runtime bridge. Rust core remains the single E1–E8 validation authority.
-#[napi]
-pub fn evolution_validate_json(request: String) -> Result<String> {
-    ffi_guard("evolutionValidateJson", || {
-        deepstrike_core::evolution::validate_evolution_json(&request).map_err(Error::from_reason)
-    })
-}
-
 /// §22.13 memory authority for a host with no live operation: write admission and the recall
 /// lifecycle, answered by the same kernel functions the in-operation paths use.
 #[napi]
 pub fn memory_authority_json(request: String) -> Result<String> {
     ffi_guard("memoryAuthorityJson", || {
         deepstrike_core::runtime::kernel::wire::memory_authority::memory_authority_json(&request)
-            .map_err(Error::from_reason)
-    })
-}
-
-/// Freeze host route and measurement against the kernel's committed Context candidate.
-#[napi]
-pub fn context_prepare_json(request: String) -> Result<String> {
-    ffi_guard("contextPrepareJson", || {
-        deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
-            .map_err(Error::from_reason)
-    })
-}
-
-/// Verify recorded execution evidence against a replayed Context candidate.
-#[napi]
-pub fn context_verify_json(request: String) -> Result<String> {
-    ffi_guard("contextVerifyJson", || {
-        deepstrike_core::context::execution::verify_context_dispatch_json(&request)
             .map_err(Error::from_reason)
     })
 }

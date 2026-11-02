@@ -1,14 +1,10 @@
-# 结构化输出与 Reducer
+# 结构化输出
 
-当 Agent 之间需要稳定交接时，DeepStrike 的 workflow 提供两种可预测的结果处理方式：
-
-- `output_schema`：要求某个 agent node 输出符合 JSON Schema 子集
-- `Reduce` node：不跑 LLM，host 执行确定性 reducer 合并依赖输出
+当 Agent 之间需要稳定交接时，`output_schema` 要求某个 agent node 输出符合 JSON Schema 子集。需要用确定性代码合并多个节点的输出时，在宿主程序（`runDynamicWorkflow`）里直接写普通函数即可，不需要专门的节点类型。
 
 **代码入口**：
 
 - `python/deepstrike/runtime/output_schema.py`
-- `python/deepstrike/runtime/reducers.py`
 - `crates/deepstrike-core/src/orchestration/workflow/mod.rs`
 - `python/deepstrike/runtime/runner.py`
 
@@ -18,12 +14,9 @@
 |------|------|
 | 可校验交接 | 让 node 输出变成可校验数据，而不只是自然语言 |
 | 有界纠错 | schema instruction 和 retry 由 SDK 注入 |
-| 确定性合并 | Reduce node 直接运行 deterministic reducer，不消耗模型调用 |
-| 下游保护 | schema 失败会阻断依赖节点，reducer 输出可作为稳定输入继续传递 |
+| 下游保护 | schema 失败会阻断依赖节点 |
 
-这会把“让 Agent 给我一个结构”变成可校验、可重试、可失败、可用确定性代码合并的交接约定。
-
-![Reducers & Output Validation Mechanisms](/reducers_mechanisms.svg)
+这会把“让 Agent 给我一个结构”变成可校验、可重试、可失败的交接约定。
 
 ## Level 1：给节点加 output_schema
 
@@ -71,73 +64,9 @@ kernel 只携带 schema；SDK 会：
 
 未知 keyword 会被忽略，不会报错。这是轻量 SDK 校验器，不是完整 JSON Schema 引擎。
 
-## Level 2：Reduce node
+## Level 2：Generate → Evaluate → Retry
 
-Reduce node 是 host compute 节点，不调用模型：
-
-```python
-from deepstrike import WorkflowNodeSpec
-
-reduce_node = WorkflowNodeSpec(
-    task="合并风险列表",
-    reducer="merge_json_arrays",
-    depends_on=[0, 1, 2],
-)
-```
-
-内置 reducers：
-
-| reducer | 行为 |
-|---------|------|
-| `concat` | 拼接所有 dependency output |
-| `dedupe_lines` | 按行去重 |
-| `merge_json_arrays` | 提取 JSON value，合并数组并去重 |
-| `count` | 统计非空输出数量 |
-
-## Level 3：注册自定义 reducer
-
-```python
-from deepstrike import RuntimeOptions, builtin_reducers
-
-def top_risks(inputs: list[dict]) -> str:
-    # inputs: [{"agent_id": "...", "output": "..."}]
-    return "\n".join(i["output"] for i in inputs[:3])
-
-runner = RuntimeRunner(RuntimeOptions(
-    ...,
-    reducers={**builtin_reducers, "top_risks": top_risks},
-))
-```
-
-自定义 reducer 应该是纯函数：同样输入返回同样输出，不做网络 / 文件 / LLM I/O。需要 I/O 时应建一个普通 workflow node。
-
-## Level 4：Schema + Reducer 组合
-
-```python
-spec = WorkflowSpec(nodes=[
-    WorkflowNodeSpec(
-        task="列出模块 A 的风险，返回 JSON array",
-        role="verify",
-        output_schema={"type": "array", "items": {"type": "string"}},
-    ),
-    WorkflowNodeSpec(
-        task="列出模块 B 的风险，返回 JSON array",
-        role="verify",
-        output_schema={"type": "array", "items": {"type": "string"}},
-    ),
-    WorkflowNodeSpec(
-        task="合并风险",
-        reducer="merge_json_arrays",
-        depends_on=[0, 1],
-    ),
-])
-```
-
-这样 verifier 用 LLM 生成结构化结果，merge 阶段不再消耗模型 token。
-
-## Level 5：Generate → Evaluate → Retry
-
-`gen_eval` 模板把实现循环和 verifier 组合起来：
+`gen_eval` 模板把 worker 和 verifier 组合起来：
 
 ```python
 from deepstrike import gen_eval
@@ -145,11 +74,10 @@ from deepstrike import gen_eval
 spec = gen_eval(
     implement="写一个 CSV parser",
     evaluate="验证 parser 处理 quote、escape、empty cell",
-    max_iters=3,
 )
 ```
 
-内部会使用 loop worker + verify node；评判结构可配合 `verdict_output_schema()`。
+内部是一个 worker node 加一个 verify node；带反馈的重试由 `AttemptLoop` 驱动，评判结构可配合 `verdict_output_schema()`。
 
 ## 运行时与 SDK 的职责
 
@@ -159,8 +87,6 @@ spec = gen_eval(
 | schema instruction 注入 | SDK |
 | JSON 提取与校验 | SDK |
 | retry prompt | SDK |
-| reducer node 调度与依赖 | runtime |
-| reducer 函数执行 | SDK |
 
 ## 常见问题
 
@@ -169,12 +95,9 @@ spec = gen_eval(
 | 模型输出 markdown fence | `extract_json_value` 会尝试提取 fenced JSON |
 | 模型输出 JSON 外有解释文本 | 会尝试截取第一个 object / array |
 | schema 使用 `oneOf` / `pattern` | 当前轻量校验器忽略未知 keyword |
-| reducer 找不到 | node 失败，检查 `RuntimeOptions.reducers` |
-| reducer 需要访问文件 | 不要放 reducer，改成普通 tool / workflow node |
 
 ## 验证入口
 
 - `python/tests/test_output_schema.py`
-- `python/tests/test_workflow_reduce.py`
 - `python/tests/test_workflow_control_flow.py`
 - `node/tests/output-schema.test.ts`

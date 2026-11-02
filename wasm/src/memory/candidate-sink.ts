@@ -1,0 +1,126 @@
+// Memory candidate hand-off (contract M2). A write path whose `memoryRuntimePolicy` value is
+// `"candidate_sink"` does not put the record in the memory store: it hands the record to the
+// host's sink as a candidate, and the sink answers whether it is pending review, accepted, or
+// rejected. Only an accepted candidate is a remembered record.
+
+import { askMemoryAuthority } from "./authority.js"
+import type { MemoryRecord } from "./index.js"
+import { admitMemoryCandidate, type MemoryCandidateAttestation, type MemoryCandidateSourceVerifier } from "./attestation.js"
+
+/** Which write path produced the candidate. `child_request` is the kernel's PersistMemory effect;
+ *  `model_proposal` is the model's own `propose_memory` call. */
+export type MemoryCandidateSource = "child_request" | "model_proposal"
+
+export interface MemoryCandidate {
+  /** Deterministic for the write that produced it (see {@link memoryCandidateId}): a retry of the
+   *  same write carries the same id, so the sink can answer it from what it already holds. */
+  candidate_id: string
+  source: MemoryCandidateSource
+  record: MemoryRecord
+  attestation?: MemoryCandidateAttestation
+}
+
+export type MemoryCandidateReceipt =
+  | { status: "pending"; candidate_id: string; receipt_id: string }
+  | { status: "accepted"; candidate_id: string; receipt_id: string; record_ref: string; digest: string }
+  | { status: "rejected"; candidate_id: string; receipt_id: string; reason_code: string }
+
+/**
+ * The host's candidate store. Contract (spec §2.3):
+ *
+ * - The sink mints `receipt_id`; it is the stable name of its answer.
+ * - Identity is scoped by agentId; source and review metadata are part of conflict detection.
+ * - The same `candidate_id` with the same payload returns the original receipt and stores nothing
+ *   new, so a write whose acknowledgement was lost can be redelivered safely.
+ * - The same `candidate_id` with a different payload is rejected with
+ *   `reason_code = "candidate_conflict"` and does not overwrite what is held.
+ * - Throwing means no answer was obtained; the caller may redeliver the same candidate.
+ */
+export interface MemoryCandidateSink {
+  submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt>
+}
+
+/** A candidate id from the write's canonical identity — never random, so a retry repeats it.
+ *  The kernel mints it, so every SDK hands the same write the same id. */
+export async function memoryCandidateId(parts: readonly string[]): Promise<string> {
+  return String((await askMemoryAuthority({ op: "candidate_id", parts })).candidate_id)
+}
+
+/** The kernel's digest of the part of a record a candidate is judged by. Store ids, timestamps and
+ *  recall counters are excluded: a retry of the same write may mint them afresh without changing
+ *  what is being proposed. */
+export async function memoryCandidatePayloadDigest(record: MemoryRecord): Promise<string> {
+  return String((await askMemoryAuthority({ op: "candidate_payload_digest", record })).payload_digest)
+}
+
+/** Why a sink refuses a candidate whose payload it already holds for the agent under another id:
+ *  the proposal is still in review, or already remembered. A rejected one does not count, so a
+ *  proposal the host turned down may be made again. Each write path mints its own ids, so this is
+ *  what keeps a model proposal and a child request for the same fact from both reaching review. */
+export function memoryCandidateDuplicateReason(held: MemoryCandidateReceipt["status"] | undefined): string | undefined {
+  if (held === "pending") return "already_pending_review"
+  if (held === "accepted") return "already_remembered"
+  return undefined
+}
+
+interface HeldCandidate {
+  agentId: string
+  candidate: MemoryCandidate
+  payloadDigest: string
+  receipt: MemoryCandidateReceipt
+}
+
+/** In-process sink: every candidate is held as `pending`. For tests and local development. */
+export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
+  private readonly held = new Map<string, HeldCandidate>()
+  private nextReceipt = 1
+
+  constructor(private readonly sourceVerifier?: MemoryCandidateSourceVerifier) {}
+
+  async submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt> {
+    const payloadDigest = await memoryCandidatePayloadDigest(candidate.record)
+    const key = JSON.stringify([agentId, candidate.candidate_id])
+    const existing = this.held.get(key)
+    if (existing) {
+      if (existing.payloadDigest === payloadDigest && existing.candidate.source === candidate.source) return structuredClone(existing.receipt)
+      return {
+        status: "rejected",
+        candidate_id: candidate.candidate_id,
+        receipt_id: this.mintReceiptId(),
+        reason_code: "candidate_conflict",
+      }
+    }
+    const verification = await admitMemoryCandidate(agentId, candidate, this.sourceVerifier)
+    if (!verification.valid) {
+      return {
+        status: "rejected",
+        candidate_id: candidate.candidate_id,
+        receipt_id: this.mintReceiptId(),
+        reason_code: verification.reason_code,
+      }
+    }
+    const duplicate = memoryCandidateDuplicateReason([...this.held.values()]
+      .find(held => held.agentId === agentId && held.payloadDigest === payloadDigest)?.receipt.status)
+    if (duplicate) {
+      return { status: "rejected", candidate_id: candidate.candidate_id, receipt_id: this.mintReceiptId(), reason_code: duplicate }
+    }
+    const receipt: MemoryCandidateReceipt = {
+      status: "pending",
+      candidate_id: candidate.candidate_id,
+      receipt_id: this.mintReceiptId(),
+    }
+    this.held.set(key, { agentId, candidate: structuredClone(candidate), payloadDigest, receipt })
+    return structuredClone(receipt)
+  }
+
+  /** Candidates held for `agentId`, in submission order. */
+  candidates(agentId?: string): MemoryCandidate[] {
+    return [...this.held.values()]
+      .filter(held => agentId === undefined || held.agentId === agentId)
+      .map(held => structuredClone(held.candidate))
+  }
+
+  private mintReceiptId(): string {
+    return `receipt:${this.nextReceipt++}`
+  }
+}

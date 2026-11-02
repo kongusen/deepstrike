@@ -4,7 +4,7 @@
 // ║ This is the intent layer: run an agent, run a workflow, author a tool,     ║
 // ║ pick a provider. Advanced machinery lives behind subpaths:                 ║
 // ║   @deepstrike/sdk/providers  — backend provider classes + profiles         ║
-// ║   @deepstrike/sdk/workflow   — orchestration, reducers, contracts, specs   ║
+// ║   @deepstrike/sdk/workflow   — orchestration, contracts, specs             ║
 // ║   @deepstrike/sdk/planes     — worktree / sandbox / mcp / vpc planes        ║
 // ║   @deepstrike/sdk/memory     — durable + working memory, knowledge sources  ║
 // ║   @deepstrike/sdk/harness    — eval harnesses + judge                       ║
@@ -37,7 +37,13 @@ export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/err
 // Any backend — including a custom OpenAI-compatible endpoint — is reachable via `createProvider`.
 // Backend-specific classes (DeepSeek/Kimi/Qwen/GLM/Gemini/Ollama/MiniMax) live in `@deepstrike/sdk/providers`.
 export { AnthropicProvider } from "./providers/anthropic.js"
-export type { AnthropicProviderConfig } from "./providers/anthropic.js"
+export type {
+  AnthropicCompaction,
+  AnthropicContextEditing,
+  AnthropicOnDemandCompaction,
+  AnthropicProviderConfig,
+  AnthropicThresholdCompaction,
+} from "./providers/anthropic.js"
 export { OpenAIProvider } from "./providers/openai.js"
 export type { OpenAIProviderOptions } from "./providers/openai.js"
 export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
@@ -82,5 +88,5 @@ export type {
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   LLMProvider, RetryConfig, TokenUsage,
-  ProviderWireEvidence, ProviderTransportTelemetry,
+  ProviderWireEvidence, ProviderTransportTelemetry, NativeContextTiers,
 } from "./types.js"

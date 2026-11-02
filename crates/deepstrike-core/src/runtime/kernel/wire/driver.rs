@@ -68,7 +68,7 @@ use super::effect::{
     ApprovalRequest as WireApprovalRequest, ArchivePageOutEffect, CallProviderEffect,
     CanonicalMemoryQuery, CanonicalMemoryWrite, EffectKind, EffectKindTag, EffectOutcome,
     EffectSuccess, EvaluateMilestoneEffect, ExecuteToolsEffect, HostEffectFailure, KernelEffect,
-    LaunchToken, LoadPayloadEffect, PageOutPayload, PayloadRef, PersistMemoryEffect,
+    LaunchToken, LoadPayloadEffect, MemoryRecordRef, PageOutPayload, PayloadRef, PersistMemoryEffect,
     PreemptTasksEffect, ProviderCompleted, ProviderMessage, ProviderOutcome, QueryMemoryEffect,
     RenderedContext as WireRenderedContext, RequestApprovalEffect, SpawnTasksEffect,
     TaskAttemptRef, TaskLaunch, ToolCall as WireToolCall, ToolResultDisposition,
@@ -102,6 +102,7 @@ use super::terminal::{
 };
 use super::transaction::{PlanContext, TransitionStep};
 
+use crate::context::item::{ContextItem, ItemEnd, ItemOrigin, ItemValue};
 use crate::context::manager::READ_RESULT_TOOL_NAME;
 use crate::context::task_state::{CompressionEntry, PlanStep, TaskState};
 use crate::mm::handle::{Handle, HandleKind, Residency};
@@ -554,16 +555,6 @@ fn durable_block_to_content_part(block: &DurableContentBlock) -> Result<ContentP
     }
 }
 
-fn workflow_kind_label(state: &WorkflowRuntimeNodeState) -> &'static str {
-    match state.node.kind {
-        crate::orchestration::workflow::NodeKind::Spawn => "spawn",
-        crate::orchestration::workflow::NodeKind::Loop { .. } => "loop",
-        crate::orchestration::workflow::NodeKind::Classify { .. } => "classify",
-        crate::orchestration::workflow::NodeKind::Tournament { .. } => "tournament",
-        crate::orchestration::workflow::NodeKind::Reduce { .. } => "reduce",
-    }
-}
-
 fn workflow_status_label(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
@@ -992,17 +983,7 @@ fn restore_scheduler(
             .nodes
             .iter()
             .enumerate()
-            .zip(core_spec.nodes.iter())
-            .map(|((index, node), core)| {
-                if node.kind != "spawn" {
-                    return Err(KernelFault::new(
-                        KernelFaultCode::CheckpointIncompatible,
-                        format!(
-                            "workflow node {} carries unsupported checkpoint kind {:?}",
-                            node.node_id, node.kind
-                        ),
-                    ));
-                }
+            .map(|(index, node)| {
                 let result = engine
                     .task_table()
                     .get(&crate::orchestration::workflow::node_agent_id(index))
@@ -1010,11 +991,9 @@ fn restore_scheduler(
                     .and_then(|process| process.result.as_ref())
                     .map(|result| result.result.clone());
                 Ok(WorkflowRuntimeNodeState {
-                    node: core.clone(),
                     status: restore_workflow_status(&node.status)?,
                     result,
                     active_agent_id: node.active_agent_id.clone(),
-                    iterations_completed: node.iterations_completed as usize,
                 })
             })
             .collect();
@@ -1226,16 +1205,37 @@ fn restore_context_vm(
     }
     for slot in &state.knowledge {
         let message = restore_message(&slot.role, &slot.body, &slot.tool_calls)?;
-        ctx.partitions.knowledge.push_entry(
+        let origin = slot.origin.unwrap_or_else(|| match slot.key.as_deref() {
+            Some(key) if key.starts_with("memory:") => ItemOrigin::MemoryRecall,
+            key => ItemOrigin::for_host_key(key),
+        });
+        let mut entry = ContextItem::new(
+            origin,
             slot.key.as_deref().map(Into::into),
             message,
             slot.tokens,
             slot.pinned,
+            slot.injected_turn,
         );
+        if let Some(lease) = slot.lease {
+            entry.lease = lease;
+        }
+        entry.leaving = match (slot.evict_at_boundary, slot.leaving) {
+            (false, _) => None,
+            (true, leaving) => Some(leaving.unwrap_or(ItemEnd::Removed)),
+        };
+        entry.value = ItemValue {
+            injected_turn: slot.injected_turn,
+            ref_count: slot.use_count,
+            last_referenced_step: slot.last_used_step,
+            last_referenced_turn: slot.last_referenced_turn,
+            expanded: slot.expanded,
+            paged_in_after_evict: slot.paged_in_after_evict,
+        };
+        ctx.partitions.knowledge.token_count += entry.tokens;
+        ctx.partitions.knowledge.entries.push(entry);
         if let Some(entry) = ctx.partitions.knowledge.entries.last_mut() {
-            entry.evict_at_boundary = slot.evict_at_boundary;
-            entry.use_count = slot.use_count;
-            entry.last_used_step = slot.last_used_step;
+            entry.staged = slot.staged;
             entry.pending = slot
                 .pending
                 .as_ref()
@@ -1252,9 +1252,26 @@ fn restore_context_vm(
         state.knowledge_reference_step,
         state.knowledge_budget_warned,
     );
+    ctx.restore_cache_checkpoint_state(state.prefix_sent, state.cache_invalidated_tokens);
+    ctx.partitions.knowledge.evicted_keys = state.evicted_knowledge_keys.iter().cloned().collect();
+    ctx.partitions.knowledge.regret = state.knowledge_regret;
+    ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;
+    ctx.partitions.knowledge.retired = state.retired_items.clone();
+    ctx.partitions.knowledge.turn = state.item_turn;
+    if state.history_items.len() == ctx.partitions.history.messages.len() {
+        ctx.partitions.history.items = state.history_items.clone();
+    }
+    ctx.last_item_id = state.last_item_id;
+    ctx.history_tally = state
+        .history_tally
+        .iter()
+        .map(|tally| (tally.origin, *tally))
+        .collect();
+    ctx.recall_top_k = state.recall_top_k;
+    ctx.recall_due = state.recall_due;
+    ctx.dependency_bodies = state.dependency_bodies.clone();
     ctx.partitions.signals = state.signals.clone();
     ctx.partitions.task_state = restore_task_state(&state.task_state);
-    ctx.restore_state_generation(state.state_generation);
     ctx.last_activity_ms = state.last_activity_ms.get();
     ctx.last_compact_ms = state.last_compact_ms.map(WireU64::get);
     ctx.active_skills = state
@@ -1491,6 +1508,9 @@ struct AuthoredMemoryWrite {
     name: String,
     kind: WireMemoryKind,
     size_bytes: u32,
+    /// Authored from the model's own `propose_memory` call: the turn that made it waits on the
+    /// outcome and reads it back, unlike a child request whose author has already completed.
+    model_facing: bool,
 }
 
 /// What the kernel authored for a pending `QueryMemory` effect.
@@ -1499,6 +1519,10 @@ struct AuthoredMemoryQuery {
     binding_id: MemoryBindingId,
     text: String,
     requested_k: u32,
+    /// Set for a point fetch: the only record the host may answer with.
+    record_id: Option<String>,
+    /// The kernel's own recall: hits land as keyed knowledge, not history.
+    recall: bool,
 }
 
 /// What the kernel published for a pending `LoadPayload` effect (§7.10 rule 4).
@@ -1565,6 +1589,8 @@ pub struct CanonicalOperationDriver {
     pending_memory_writes: BTreeMap<EffectId, AuthoredMemoryWrite>,
     /// The same for `QueryMemory`: the query the kernel authored and the width it clamped.
     pending_memory_queries: BTreeMap<EffectId, AuthoredMemoryQuery>,
+    /// A kernel recall between its minting and its effect id (one disposition, never persisted).
+    recall_query: Option<AuthoredMemoryQuery>,
     /// §7.10 · the handle each pending `LoadPayload` addresses, with the digest the loaded body has
     /// to reproduce. Kept here rather than re-read from the handle table at resolution time, so a
     /// residency that moved in between cannot silently change what a page-in is verified against.
@@ -1608,6 +1634,7 @@ impl CanonicalOperationDriver {
             provider_calls: BTreeMap::new(),
             pending_memory_writes: BTreeMap::new(),
             pending_memory_queries: BTreeMap::new(),
+            recall_query: None,
             pending_payload_loads: BTreeMap::new(),
             consumed_calls: BTreeSet::new(),
             policy: None,
@@ -1689,17 +1716,17 @@ fn root_task_id() -> TaskId {
 /// choosing — so the kernel never saw a `ProviderTool` causation at all. Here the names are the
 /// kernel's, the arguments are decoded by the kernel, and the caller comes from the pending call.
 ///
-/// F15 ruling (0.2.66, user-adjudicated — resolves the §7.6 SPEC-ISSUE): `RequestMemoryWrite`
-/// has no entry here **by design** — the kernel gains no model-facing memory *write* surface.
-/// `memory` is a search tool, long-term writes are extracted host-side (§22.13's 现状定位), and
-/// the syscall's only caller channel is a child's `parent_requests` (child→parent only). If a
-/// spec revision ever proposes a write surface, it must overturn this ruling explicitly.
+/// The `memory` tool remains search-only. The capability-gated `propose_memory` tool is the
+/// explicit model-facing proposal surface; it decodes to the existing `RequestMemoryWrite` and
+/// reuses `plan_memory_write`, so scope, identity, provenance, timestamps, and admission remain
+/// kernel-owned. Existing operations keep the capability disabled by default.
 pub const SYSCALL_TOOL_NAMES: &[&str] = &[
     "start_workflow",
     "submit_workflow_nodes",
     "skill",
     "update_plan",
     crate::context::manager::MEMORY_TOOL_NAME,
+    crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
     crate::context::manager::READ_RESULT_TOOL_NAME,
     "send_message",
     "publish_channel",
@@ -1707,6 +1734,13 @@ pub const SYSCALL_TOOL_NAMES: &[&str] = &[
     "receive_channel",
     "read_object",
 ];
+
+/// Syscall tools that are not part of an operation's standing surface. Each one reaches the model
+/// only through its own feature switch (`propose_memory` through
+/// `feature_policy.propose_memory_enabled`), never through a host catalog or exposure baseline,
+/// so a host listing the full meta-tool surface leaves these out.
+pub const FEATURE_GATED_SYSCALL_TOOL_NAMES: &[&str] =
+    &[crate::context::manager::PROPOSE_MEMORY_TOOL_NAME];
 
 fn is_syscall_tool(name: &str) -> bool {
     SYSCALL_TOOL_NAMES.contains(&name)
@@ -1768,6 +1802,31 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
                 update: decode(name, arguments)?,
             },
         )),
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                name: String,
+                kind: WireMemoryKind,
+                content: String,
+                #[serde(default)]
+                description: String,
+                #[serde(default)]
+                evidence_refs: Vec<String>,
+            }
+            let args: Args = decode(name, arguments)?;
+            Ok(SyscallRequest::RequestMemoryWrite(
+                super::syscall::RequestMemoryWriteRequest {
+                    proposal: super::syscall::MemoryWriteProposal {
+                        name: args.name,
+                        kind: args.kind,
+                        content: args.content,
+                        description: args.description,
+                        evidence_refs: args.evidence_refs,
+                    },
+                },
+            ))
+        }
         crate::context::manager::MEMORY_TOOL_NAME => {
             #[derive(serde::Deserialize)]
             struct Args {
@@ -1777,14 +1836,30 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
                 kinds: Vec<WireMemoryKind>,
                 #[serde(default)]
                 top_k: Option<u32>,
+                #[serde(default)]
+                record_id: Option<String>,
             }
             let args: Args = decode(name, arguments)?;
+            let record_id = args.record_id.filter(|id| !id.trim().is_empty());
+            match (&record_id, args.query.trim().is_empty()) {
+                (Some(_), false) => {
+                    return Err(SyscallRejection::new(
+                        name,
+                        "pass either query or record_id, not both",
+                    ));
+                }
+                (None, true) => {
+                    return Err(SyscallRejection::new(name, "pass a query or a record_id"));
+                }
+                _ => {}
+            }
             Ok(SyscallRequest::RequestMemoryQuery(
                 super::syscall::RequestMemoryQueryRequest {
                     query: super::syscall::MemoryQueryProposal {
-                        text: args.query,
+                        text: if record_id.is_some() { String::new() } else { args.query },
                         kinds: args.kinds,
                         limit: args.top_k,
+                        record_id,
                     },
                 },
             ))
@@ -1816,6 +1891,7 @@ fn causation_task(causation: &SyscallCausation) -> TaskId {
     match causation {
         SyscallCausation::ProviderTool(provider) => provider.task_id.clone(),
         SyscallCausation::ChildAttempt(child) => child.task_id.clone(),
+        SyscallCausation::KernelRecall(recall) => recall.task_id.clone(),
     }
 }
 
@@ -2031,6 +2107,19 @@ fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
                         )
                     })?;
                 core = core.with_scheduling_factors(factors);
+            }
+            if let Some(context) = metadata.get("dependency_context") {
+                let context: crate::orchestration::workflow::DependencyContext =
+                    serde_json::from_value(context.clone()).map_err(|error| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidConfig,
+                            format!(
+                                "workflow node {:?} metadata.dependency_context is malformed: {error}",
+                                node.node_id
+                            ),
+                        )
+                    })?;
+                core = core.with_dependency_context(context);
             }
         }
         let mut depends_on = Vec::with_capacity(node.depends_on.len());
@@ -2258,6 +2347,12 @@ fn seed_initial_context(engine: &mut LoopStateMachine, initial: &InitialContext)
     seed_knowledge(engine, &initial.knowledge);
     if !initial.requested_capabilities.is_empty() {
         engine.set_requested_capabilities(initial.requested_capabilities.clone());
+    }
+    for dependency in &initial.dependencies {
+        engine
+            .ctx
+            .dependency_bodies
+            .insert(dependency.agent_id.clone(), dependency.content.clone());
     }
 }
 
@@ -2494,10 +2589,7 @@ fn sub_agent_result(completed: &ChildCompleted) -> SubAgentResult {
                 .usage
                 .as_ref()
                 .map_or(0, child_total_tokens),
-            loop_continue: None,
-            classify_branch: None,
             pace_decision: None,
-            tournament_winner: None,
         },
     }
 }
@@ -2626,6 +2718,10 @@ fn syscall_ack(name: &str) -> &'static str {
         crate::context::manager::MEMORY_TOOL_NAME => {
             "memory search issued: matching records are added to this conversation before your \
              next turn"
+        }
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
+            "memory proposal submitted for review: it is not stored until the host accepts it, \
+             and its outcome is added to this conversation before your next turn"
         }
         crate::context::manager::READ_RESULT_TOOL_NAME => "page-in requested",
         "send_message" | "publish_channel" => "local handle routed",
@@ -3054,6 +3150,8 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
             renewal_carryover_ppm: context.renewal_carryover_ppm.get(),
             collapse_old_assistant_narration: context.collapse_old_assistant_narration,
             idle_micro_compact_minutes: context.idle_micro_compact_minutes,
+            delegate_tool_result_clearing: context.delegated_tiers.tool_result_clearing,
+            delegate_compaction: context.delegated_tiers.compaction,
         });
     engine
         .ctx
@@ -3094,6 +3192,11 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     engine
         .ctx
         .set_memory_enabled(config.feature_policy.memory_enabled);
+    engine.ctx.set_propose_memory_enabled(
+        config.feature_policy.propose_memory_enabled
+            && config.feature_policy.memory_enabled
+            && config.memory_access.as_ref().is_some_and(|access| access.capabilities.write),
+    );
     engine
         .ctx
         .set_knowledge_enabled(config.feature_policy.knowledge_enabled);

@@ -6,6 +6,182 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.78] - 2026-11-02
+
+### Added
+
+- The end-of-run `context_lifecycle_reported` event carries `recalled` and `recall_expanded`
+  (memory records the kernel recalled, and how many the model read with `memory(record_id)`) and
+  `items`: one record per knowledge item with its origin, tokens, injection turn, reference count,
+  whether it was expanded or came back after removal, and why it left (`evicted`, `expired`,
+  `removed`; absent while resident).
+- `context_lifecycle_reported` also carries `history`: per origin (`user`, `assistant`,
+  `tool_result`, `dependency_output`, …), how many items entered history and their tokens, how many
+  were still there at the end, and how often the model read one back with `read_result`.
+- Every history message has a stable item id and origin, kept through compaction, renewal and
+  checkpoints (`history_items`).
+- Added a durable file-backed memory candidate ledger for Node, Python, and Rust. It provides
+  `(agent_id, candidate_id)` idempotency, conflict receipts, pending-to-terminal resolution,
+  crash-recoverable snapshots, and a durable outbox. WASM continues to use a host-injected sink.
+- Added shared source admission and host attestation checks. Attestation failures are recorded as
+  verification attempts without occupying candidate identity, so a corrected proof can retry with
+  the same candidate ID. The reference verifier binds agent, scope, source, digest, key ID, policy
+  version, expiry, clock skew, and HMAC signature. Ed25519 public-key verification is also
+  available with the same canonical payload and `ed25519:<base64url>` signature format.
+- Added shared memory lifecycle primitives for lease scope checks, expiry, revocation, write budgets,
+  TTL filtering, and deletion scope matching across Node, Python, Rust, and WASM host APIs.
+- The `memory` tool accepts `record_id` to read one record in full. The host answers with a point
+  lookup (`memoryFetchRecall` / `memory_fetch_recall`), and the kernel refuses any record other
+  than the one requested. A missing record is reported to the model as not found.
+- Providers can declare compaction tiers they perform natively (`nativeContext` /
+  `native_context` / `native_context_tiers()`). The runner forwards them as
+  `context_policy.delegated_tiers`, and the kernel skips its own tool-result clearing or
+  compaction for those tiers. Renewal is never delegated and remains the safety net.
+- `AnthropicProvider` accepts `contextEditing` (`context_editing` in Python,
+  `with_context_editing` in Rust) and sends `clear_tool_uses_20250919` with the
+  `context-management-2025-06-27` beta. It then declares tool-result clearing as native.
+- `AnthropicProvider` accepts `compaction` (`compaction` in Python, `.with_compaction(..)` in Rust)
+  and sends `compact_20260112` with the `compact-2026-01-12` beta. It then declares compaction
+  as native, so the kernel skips context collapse and auto-compact. The `compaction` block the API
+  returns is captured from streamed and complete responses and replayed in front of that turn on
+  later requests. Set the trigger below the kernel's renewal threshold; renewal still decides on
+  the full local history.
+- A finished run records `context_lifecycle_reported` in the session log, with `regret`
+  (evicted knowledge keys that were pushed again), `waste_tokens` (knowledge tokens never
+  referenced) and `cache_loss_tokens` (history tokens whose prompt cache a mid-run knowledge
+  promotion discarded), plus `knowledge_entries` and `knowledge_referenced`.
+
+### Fixed
+
+- The Rust `RuntimeRunner` runs workflow nodes. It used to fail every spawn ("no workflow
+  orchestrator"); each node now runs as a child run on the parent's provider and execution plane,
+  holding its dependency outputs, and model-authored `start_workflow` / `submit_workflow_nodes`
+  arguments are lowered to the canonical DAG as in Node and Python.
+- DeepSeek thinking mode: a tool-call turn the model answered without reasoning replays
+  `reasoning_content: ""` (Node, Python). The API accepts the empty field and rejects a missing
+  one; the replay check used to fail the run instead. The check now requires the field the model
+  returned, not a non-empty one.
+- Node and Python OpenAI-chat providers (DeepSeek, Kimi, Qwen, MiniMax, GLM) store a tool-call
+  turn's reasoning replay under its tool calls alone. The kernel collapses an old turn's
+  narration to a stub at render time, and the lookup by the original text then missed: DeepSeek
+  runs with thinking on failed with `replay requires non-empty reasoning_content` once a narrated
+  tool turn left the recent window.
+- The WASM `AnthropicProvider` no longer sends `betas` in the request body when context editing
+  is on. They travel only in the `anthropic-beta` header, as the Messages API requires.
+
+### Changed
+
+- Knowledge entries are context items with an origin (`system`, `skill`, `memory_recall`,
+  `reference`, …) whose lease comes from one origin table. A recalled memory index line now leaves
+  at the next compaction or renewal boundary once 8 turns pass without it being recalled again or
+  referenced; reading it with `memory(record_id)` counts as a reference. Pinned and host-seeded
+  knowledge is unaffected.
+- A workflow node's child run holds its dependencies' outputs in its own kernel
+  (`initial_context.dependencies`). When the brief clips an output, it says so and the model reads
+  the whole output with `read_result(call_id="dep:<agent_id>")`, answered by the kernel without a
+  host effect. The default `dependencyMode: "handle"` shows only a 600-character preview of each
+  output, so a node's starting context no longer grows with its fan-in; `"full"` inlines each output
+  up to `maxTokens` as before.
+  Only an output the brief clipped is sent in the spawn's `dependency_outputs`; an output the brief
+  shows whole is not offered through `read_result`.
+- On turn 1 the `→ focus:` footer repeats only the goal's first paragraph, clipped to 240
+  characters. It used to repeat the whole goal, so a workflow node's dependency brief appended to
+  the goal was sent twice per call.
+- Long-term memory recall moved into the kernel. With `memory_policy.recall` on (the SDKs turn
+  it on when a memory store, agent id and memory scope are configured), the kernel issues a
+  `query_memory` effect for the goal before the first provider call and after each renewal, and
+  lands one `memory:<record_id>` index line per hit in knowledge. The host only runs the search;
+  `preQueryMemory` / `pre_query_memory` now rewrites that query. Recall counts and promotion
+  suggestions follow the same kernel path as a model query. The Rust SDK now recalls whenever a
+  memory scope is set, not only when `pre_query_memory` is.
+- The kernel writes the dependency section of a workflow node's brief and sends it as
+  `dependency_brief` with the spawn. Node, Python, WASM and Rust append it to the goal. The Rust
+  SDK previously sent no dependency outputs at all. A node's `context.dependencyMode` is `handle`
+  (default), `full`, `reference` or `none`, and `context.maxTokens` caps each dependency. Before this
+  change, a policy on a node submitted at runtime was applied to the wrong node.
+- Sub-agents with the `plan` or `implement` role now default to `system_only` context inheritance,
+  like `explore` and `verify`. A child starts from the system prompt and its brief. Pass
+  `contextInheritance: "full"` (`context_inheritance="full"`) to give a child the parent's
+  transcript.
+- Knowledge that arrives after the first provider call of a context generation no longer goes into
+  the cached system knowledge block. It is shown in the state turn at the end of the context and
+  moves into system knowledge at the next compaction or renewal, so the cached history stays valid.
+  When staged knowledge reaches a quarter of the history size, it is promoted at once and the
+  history tokens are counted as `cache_loss_tokens`.
+- Memory prefetch pushes an index line per hit,
+  `[MEMORY record_id=… kind=… trust=…] <description>`, instead of the record content. The model
+  reads relevant records with `memory(record_id=…)`. Hosts whose records have no description
+  fall back to the record name.
+- Memory candidate identity moved into the kernel (`mm::memory_candidate`, served by
+  `memoryAuthorityJson` ops `candidate_id`, `candidate_payload_digest`, `attestation` and
+  `verify_source`). Candidate ids, payload digests, attestation canonical payloads and HMAC
+  signatures, and every attestation check except an Ed25519 signature, now come from one
+  implementation. The SDKs keep key lookup and Ed25519 verification only. Existing ids and digests
+  are unchanged.
+- Attestation refusals are now the same in every SDK. In Rust and Python an issuer that does not
+  match the key's issuer is `attestation_issuer_untrusted`, not `attestation_scope_mismatch`; an
+  attestation that expires at or before it is issued is `attestation_expired` with either verifier;
+  and a `host_verified` record without an attestation is `attestation_missing` before any verifier
+  is consulted.
+- Payload digests write a fractional `confidence` or `ttl_days` as `JSON.stringify` does in every
+  SDK. Python previously wrote `1e-06` where the TypeScript SDKs wrote `0.000001`.
+- Candidate sinks refuse a payload they already hold for the agent under another candidate id:
+  `already_pending_review` while it is in review, `already_remembered` once accepted. A model
+  proposal and a child request for the same fact no longer both reach review. A rejected
+  candidate does not block the same payload from being proposed again. Hosts with their own sink
+  can use `memoryCandidateDuplicateReason` / `memory_candidate_duplicate_reason`.
+- Host memory writes go through one `MemoryWriter` per SDK (`node/src/memory/writer.ts`,
+  `deepstrike.memory.writer`, `wasm/src/memory/writer.ts`, `deepstrike_sdk::MemoryWriter`). It owns
+  lease admission, the store write and its receipt digest, and the candidate sink's receipt
+  contract. The runners only choose the path a write takes. Behaviour is unchanged.
+- **Breaking (WASM):** `memoryCandidateId`, `memoryCandidatePayloadDigest`,
+  `memoryCandidateAttestationCanonicalPayload`, `memoryCandidateAttestationDigest`,
+  `memoryCandidateAttestationMatches`, `verifyMemoryCandidateSource` and `admitMemoryCandidate`
+  return promises, because the WASM kernel loads asynchronously. A `MemoryCandidateSourceVerifier`
+  may now return a promise.
+
+### Removed
+
+- **Breaking:** the context evidence layer is gone from the kernel and all four SDKs. This covers
+  `ContextCandidate`, `ContextExecutionInput`, `ContextPlan` and `ContextState`, the
+  `context_prepared` session event, `prepare_context_dispatch` and `contextPrepareJson` /
+  `contextVerifyJson`, the shared evidence read model (`readSessionEvidence` /
+  `read_session_evidence`, `SharedEvidence*`, `Evidence*`), and the Evolution Runtime
+  (`EvolutionRuntime`, `evolutionValidateJson`, `EvaluationContextBinding`, artifact sets).
+  Crash recovery depends only on the journal and checkpoints, and restore still checks the
+  state digest.
+- **Breaking:** the provider-call effect no longer carries `context_candidate`, and the operation
+  config no longer accepts `artifact_set_binding`. The checkpoint's context state drops
+  `state_generation`. Journals and checkpoints written by 0.2.77 cannot be restored.
+- **Breaking:** `artifactSetDigest` / `artifact_set_digest` is removed from `RuntimeOptions`.
+  `RunResult.evidence` / `AgentRunResult.evidence` keep `route` and `measurement` but lose
+  `contextBinding` and `artifactSet`. The Rust `AgentRunResult.evidence` field and
+  `AgentEvidence` are removed.
+- The runner no longer writes to the session log before each provider call. A failed session log
+  write no longer blocks the call, and the kernel no longer renders the context a second time to
+  check that it has not changed.
+- The `context_execution` and `shared_evidence_snapshot` cross-SDK conformance domains are
+  removed.
+- **Breaking:** the offline evidence tooling is removed: the `deepstrike inspect|verify|replay|fork`
+  CLI, `runtime::verifiable` (`VerifiableOperation`, `EvidenceBundle`, …), the chain validator,
+  `verifiableOperationJson` / `verifiable_operation_json`, and the SDK verifiable-report modules.
+  The kernel's restore already verifies the record chain, replays deterministically and checks the
+  state digest.
+- **Breaking:** workflow node kinds are removed. `NodeKind` (`Loop`, `Classify`, `Tournament`,
+  `Reduce`), `orchestration::tournament`, `WorkflowNode::with_loop` / `with_classify` /
+  `with_tournament` / `with_reduce`, and the matching SDK fields (`loop`, `classify`, `tournament`,
+  `reducer`) are gone. The canonical kernel ABI never accepted these kinds, so declarative specs
+  that used them were already rejected at load. Branches, loops and tournaments are host control
+  flow (`runDynamicWorkflow`) or model-driven `submit_workflow_nodes`. `LoopResult` loses
+  `loop_continue`, `classify_branch` and `tournament_winner`; spawn descriptors lose `reducer`,
+  `judge_match`, `loop_max_iters` and `classify_labels`; `workflow_node_completed` loses the three
+  signal fields. The reducers module (`builtinReducers`, `resolveReducer`, `RuntimeOptions.reducers`)
+  and the loop/classify/judge prompt helpers are removed.
+- **Breaking:** `gen_eval` / `genEval` no longer take `max_iters`. The worker runs once; retry with
+  feedback is `AttemptLoop`. The SDK templates previously emitted a `loop` node that the canonical
+  kernel rejected.
+- Workflow checkpoints drop the per-node `kind` and `iterations_completed` fields.
+
 ## [0.2.76] - 2026-10-20
 
 ### Fixed
@@ -862,12 +1038,11 @@ non-breaking window before the 0.2.67/0.2.68 deprecation-and-deletion pair.
   fail-closed on throw/malformed return; lineage audit records `tier` + `screenVerdict`.
   Evidence bundles carry a fixed provenance line, and miner/proposer prompts pin down that quoted
   excerpt content is data, never instructions.
-- **Shared-layer gate (design-final, implementation deferred)**: `aggregateSharedEvidence`
-  produces signature-only cross-scope aggregates (no excerpts, no task ids — nothing verbatim
-  from any tenant's transcripts survives, enforced by construction), and `promoteToShared`
-  requires a cluster seen in ≥2 distinct scopes plus an explicit human approval token — there is
-  no auto path to shared promotion. Production aggregation ships with the per-model-profile
-  corpus work.
+- **Shared-layer gate:** the cross-SDK shared-evidence read model now projects session-log,
+  kernel-journal, checkpoint, context-binding, provider-attempt, prompt-measurement, wire-replay,
+  knowledge, memory, and candidate evidence into one read-only snapshot. Canonical event bytes,
+  scope filtering, knowledge identity, candidate receipts, journal pruning, and unresolved links
+  are covered by the shared conformance fixture across Node, Python, WASM, and Rust adapters.
 
 ## [0.2.47] - 2026-07-19
 

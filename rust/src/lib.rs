@@ -13,9 +13,11 @@ pub mod tools;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod memory_lifecycle_tests;
 
 pub use agent::{
-    Agent, AgentEvidence, AgentResolver, AgentRunOptions, AgentRunResult, AgentRunStatus,
+    Agent, AgentResolver, AgentRunOptions, AgentRunResult, AgentRunStatus,
     AgentSession, AgentStream, AgentUsage, AgentWorkflow, OutputValidation, SessionReplay,
     WorkflowTrace,
 };
@@ -40,13 +42,9 @@ pub use deepstrike_core::{EntropySample, EntropyTracker, EntropyWatchConfig};
 // spec with the templates, hold a `WorkflowRun` (a pure state machine), call `ready_batch()` /
 // `spawn_info()` / `record_completion()` from your own executor. Everything the drivers do is
 // reachable this way; a batteries-included Rust driver lands only when a real consumer needs it.
-pub use deepstrike_core::orchestration::workflow::{JudgeMatch, WorkflowRun, WorkflowSpawnInfo};
+pub use deepstrike_core::orchestration::workflow::{WorkflowRun, WorkflowSpawnInfo};
 pub use deepstrike_core::orchestration::workflow::{
     WorkflowNode, WorkflowSpec, fanout_synthesize, gen_eval, generate_and_filter, verify_rules,
-};
-pub use deepstrike_core::runtime::verifiable::{
-    CheckVerdict, EvidenceBundle, ForkManifest, ForkPlan, InspectReport, ReplayOptions,
-    ReplayReport, ReplayVerdict, VerifiableOperation, VerifyOptions, VerifyReport,
 };
 pub use governance::{Governance, GovernanceVerdict};
 pub use harness::{Criterion, CriterionResult, Verdict};
@@ -60,10 +58,17 @@ pub use harness_loop::{
 };
 pub use knowledge::KnowledgeSource;
 pub use memory::{
-    DurableMemory, InMemoryMemoryStore, MemorySearchOptions, MemoryStore, WorkingMemory,
+    DurableMemory, FileMemoryCandidateSink, MemoryPersistReceipt, MemoryWriter, InMemoryMemoryCandidateSink, InMemoryMemoryStore, MemoryCandidate,
+    Ed25519MemoryCandidateSourceVerifier, HmacMemoryCandidateSourceVerifier, MemoryCandidateAttestation, MemoryCandidateAttestationReasonCode,
+    MemoryLease, MemoryLeaseRejection,
+    MemoryCandidateLedgerEntry, MemoryCandidateOutboxEvent, MemoryCandidateReceipt, MemoryCandidateResolution,
+    MemoryCandidateVerificationAttempt,
+    MemoryCandidateSink, MemoryCandidateSource, MemoryCandidateSourceVerifier, MemoryRetrievalPolicy,
+    MemoryRuntimePolicy, MemorySearchOptions, MemoryStore, MemoryWritePolicy, WorkingMemory,
+    admit_memory_candidate, consume_memory_lease_write, memory_candidate_attestation_canonical_payload, memory_candidate_attestation_digest, memory_candidate_duplicate_reason, memory_candidate_id, memory_candidate_payload_digest, memory_fetch_recall, memory_record_expired, revoke_memory_lease, sign_memory_candidate_attestation, verify_memory_lease,
 };
 pub use providers::RuntimePolicy;
-pub use providers::anthropic::AnthropicProvider;
+pub use providers::anthropic::{AnthropicCompaction, AnthropicContextEditing, AnthropicProvider};
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};
 pub use providers::request_plan::{
     CostObservation, NormalizedProviderUsage, PricingRates, PricingSnapshot,
@@ -72,8 +77,8 @@ pub use providers::request_plan::{
     price_provider_usage, record_prompt_measurement,
 };
 pub use providers::{
-    LLMProvider, ProviderError, ProviderErrorKind, ProviderRunState, ProviderToolSpec, StreamEvent,
-    TokenUsage,
+    LLMProvider, NativeContextTiers, ProviderError, ProviderErrorKind, ProviderRunState, ProviderToolSpec,
+    StreamEvent, TokenUsage,
 };
 pub use run_event::RunEvent;
 pub use runtime::eval::{Criterion as EvalCriterion, Verdict as EvalVerdict};
@@ -94,9 +99,9 @@ pub use runtime::{
     OsProfile, SchedulerPolicyConfig, SignalPolicy, assert_native_profile,
     default_native_governance_policy, os_profile,
 };
+pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
 pub use runtime::{ExecutionPlane, LocalExecutionPlane};
 pub use runtime::{FilePayloadStore, PayloadStore};
-pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
 pub use runtime::{
     KernelReliability, MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy,
     RunLimits, RuntimeOptions, RuntimeRunner, collect_text,
@@ -196,9 +201,3 @@ pub fn format_tool_error(e: &Error) -> String {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-// Context preparation and verification have one implementation in the Rust core.
-pub use deepstrike_core::context::execution::{
-    ContextCandidate, ContextDispatchPreparation, ContextDispatchRequest, ContextExecutionInput,
-    ContextPlan, ContextPromptMeasurement, ContextState, prepare_context_dispatch,
-    verify_context_dispatch,
-};

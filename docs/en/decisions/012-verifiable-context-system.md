@@ -1,5 +1,7 @@
 # ADR-012: Verifiable Context System
 
+> **Historical design (removed 2026-11-01).** The context evidence layer described here (`ContextCandidate`, `ContextExecutionInput`, `context_prepared`, shared evidence, the Evolution Runtime and artifact-set binding) has been removed from the kernel and all four SDKs. Crash recovery relies on the journal and checkpoints alone. See the [context-lifecycle-first plan](../../plans/context-lifecycle-first.md) for the rationale.
+
 ## Status
 
 Accepted and implemented. This implementation passed acceptance checks recorded in the linked specification; the release workflow is separate.

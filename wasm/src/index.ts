@@ -72,26 +72,6 @@ export type {
   KernelPrimitive,
 } from "./runtime/index.js"
 export { primitiveForCategory, primitiveForKind } from "./runtime/index.js"
-export {
-  VERIFIABLE_REPORT_SCHEMA,
-  VERIFIABLE_FORK_SCHEMA,
-  assertVerifiableReportSchema,
-  createVerifiableRuntimeAdapter,
-  createNativeVerifiableRuntimeAdapter,
-  VerifiableOperation,
-} from "./runtime/verifiable-report.js"
-export type {
-  VerifiableCommand,
-  CheckVerdict,
-  VerifiableForkManifest,
-  ForkPlan,
-  VerifiableEvidence,
-  VerifyOptions,
-  ReplayOptions,
-  VerifiableRuntimeAdapter,
-  VerifiableReport,
-  VerifiableOperationJson,
-} from "./runtime/verifiable-report.js"
 export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
 export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
 export type { SubAgentRunContext } from "./runtime/sub-agent-orchestrator.js"
@@ -121,10 +101,6 @@ export type {
   WorkflowSpawnInfo,
 } from "./runtime/types/agent.js"
 export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, genEval, verifyRules } from "./runtime/types/agent.js"
-export {
-  loopInstruction, classifyInstruction, judgeGoal,
-  extractClassifyBranch, extractJudgeWinner,
-} from "./runtime/workflow-control-flow.js"
 export { Agent } from "./agent.js"
 export { McpExecutionPlane } from "./runtime/mcp-transport.js"
 export type { McpConnection, McpConnectionFactory, McpCredentialVault, McpServerConfig } from "./runtime/mcp-transport.js"
@@ -134,6 +110,13 @@ export type {
   MemoryInput, RecallOptions, DelegationResult, AgentRuntimeBinding, AgentSession,
 } from "./agent.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
+export type {
+  AnthropicCompaction,
+  AnthropicContextEditing,
+  AnthropicOnDemandCompaction,
+  AnthropicProviderOptions,
+  AnthropicThresholdCompaction,
+} from "./providers/anthropic.js"
 export { OpenAIProvider, qwen, deepseek, minimax, kimi } from "./providers/openai.js"
 export type { OpenAIProviderOptions, BackendProviderOptions } from "./providers/openai.js"
 export { ProviderError, classifyProviderError } from "./providers/provider-error.js"
@@ -151,20 +134,11 @@ export type { InMemoryMemoryStoreOptions } from "./memory/in-memory-store.js"
 export { memoryRetentionScore } from "./memory/retention.js"
 export { rankMemories } from "./memory/ranking.js"
 export type { RankableMemory, RankedMemory, RankOptions } from "./memory/ranking.js"
-export { extractSessionMemories, parseExtractedMemories } from "./memory/extraction.js"
 export type {
   MemoryStore, Memory, MemorySearchOptions, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall, MemoryRecallLifecycle,
   MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
 } from "./memory/index.js"
 export type { KnowledgeSource } from "./knowledge/index.js"
-export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
-export type {
-  ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
-  ContextEntryRef, ContextEntrySource, ContextExecutionInput, ContextPlan, ContextPlanAction, ContextPreparationRequest, ContextSelection, ContextState,
-  EvaluationContextBinding, EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun, EvolutionBundle,
-  EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision, PromotionOutcome,
-  EvolutionStore,
-} from "./runtime/evolution.js"
 export {
   AttemptLoop, RuntimeAttemptBody, VerdictFnJudge, LlmEvalJudge, HybridJudge,
   continueSession, freshWithFeedback, freshWithDigest,
@@ -210,7 +184,11 @@ export type {
 export { DurableContentError, decodeDurableContent, decodeDurableToolResult, encodeDurableContent, encodeDurableToolResult, toolOutputBlocksToDurable, durableBlocksToToolOutput } from "./runtime/durable-content.js"
 export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"
 
-export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./runtime/context.js"
-export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
 
-export type { PreparedProviderRequest } from "./types.js"
+export type { NativeContextTiers, PreparedProviderRequest } from "./types.js"
+
+export { InMemoryMemoryCandidateSink, memoryCandidateDuplicateReason, memoryCandidateId, memoryCandidatePayloadDigest } from "./memory/candidate-sink.js"
+export { memoryFetchRecall } from "./memory/recall-projection.js"
+export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./memory/candidate-sink.js"
+export { resolveMemoryRuntimePolicy } from "./memory/runtime-policy.js"
+export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./memory/runtime-policy.js"

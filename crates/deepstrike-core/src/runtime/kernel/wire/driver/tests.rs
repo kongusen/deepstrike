@@ -451,6 +451,7 @@ fn effect_id_at(step_seq: WireU64, index: u32) -> EffectId {
 fn syscall_tool_catalog() -> Vec<WireToolSchema> {
     SYSCALL_TOOL_NAMES
         .iter()
+        .filter(|name| !FEATURE_GATED_SYSCALL_TOOL_NAMES.contains(name))
         .chain(std::iter::once(&"search"))
         .map(|name| WireToolSchema {
             name: (*name).to_string(),
@@ -738,48 +739,6 @@ fn an_agent_root_start_is_one_atomic_input_that_issues_the_model_turn() {
     let EffectKind::CallProvider(call) = &effect.effect else {
         panic!("expected a provider call");
     };
-    let candidate = &call.context_candidate;
-    candidate.state.verify_digest().unwrap();
-    assert_eq!(candidate.operation_id, OPERATION);
-    assert_eq!(candidate.input_sequence, started.step_seq.get());
-    assert_eq!(
-        candidate.step_id,
-        format!("{OPERATION}:step:{}", started.step_seq)
-    );
-    assert_eq!(
-        candidate.state,
-        runtime
-            .driver
-            .engine()
-            .unwrap()
-            .ctx
-            .context_state()
-            .unwrap()
-    );
-    let projection =
-        crate::runtime::kernel::wire::record::canonical_bytes(&(&call.context, &call.tools))
-            .unwrap();
-    assert_eq!(
-        candidate.rendered_snapshot,
-        crate::evolution::ContentDigest::from_bytes(projection.as_slice())
-    );
-    let (plan, input) = candidate
-        .bind(
-            crate::evolution::ContentDigest::from_bytes(b"host-measurement"),
-            crate::evolution::ContentDigest::from_bytes(b"host-route"),
-        )
-        .unwrap();
-    plan.verify(&candidate.state).unwrap();
-    input.verify(&plan).unwrap();
-    let mut changed_context = call.context.clone();
-    changed_context.system_stable.push_str("tampered");
-    let changed_projection =
-        crate::runtime::kernel::wire::record::canonical_bytes(&(&changed_context, &call.tools))
-            .unwrap();
-    assert_ne!(
-        candidate.rendered_snapshot,
-        crate::evolution::ContentDigest::from_bytes(changed_projection.as_slice())
-    );
     let rendered = format!(
         "{}{}",
         call.context.system_stable, call.context.system_knowledge
@@ -2852,6 +2811,138 @@ fn a_memory_query_is_clamped_to_the_operations_retrieval_policy() {
     assert_eq!(effect.binding.binding_id.as_str(), "mem-binding-1");
 }
 
+fn recall_of(record_id: &str, content: &str) -> MemoryRecall {
+    MemoryRecall {
+        description: String::new(),
+        trust: String::new(),
+        record_ref: MemoryRecordRef::new(record_id).unwrap(),
+        name: "brief-style".to_string(),
+        kind: SyscallMemoryKind::Project,
+        content: content.to_string(),
+        score: None,
+        recall_count: WireU64::ZERO,
+        pinned: false,
+    }
+}
+
+fn fetch_record(runtime: &mut Runtime, provider: &EffectId, record_id: &str) -> KernelEffect {
+    let queried = runtime.submit(&provider_result(
+        "in-fetch",
+        1_700_000_002_000,
+        provider,
+        vec![tool_call(
+            "call-1",
+            crate::context::manager::MEMORY_TOOL_NAME,
+            json!({"record_id": record_id, "top_k": 3}),
+        )],
+    ));
+    sole_effect(&queried).clone()
+}
+
+/// Recall prefetch pushes index lines only; `memory(record_id)` is how the model reads one in
+/// full. The fetch is a point read of width one, and its content enters history like a search hit.
+#[test]
+fn a_memory_fetch_by_record_id_reads_that_record_in_full() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let fetched = fetch_record(&mut runtime, &provider, "rec-1");
+    let EffectKind::QueryMemory(effect) = &fetched.effect else {
+        panic!("expected a memory query, got {:?}", fetched.tag());
+    };
+    assert_eq!(effect.query.record_id.as_ref().map(|id| id.as_str()), Some("rec-1"));
+    assert_eq!(effect.query.text, "");
+    assert_eq!(effect.requested_k, 1, "a fetch answers with one record whatever width was asked");
+
+    let restored = Runtime::restore_with(None, &runtime.journal);
+    assert_eq!(restored.pending_effect_kinds(), vec![EffectKindTag::QueryMemory]);
+
+    let resumed = runtime.submit(&resolved(
+        "in-fetched",
+        1_700_000_003_000,
+        &fetched.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "prefers numbered sections")],
+        }),
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|line| line.contains("[MEMORY record_ref=rec-1 kind=project] prefers numbered sections"))
+    );
+}
+
+#[test]
+fn a_memory_fetch_that_finds_nothing_tells_the_model() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let fetched = fetch_record(&mut runtime, &provider, "rec-gone");
+    let resumed = runtime.submit(&resolved(
+        "in-fetched",
+        1_700_000_003_000,
+        &fetched.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls: vec![] }),
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|line| line.contains("[MEMORY record_ref=rec-gone] not found"))
+    );
+}
+
+/// The host answers a fetch with the record it named or with nothing; any other answer is a
+/// search the kernel never asked for, refused with zero mutation.
+#[test]
+fn a_memory_fetch_answered_with_another_record_is_refused() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let fetched = fetch_record(&mut runtime, &provider, "rec-1");
+    for recalls in [
+        vec![recall_of("rec-2", "someone else's fact")],
+        vec![recall_of("rec-1", "a"), recall_of("rec-1", "b")],
+    ] {
+        let fault = runtime.reject(&resolved(
+            "in-fetched",
+            1_700_000_003_000,
+            &fetched.effect_id,
+            EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls }),
+        ));
+        assert_eq!(fault.code, KernelFaultCode::UnexpectedEffectOutcome);
+        assert!(
+            !history_text(&runtime).iter().any(|line| line.contains("fact")),
+            "nothing from a refused answer enters history"
+        );
+    }
+    // the effect is still owed, and the right answer still settles it
+    let resumed = runtime.submit(&resolved(
+        "in-fetched-ok",
+        1_700_000_004_000,
+        &fetched.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "prefers numbered sections")],
+        }),
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+}
+
+#[test]
+fn a_memory_call_needs_exactly_one_of_query_or_record_id() {
+    for arguments in [json!({}), json!({"query": "briefs", "record_id": "rec-1"})] {
+        let (mut runtime, provider) = agent_awaiting_provider();
+        let resumed = runtime.submit(&provider_result(
+            "in-bad-memory-call",
+            1_700_000_002_000,
+            &provider,
+            vec![tool_call("call-1", crate::context::manager::MEMORY_TOOL_NAME, arguments)],
+        ));
+        assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+        assert!(runtime.tx.terminal().is_none());
+        assert!(
+            history_text(&runtime)
+                .iter()
+                .any(|line| line.contains("query") && line.contains("record_id"))
+        );
+    }
+}
+
 #[test]
 fn parallel_memory_queries_reuse_or_refuse_without_terminating_the_turn() {
     for duplicate in [true, false] {
@@ -2974,6 +3065,8 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
         &query_effect.effect_id,
         EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
             recalls: vec![MemoryRecall {
+                description: String::new(),
+                trust: String::new(),
                 record_ref: MemoryRecordRef::new("rec-1").unwrap(),
                 name: "brief-style".to_string(),
                 kind: SyscallMemoryKind::Project,
@@ -5964,6 +6057,243 @@ fn a_milestone_that_could_not_be_evaluated_terminates_instead_of_advancing() {
 
 // ----- slice 3 · memory / page-out ----------------------------------------------------------
 
+/// M2 · a candidate the host holds for review is terminal for the effect: the kernel records a
+/// pending observation, never a written one, and publishes nothing further.
+#[test]
+fn a_memory_candidate_is_terminal_and_is_never_observed_as_written() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    let (mut runtime, effect) = agent_awaiting_memory_write();
+    let settled = runtime.submit(&resolved(
+        "in-candidate",
+        1_700_000_003_000,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: "cand-1".to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        }),
+    ));
+    assert!(
+        settled.published_effects().is_empty(),
+        "a candidate publishes no follow-up effect"
+    );
+    let observations = runtime.observations();
+    assert!(
+        observations.iter().any(|observation| matches!(
+            observation,
+            KernelObservation::MemoryCandidatePending { candidate_id, .. } if candidate_id == "cand-1"
+        )),
+        "the pending candidate is an audit fact"
+    );
+    assert!(
+        !observations
+            .iter()
+            .any(|observation| matches!(observation, KernelObservation::MemoryWritten { .. })),
+        "a candidate is never observed as a written record"
+    );
+}
+
+/// M2 · a lost acknowledgement is redelivered as the same candidate: the kernel replays the
+/// original record (DEC-1), so the store is asked nothing new. A different candidate for the same
+/// effect is a conflict and is refused.
+#[test]
+fn a_memory_candidate_redelivery_is_a_replay_and_a_conflicting_one_is_refused() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    let (mut runtime, effect) = agent_awaiting_memory_write();
+    let candidate = |candidate_id: &str| {
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: candidate_id.to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        })
+    };
+    let first = runtime.submit(&resolved(
+        "in-candidate-1",
+        1_700_000_003_000,
+        &effect,
+        candidate("cand-1"),
+    ));
+    let observed = runtime.observations().len();
+
+    let replay = runtime.prepare(&resolved(
+        "in-candidate-2",
+        1_700_000_003_500,
+        &effect,
+        candidate("cand-1"),
+    ));
+    let RecordPreparation::Replayed(replayed) = replay else {
+        panic!("a redelivered candidate acknowledgement is a replay");
+    };
+    assert_eq!(replayed.step_seq, first.step_seq);
+    assert_eq!(
+        runtime.observations().len(),
+        observed,
+        "a replay records nothing new"
+    );
+
+    let conflict = runtime.reject(&resolved(
+        "in-candidate-3",
+        1_700_000_003_600,
+        &effect,
+        candidate("cand-9"),
+    ));
+    assert_eq!(conflict.code, KernelFaultCode::UnexpectedEffectOutcome);
+}
+
+/// M2 · why `pending` must be terminal. DEC-3 admits one pending PersistMemory at a time, so a
+/// write held open until a human reviews it would refuse every later write in the run. Settling
+/// the effect with a candidate frees the slot: the next node's write publishes; an unsettled one
+/// does not.
+#[test]
+fn a_pending_candidate_frees_the_memory_write_slot_and_an_unsettled_write_holds_it() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    use crate::runtime::kernel::wire::syscall::{MemoryWriteProposal, RequestMemoryWriteRequest};
+
+    let write = |name: &str, content: &str| {
+        vec![SyscallRequest::RequestMemoryWrite(
+            RequestMemoryWriteRequest {
+                proposal: MemoryWriteProposal {
+                    name: name.to_string(),
+                    kind: SyscallMemoryKind::Project,
+                    content: content.to_string(),
+                    description: String::new(),
+                    evidence_refs: Vec::new(),
+                },
+            },
+        )]
+    };
+    // Three nodes, so the second write comes from a node whose completion does not end the
+    // operation (§7.12: a terminating completion publishes no effects at all).
+    let spec = WireSpec {
+        name: "brief".to_string(),
+        nodes: vec![
+            wire_node("collect", "collect the sources", &[]),
+            wire_node("write", "write the brief", &["collect"]),
+            wire_node("review", "review the brief", &["write"]),
+        ],
+    };
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+    let started = runtime.submit(&workflow_start("in-start", 1_700_000_001_000, spec));
+    runtime.submit(&spawned(
+        "in-ack",
+        1_700_000_002_000,
+        &effect_id(started.step_seq),
+        &["wf-node0"],
+    ));
+    let completed = runtime.submit(&child_done_with(
+        "in-done",
+        1_700_000_002_500,
+        "wf-node0",
+        "wf-node0:attempt:1",
+        write("brief-style", "prefers numbered sections"),
+    ));
+    let find = |tag: EffectKindTag| {
+        completed
+            .published_effects()
+            .iter()
+            .find(|effect| effect.tag() == tag)
+            .unwrap_or_else(|| panic!("the first node's completion publishes {tag}"))
+            .effect_id
+            .clone()
+    };
+    let (effect, spawn) = (
+        find(EffectKindTag::PersistMemory),
+        find(EffectKindTag::SpawnTasks),
+    );
+    runtime.submit(&spawned(
+        "in-ack-1",
+        1_700_000_002_700,
+        &spawn,
+        &["wf-node1"],
+    ));
+    let second_write = |id: &str, at: u64| {
+        child_done_with(
+            id,
+            at,
+            "wf-node1",
+            "wf-node1:attempt:1",
+            write("brief-length", "keeps briefs under a page"),
+        )
+    };
+
+    // Held open: the second write cannot be published while the first still occupies the slot.
+    let held = runtime.reject(&second_write("in-done-1-held", 1_700_000_002_800));
+    assert_eq!(
+        held.code,
+        KernelFaultCode::ResourceLimitExceeded,
+        "{}",
+        held.message
+    );
+    // The refusal is a kernel fault, not a soft rejection: the host rebuilds from the journal,
+    // which the refused input never entered.
+    let mut runtime = Runtime::restore_with(None, &runtime.journal);
+
+    // Settled as a candidate: the same completion now publishes the second write.
+    runtime.submit(&resolved(
+        "in-candidate",
+        1_700_000_003_000,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: "cand-1".to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        }),
+    ));
+    let next = runtime.submit(&second_write("in-done-1", 1_700_000_003_100));
+    assert!(
+        next.published_effects()
+            .iter()
+            .any(|published| published.tag() == EffectKindTag::PersistMemory),
+        "a settled candidate leaves the slot free for the next write"
+    );
+}
+
+/// M2 · a memory write resolves with exactly one of a receipt or a candidate; both or neither is a
+/// protocol violation with zero mutation.
+#[test]
+fn a_memory_resolution_with_both_or_neither_outcome_is_refused() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    let (mut runtime, effect) = agent_awaiting_memory_write();
+    let neither = runtime.reject(&resolved(
+        "in-neither",
+        1_700_000_003_000,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: None,
+        }),
+    ));
+    assert_eq!(neither.code, KernelFaultCode::UnexpectedEffectOutcome);
+    let both = runtime.reject(&resolved(
+        "in-both",
+        1_700_000_003_500,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: Some(MemoryPersistReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                record_ref: MemoryRecordRef::new("rec-9").unwrap(),
+                digest: Digest::new("sha256:".to_string() + &"0".repeat(64)).unwrap(),
+            }),
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: "cand-1".to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        }),
+    ));
+    assert_eq!(both.code, KernelFaultCode::UnexpectedEffectOutcome);
+}
+
 /// §22.13 · a receipt is a locator, never a rewrite of the record the kernel authored.
 #[test]
 fn a_memory_receipt_cannot_restate_what_the_kernel_authored() {
@@ -5973,11 +6303,12 @@ fn a_memory_receipt_cannot_restate_what_the_kernel_authored() {
         1_700_000_003_000,
         &effect,
         EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
-            receipt: MemoryPersistReceipt {
+            receipt: Some(MemoryPersistReceipt {
                 binding_id: MemoryBindingId::new("some-other-binding").unwrap(),
                 record_ref: MemoryRecordRef::new("rec-7").unwrap(),
                 digest: Digest::new("sha256:".to_string() + &"0".repeat(64)).unwrap(),
-            },
+            }),
+            candidate: None,
         }),
     ));
     assert!(
@@ -6062,6 +6393,8 @@ fn a_memory_recall_enters_context_before_the_turn_resumes() {
         &effect,
         EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
             recalls: vec![MemoryRecall {
+                description: String::new(),
+                trust: String::new(),
                 record_ref: MemoryRecordRef::new("rec-1").unwrap(),
                 name: "brief-style".to_string(),
                 kind: SyscallMemoryKind::Project,
@@ -6113,6 +6446,8 @@ fn a_memory_recall_journals_the_kernel_derived_lifecycle() {
     ));
     let effect = sole_effect(&queried).effect_id.clone();
     let recall = |record: &str, recall_count: u64, pinned: bool| MemoryRecall {
+        description: String::new(),
+        trust: String::new(),
         record_ref: MemoryRecordRef::new(record).unwrap(),
         name: record.to_string(),
         kind: SyscallMemoryKind::Project,
@@ -6226,6 +6561,70 @@ fn a_memory_proposal_the_policy_refuses_is_rejected_and_journaled() {
         })
         .expect("the refusal is an audit fact");
     assert_eq!(refused, "memory content exceeds 8 bytes");
+}
+
+/// The memory binding is the kernel-enforced write gate: a child's write proposal against a
+/// read-only binding is refused as an audit fact, and no persist effect is planned.
+#[test]
+fn a_memory_proposal_against_a_read_only_binding_is_refused_before_any_effect() {
+    use crate::runtime::kernel::wire::effect::{MemoryAccessBinding, MemoryCapabilities};
+    use crate::runtime::kernel::wire::scalar::MemoryBindingId;
+    use crate::runtime::kernel::wire::syscall::{MemoryWriteProposal, RequestMemoryWriteRequest};
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.memory_access = Some(MemoryAccessBinding {
+            binding_id: MemoryBindingId::new("mem-binding-readonly").unwrap(),
+            capabilities: MemoryCapabilities {
+                read: true,
+                write: false,
+            },
+        });
+    }));
+    let started = runtime.submit(&workflow_start(
+        "in-start",
+        1_700_000_001_000,
+        two_node_spec(),
+    ));
+    runtime.submit(&spawned(
+        "in-ack",
+        1_700_000_002_000,
+        &effect_id(started.step_seq),
+        &["wf-node0"],
+    ));
+    let answered = runtime.submit(&child_done_with(
+        "in-done",
+        1_700_000_002_500,
+        "wf-node0",
+        "wf-node0:attempt:1",
+        vec![SyscallRequest::RequestMemoryWrite(
+            RequestMemoryWriteRequest {
+                proposal: MemoryWriteProposal {
+                    name: "brief".to_string(),
+                    kind: SyscallMemoryKind::Project,
+                    content: "short".to_string(),
+                    description: String::new(),
+                    evidence_refs: Vec::new(),
+                },
+            },
+        )],
+    ));
+    assert!(
+        !kinds(&answered).contains(&EffectKindTag::PersistMemory),
+        "a read-only binding plans no persist effect"
+    );
+    let refused = runtime
+        .observations()
+        .iter()
+        .any(|observation| match observation {
+            KernelObservation::ControlRequestRejected {
+                operation, reason, ..
+            } => operation == "write_memory" && reason.contains("read-only"),
+            _ => false,
+        });
+    assert!(
+        refused,
+        "the refusal is an audit fact naming the read-only binding"
+    );
 }
 
 /// §22.13 · a host-authored write inside a live operation is admitted by the same rule and the
@@ -9723,20 +10122,16 @@ fn context_optimization_evidence_and_pending_knowledge_survive_checkpoint_restor
         after.knowledge_checkpoint_state()
     );
     let entry = &after.partitions.knowledge.entries[0];
-    assert_eq!(entry.use_count, 1);
-    assert!(entry.last_used_step.is_some());
+    assert_eq!(entry.value.ref_count, 1);
+    assert!(entry.value.last_referenced_step.is_some());
     assert_eq!(
         entry.pending.as_ref().unwrap().0.content.as_text(),
         Some("replacement evidence")
     );
-    let policy = crate::evolution::ContentDigest::from_bytes(b"policy");
-    let (expected, _) = before
-        .prepare_candidate(OPERATION.into(), "next-step".into(), 3, policy.clone())
-        .unwrap();
-    let (actual, _) = after
-        .prepare_candidate(OPERATION.into(), "next-step".into(), 3, policy)
-        .unwrap();
-    assert_eq!(expected, actual);
+    let canonical = |ctx: &crate::context::manager::ContextManager| {
+        crate::runtime::kernel::wire::record::canonical_bytes(&ctx.render()).unwrap()
+    };
+    assert_eq!(canonical(before), canonical(after));
 }
 
 /// **Verification 1 (rebase form)** · the same differential over a checkpoint whose logical
@@ -10866,7 +11261,7 @@ fn has_skill_knowledge(runtime: &Runtime, name: &str) -> bool {
         .knowledge
         .entries
         .iter()
-        .any(|entry| entry.key.as_deref() == Some(key.as_str()) && !entry.evict_at_boundary)
+        .any(|entry| entry.key.as_deref() == Some(key.as_str()) && !entry.is_leaving())
 }
 
 fn stage_skill_knowledge(runtime: &mut Runtime, name: &str) {
@@ -11092,4 +11487,451 @@ fn a_failed_tool_result_reaches_the_provider_marked_as_a_failure() {
         }),
     ));
     assert_eq!(tool_turn(&turns_of(&started), "call_1")["is_error"], true);
+}
+
+// ----- propose_memory: the model-facing proposal surface -----
+
+/// A running agent whose operation exposes `propose_memory`, awaiting its first provider turn.
+fn agent_awaiting_provider_with_proposals() -> (Runtime, EffectId) {
+    use crate::runtime::kernel::wire::config::FeaturePolicy;
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.feature_policy = Some(FeaturePolicy {
+            memory_enabled: Some(true),
+            propose_memory_enabled: Some(true),
+            ..FeaturePolicy::default()
+        });
+    }));
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let effect = sole_effect(&started);
+    let EffectKind::CallProvider(call) = &effect.effect else {
+        panic!("expected a provider call");
+    };
+    assert!(
+        call.tools
+            .iter()
+            .any(|tool| tool.name == crate::context::manager::PROPOSE_MEMORY_TOOL_NAME),
+        "the turn must expose the proposal tool the model is about to call"
+    );
+    (runtime, effect.effect_id.clone())
+}
+
+fn proposal_call(call_id: &str, name: &str, content: &str) -> WireToolCall {
+    tool_call(
+        call_id,
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
+        json!({"name": name, "kind": "feedback", "content": content}),
+    )
+}
+
+/// The result the model reads back for one of its own calls: `(output, is_error)`.
+fn tool_result_for(runtime: &Runtime, call_id: &str) -> Option<(String, bool)> {
+    runtime
+        .driver
+        .engine()?
+        .ctx
+        .partitions
+        .history
+        .messages
+        .iter()
+        .find_map(|message| {
+            let Content::Parts(parts) = &message.content else {
+                return None;
+            };
+            parts.iter().find_map(|part| match part {
+                ContentPart::ToolResult {
+                    call_id: id,
+                    output,
+                    is_error,
+                    ..
+                } if id == call_id => Some((output.clone(), *is_error)),
+                _ => None,
+            })
+        })
+}
+
+fn candidate_settled(candidate_id: &str) -> EffectSuccess {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+        receipt: None,
+        candidate: Some(MemoryCandidateReceipt {
+            binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+            candidate_id: candidate_id.to_string(),
+            receipt_id: "rcpt-1".to_string(),
+        }),
+    })
+}
+
+/// The model learns at call time that its proposal went to review, and the turn that proposed it
+/// resumes once the host settles the proposal — with the outcome in context, not as a silent
+/// audit fact the model never sees.
+#[test]
+fn a_memory_proposal_answers_the_model_and_resumes_its_turn() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let proposed = runtime.submit(&provider_result(
+        "in-propose",
+        1_700_000_002_000,
+        &provider,
+        vec![proposal_call(
+            "call-1",
+            "brief-style",
+            "prefers numbered sections",
+        )],
+    ));
+    let write = sole_effect(&proposed);
+    let EffectKind::PersistMemory(effect) = &write.effect else {
+        panic!("expected a memory write, got {:?}", write.tag());
+    };
+    assert!(matches!(
+        effect.memory.causation,
+        SyscallCausation::ProviderTool(_)
+    ));
+    let (ack, is_error) = tool_result_for(&runtime, "call-1").expect("the call is answered");
+    assert!(!is_error);
+    assert!(ack.contains("review"), "{ack}");
+
+    // Restored mid-flight, the kernel still knows the pending write was the model's own.
+    let mut restored = Runtime::restore_with(None, &runtime.journal);
+    for runtime in [&mut runtime, &mut restored] {
+        let resumed = runtime.submit(&resolved(
+            "in-candidate",
+            1_700_000_003_000,
+            &write.effect_id,
+            candidate_settled("cand-1"),
+        ));
+        assert_eq!(
+            kinds(&resumed),
+            vec![EffectKindTag::CallProvider],
+            "a settled proposal must not leave the turn that made it stalled"
+        );
+        assert!(
+            history_text(runtime)
+                .iter()
+                .any(|text| text.contains("brief-style") && text.contains("pending review")),
+            "{:?}",
+            history_text(runtime)
+        );
+        assert!(
+            runtime.observations().iter().any(|observation| matches!(
+                observation,
+                KernelObservation::MemoryCandidatePending { .. }
+            )),
+            "the pending candidate is still journaled as an audit fact"
+        );
+    }
+}
+
+#[test]
+fn a_refused_memory_proposal_tells_the_model_why_and_resumes_its_turn() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let proposed = runtime.submit(&provider_result(
+        "in-propose",
+        1_700_000_002_000,
+        &provider,
+        vec![proposal_call(
+            "call-1",
+            "brief-style",
+            "prefers numbered sections",
+        )],
+    ));
+    let resumed = runtime.submit(&failed(
+        "in-refused",
+        1_700_000_003_000,
+        &sole_effect(&proposed).effect_id,
+        HostEffectFailureKind::PermissionDenied,
+        "duplicate_of_existing_record",
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|text| text.contains("brief-style")
+                && text.contains("not stored")
+                && text.contains("duplicate_of_existing_record")),
+        "{:?}",
+        history_text(&runtime)
+    );
+}
+
+/// DEC-3 admits one pending PersistMemory, so a second proposal in the same batch cannot publish.
+/// It must be answered to the model — reused when identical, refused with a retry hint when not —
+/// instead of faulting the whole provider turn.
+#[test]
+fn parallel_memory_proposals_reuse_or_refuse_without_terminating_the_turn() {
+    for duplicate in [true, false] {
+        let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+        let proposed = runtime.submit(&provider_result(
+            "in-parallel-propose",
+            1_700_000_002_000,
+            &provider,
+            vec![
+                proposal_call("call-1", "brief-style", "prefers numbered sections"),
+                if duplicate {
+                    proposal_call("call-2", "brief-style", "prefers numbered sections")
+                } else {
+                    proposal_call("call-2", "tone", "prefers a terse tone")
+                },
+            ],
+        ));
+        assert_eq!(kinds(&proposed), vec![EffectKindTag::PersistMemory]);
+        assert!(runtime.tx.terminal().is_none());
+        let (second, is_error) = tool_result_for(&runtime, "call-2").expect("call-2 is answered");
+        assert_eq!(is_error, !duplicate, "{second}");
+        if !duplicate {
+            assert!(second.contains("after"), "{second}");
+        }
+        let history = &runtime
+            .driver
+            .engine()
+            .unwrap()
+            .ctx
+            .partitions
+            .history
+            .messages;
+        assert!(crate::context::units::strict_tool_pairing_is_valid(history));
+
+        let resumed = runtime.submit(&resolved(
+            "in-candidate",
+            1_700_000_003_000,
+            &sole_effect(&proposed).effect_id,
+            candidate_settled("cand-1"),
+        ));
+        assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    }
+}
+
+/// The proposal surface is the kernel's, behind its own switch. A host catalog and baseline that
+/// name `propose_memory` while the feature is off expose nothing, so a model cannot reach a
+/// memory write the operation never opened to review.
+#[test]
+fn a_host_catalog_cannot_expose_propose_memory_while_its_feature_is_off() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.tool_catalog.push(super::super::effect::ToolSchema {
+            name: crate::context::manager::PROPOSE_MEMORY_TOOL_NAME.to_string(),
+            description: String::new(),
+            parameters: Default::default(),
+        });
+    }));
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let EffectKind::CallProvider(call) = &sole_effect(&started).effect else {
+        panic!("expected a provider call");
+    };
+    assert!(
+        call.tools.iter().any(|tool| tool.name == "memory"),
+        "the memory search surface is unaffected"
+    );
+    assert!(
+        !call
+            .tools
+            .iter()
+            .any(|tool| tool.name == crate::context::manager::PROPOSE_MEMORY_TOOL_NAME),
+        "{:?}",
+        call.tools.iter().map(|tool| &tool.name).collect::<Vec<_>>()
+    );
+}
+
+fn recall_config() -> WireEnvelope {
+    syscall_config_with(|config| {
+        config.memory_policy.as_mut().unwrap().recall = Some(true);
+    })
+}
+
+/// Plan task 2.1 · with `memory_policy.recall` the run's first effect is the kernel's own recall
+/// for the goal; its hits land as keyed index lines in system knowledge before the first call.
+#[test]
+fn a_recall_policy_recalls_the_goal_before_the_first_provider_call() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&recall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let recall = sole_effect(&started).clone();
+    let EffectKind::QueryMemory(query) = &recall.effect else {
+        panic!("expected the kernel recall, got {:?}", recall.tag());
+    };
+    assert!(matches!(query.query.causation, SyscallCausation::KernelRecall(_)));
+    assert!(!query.query.text.is_empty(), "the goal is the query");
+    assert_eq!(query.requested_k, 4, "the operation's retrieval width");
+
+    let restored = Runtime::restore_with(None, &runtime.journal);
+    assert_eq!(restored.pending_effect_kinds(), vec![EffectKindTag::QueryMemory]);
+
+    let mut hit = recall_of("rec-1", "the full record body");
+    hit.description = "prefers numbered sections".to_string();
+    hit.trust = "host_verified".to_string();
+    let resumed = runtime.submit(&resolved(
+        "in-recalled",
+        1_700_000_002_000,
+        &recall.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls: vec![hit] }),
+    ));
+    let call = sole_effect(&resumed);
+    let EffectKind::CallProvider(call) = &call.effect else {
+        panic!("expected the first provider call, got {:?}", call.tag());
+    };
+    assert!(call.context.system_knowledge.contains(
+        "[MEMORY record_id=rec-1 kind=project trust=host_verified] prefers numbered sections"
+    ));
+    assert!(!call.context.system_knowledge.contains("full record body"), "an index line, not the record");
+    assert!(history_text(&runtime).iter().all(|line| !line.contains("rec-1")));
+    assert!(observation_kinds(&runtime).contains(&"memory_recalled"));
+}
+
+/// Plan tasks 1.1 / 4.1 · a recalled index line the model reads with `memory(record_id)` is an
+/// expanded `memory_recall` item, the expansion survives a restore, and the end-of-run report
+/// counts the recall hit rate item by item.
+#[test]
+fn the_lifecycle_report_counts_which_recalls_the_model_read() {
+    use crate::context::item::{ItemOrigin, Lease, RECALL_LEASE_TURNS};
+    let mut runtime = Runtime::new();
+    runtime.submit(&recall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let recall = sole_effect(&started).effect_id.clone();
+    let resumed = runtime.submit(&resolved(
+        "in-recalled",
+        1_700_000_002_000,
+        &recall,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "one"), recall_of("rec-2", "two")],
+        }),
+    ));
+    let provider = sole_effect(&resumed).effect_id.clone();
+    let queried = runtime.submit(&provider_result(
+        "in-fetch",
+        1_700_000_003_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            crate::context::manager::MEMORY_TOOL_NAME,
+            json!({"record_id": "rec-1"}),
+        )],
+    ));
+    let fetch = sole_effect(&queried).effect_id.clone();
+    let resumed = runtime.submit(&resolved(
+        "in-fetched",
+        1_700_000_004_000,
+        &fetch,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "one")],
+        }),
+    ));
+    let items = |runtime: &Runtime| {
+        runtime
+            .driver
+            .engine()
+            .unwrap()
+            .ctx
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .map(|entry| (entry.origin, entry.lease, entry.value.expanded))
+            .collect::<Vec<_>>()
+    };
+    let recall_lease = Lease::Turns(RECALL_LEASE_TURNS);
+    let expected = vec![
+        (ItemOrigin::MemoryRecall, recall_lease, true),
+        (ItemOrigin::MemoryRecall, recall_lease, false),
+    ];
+    assert_eq!(items(&runtime), expected);
+    assert_eq!(items(&Runtime::restore_with(None, &runtime.journal)), expected);
+    // Plan task 1.1b · history messages are items with ids that survive a restore too.
+    let tags = |runtime: &Runtime| {
+        let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
+        (0..history.messages.len()).map(|index| history.tag(index)).collect::<Vec<_>>()
+    };
+    let live = tags(&runtime);
+    assert!(live.iter().all(|tag| tag.id > 0));
+    assert_eq!(tags(&Runtime::restore_with(None, &runtime.journal)), live);
+
+    let provider = sole_effect(&resumed).effect_id.clone();
+    runtime.submit(&provider_answer("in-answer", 1_700_000_005_000, &provider, "done"));
+    let report = runtime
+        .observations()
+        .iter()
+        .find_map(|observation| match observation {
+            KernelObservation::LifecycleReport { recalled, recall_expanded, items, .. } => {
+                Some((*recalled, *recall_expanded, items.clone()))
+            }
+            _ => None,
+        })
+        .expect("the run reports its context lifecycle");
+    assert_eq!((report.0, report.1), (2, 1));
+    assert_eq!(report.2[0].key.as_deref(), Some("memory:rec-1"));
+    assert!(report.2[0].value.expanded);
+    assert_eq!(report.2[0].end, None, "still resident at the end of the run");
+    let history = runtime
+        .observations()
+        .iter()
+        .find_map(|observation| match observation {
+            KernelObservation::LifecycleReport { history, .. } => Some(history.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(history.iter().any(|tally| tally.origin == ItemOrigin::Assistant && tally.items > 0));
+}
+
+#[test]
+fn a_failed_recall_still_makes_the_first_provider_call() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&recall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let recall = sole_effect(&started).effect_id.clone();
+    let resumed = runtime.submit(&failed(
+        "in-recall-failed",
+        1_700_000_002_000,
+        &recall,
+        HostEffectFailureKind::StorageUnavailable,
+        "the memory store is offline",
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+}
+
+#[test]
+fn without_the_recall_policy_the_first_effect_is_the_provider_call() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    assert_eq!(kinds(&started), vec![EffectKindTag::CallProvider]);
+}
+
+/// Plan task 3.1 · a run started with a dependency output advertises `read_result` and answers a
+/// `dep:` read with the body itself, without a host effect.
+#[test]
+fn a_dependency_output_is_read_in_full_through_read_result() {
+    use super::super::root::DependencyOutput;
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+    let mut start = agent_start("in-start", 1_700_000_001_000);
+    if let KernelInput::StartOperation(start) = &mut start.input {
+        start.initial_context.dependencies = vec![DependencyOutput {
+            agent_id: "wf-node0".to_string(),
+            content: "the whole survey, every finding".to_string(),
+        }];
+    }
+    let started = runtime.submit(&start);
+    let call = sole_effect(&started).clone();
+    let EffectKind::CallProvider(provider) = &call.effect else {
+        panic!("expected a provider call, got {:?}", call.tag());
+    };
+    assert!(provider.tools.iter().any(|tool| tool.name == "read_result"));
+
+    let read = runtime.submit(&provider_result(
+        "in-read",
+        1_700_000_002_000,
+        &call.effect_id,
+        vec![tool_call("c1", "read_result", serde_json::json!({ "call_id": "dep:wf-node0" }))],
+    ));
+    assert_eq!(kinds(&read), vec![EffectKindTag::CallProvider], "no host effect for a dependency read");
+    assert!(history_text(&runtime)
+        .iter()
+        .any(|line| line.contains("[PAYLOAD handle_id=dep:wf-node0]") && line.contains("every finding")));
+
+    let missing = runtime.submit(&provider_result(
+        "in-missing",
+        1_700_000_003_000,
+        &sole_effect(&read).effect_id,
+        vec![tool_call("c2", "read_result", serde_json::json!({ "call_id": "dep:wf-node9" }))],
+    ));
+    assert_eq!(kinds(&missing), vec![EffectKindTag::CallProvider]);
+    assert!(history_text(&runtime).iter().any(|line| line.contains("no dependency output from wf-node9")));
 }

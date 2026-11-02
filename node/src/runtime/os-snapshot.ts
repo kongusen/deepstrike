@@ -7,6 +7,7 @@ const KERNEL_KINDS = new Set([
   "page_in",
   "capability_changed",
   "context_renewed",
+  "context_lifecycle_reported",
   "suspended",
   "resumed",
   "tool_gated",

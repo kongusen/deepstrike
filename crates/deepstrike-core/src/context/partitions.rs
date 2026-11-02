@@ -1,4 +1,5 @@
 use super::config::ContextConfig;
+use super::item::{ContextItem, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease};
 use super::measurement::TokenMeasurement;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
@@ -11,6 +12,9 @@ pub struct Partition {
     pub messages: Vec<CoreMessage>,
     /// Host-side measurements aligned with `messages`; not part of canonical message state.
     pub measurements: Vec<TokenMeasurement>,
+    /// Plan task 1.1b · each message's item identity, aligned with `messages`. A message pushed
+    /// without one reads as [`ItemTag::untracked`].
+    pub items: Vec<ItemTag>,
     pub token_count: u32,
 }
 
@@ -19,21 +23,49 @@ impl Partition {
         Self {
             messages: Vec::new(),
             measurements: Vec::new(),
+            items: Vec::new(),
             token_count: 0,
         }
     }
 
     pub fn push(&mut self, msg: CoreMessage, token_count: u32) {
+        let tag = ItemTag::untracked(&msg);
+        self.push_tagged(msg, token_count, tag);
+    }
+
+    pub fn push_tagged(&mut self, msg: CoreMessage, token_count: u32, tag: ItemTag) {
+        self.align_items();
         let measurement = TokenMeasurement::for_message(&msg, token_count);
         self.token_count += token_count;
         self.messages.push(msg);
         self.measurements.push(measurement);
+        self.items.push(tag);
     }
 
     pub fn clear(&mut self) {
         self.messages.clear();
         self.measurements.clear();
+        self.items.clear();
         self.token_count = 0;
+    }
+
+    /// The item identity of message `index`.
+    pub fn tag(&self, index: usize) -> ItemTag {
+        self.items.get(index).copied().unwrap_or_else(|| {
+            self.messages
+                .get(index)
+                .map(ItemTag::untracked)
+                .unwrap_or(ItemTag { id: 0, origin: ItemOrigin::User, injected_turn: 0 })
+        })
+    }
+
+    /// Pad `items` to `messages` (a message written straight into `messages` has no tag yet).
+    pub fn align_items(&mut self) {
+        while self.items.len() < self.messages.len() {
+            let tag = ItemTag::untracked(&self.messages[self.items.len()]);
+            self.items.push(tag);
+        }
+        self.items.truncate(self.messages.len());
     }
 
     pub fn measured_tokens(&self, index: usize, engine: &ContextTokenEngine) -> u32 {
@@ -78,32 +110,6 @@ impl Default for Partition {
     }
 }
 
-/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
-/// version is the ABI authority; this is the richer internal semantic vocabulary. The
-/// only legal crossing is the driver's exhaustive conversion.
-/// One durable knowledge entry. Unlike history messages, knowledge entries have IDENTITY —
-/// a host-assigned key enabling upsert (refresh a pinned reference) and targeted removal —
-/// plus lifecycle flags driving the boundary sweep (K1/K2 of the dynamic-control spec).
-#[derive(Debug, Clone)]
-pub struct KnowledgeEntry {
-    /// `None` appends an unkeyed entry. Keyed entries upsert.
-    pub key: Option<compact_str::CompactString>,
-    pub message: CoreMessage,
-    pub tokens: u32,
-    /// Host-pinned ⇒ never budget-evicted (K2). Skill pins are NOT host-pinned (K3 governs them).
-    pub pinned: bool,
-    /// Marked for removal at the next compaction/renewal boundary. Knowledge renders into the
-    /// cached system[1] block, so existing bytes are only rewritten where the prompt-cache prefix
-    /// is being rebuilt anyway — the same principle as `reset_collapse_generation`.
-    pub evict_at_boundary: bool,
-    /// Deferred upsert: a same-key push mid-generation stages its replacement here instead of
-    /// rewriting rendered bytes; applied by [`KnowledgePartition::sweep_at_boundary`].
-    pub pending: Option<Box<(CoreMessage, u32)>>,
-    /// Deterministic evidence that later input actually referenced this entry.
-    pub use_count: u64,
-    pub last_used_step: Option<u64>,
-}
-
 /// Outcome of one boundary sweep, for the `KnowledgeSwept` kernel observation.
 #[derive(Debug, Clone, Default)]
 pub struct KnowledgeSweep {
@@ -113,13 +119,28 @@ pub struct KnowledgeSweep {
     pub changed: bool,
 }
 
-/// The knowledge partition: durable, identity-bearing entries rendered into system[1].
-/// Appends are immediate (they extend the cached prefix — the cheap direction); mutation and
-/// removal of existing entries are boundary-deferred (see [`KnowledgeEntry::evict_at_boundary`]).
+/// The knowledge tier of the item table: identity-bearing [`ContextItem`]s rendered into
+/// system[1].
+///
+/// system[1] renders before the history turns, so ANY change to it — an append included —
+/// invalidates the cached history behind it. Appends are therefore immediate only while the
+/// current prefix has not been sent; afterwards a fresh item is `staged` (rendered in the state
+/// turn) until the next compaction/renewal boundary. Mutation and removal of existing items are
+/// boundary-deferred the same way (see [`ContextItem::leaving`]).
 #[derive(Debug, Clone, Default)]
 pub struct KnowledgePartition {
-    pub entries: Vec<KnowledgeEntry>,
+    pub entries: Vec<ContextItem>,
     pub token_count: u32,
+    /// The kernel turn new items are stamped with and leases are counted against.
+    pub turn: u32,
+    /// Keys a boundary sweep removed. A later push of one of them is regret.
+    pub evicted_keys: std::collections::BTreeSet<String>,
+    /// Evicted keys that came back.
+    pub regret: u32,
+    /// Tokens of items removed without ever being referenced.
+    pub wasted_tokens: u64,
+    /// Items that left, in the order they left (plan task 4.1).
+    pub retired: Vec<ItemRecord>,
 }
 
 impl KnowledgePartition {
@@ -132,9 +153,7 @@ impl KnowledgePartition {
         self.push_entry(None, msg, token_count, false);
     }
 
-    /// Keyed push: a fresh key (or `None`) appends immediately; an existing key stages a
-    /// boundary-deferred upsert (and clears any pending eviction — the entry is wanted again).
-    /// `pinned` takes effect immediately in both cases (it is bookkeeping, not rendered bytes).
+    /// Host-supplied knowledge: its origin follows from the key ([`ItemOrigin::for_host_key`]).
     pub fn push_entry(
         &mut self,
         key: Option<compact_str::CompactString>,
@@ -142,25 +161,128 @@ impl KnowledgePartition {
         tokens: u32,
         pinned: bool,
     ) {
+        let origin = ItemOrigin::for_host_key(key.as_deref());
+        self.push_item(origin, key, msg, tokens, pinned);
+    }
+
+    /// Keyed push: a fresh key (or `None`) appends immediately; an existing key stages a
+    /// boundary-deferred upsert, renews the item's lease and clears any pending removal (the item
+    /// is wanted again). `pinned` takes effect immediately in both cases (it is bookkeeping, not
+    /// rendered bytes).
+    pub fn push_item(
+        &mut self,
+        origin: ItemOrigin,
+        key: Option<compact_str::CompactString>,
+        msg: CoreMessage,
+        tokens: u32,
+        pinned: bool,
+    ) {
+        let turn = self.turn;
         if let Some(ref k) = key {
             if let Some(entry) = self.entries.iter_mut().find(|e| e.key.as_ref() == Some(k)) {
                 entry.pending = Some(Box::new((msg, tokens)));
-                entry.evict_at_boundary = false;
+                entry.leaving = None;
                 entry.pinned = pinned;
+                entry.lease = if pinned { Lease::Permanent } else { entry.origin.defaults().lease };
+                entry.value.injected_turn = turn;
                 return;
             }
         }
+        let mut item = ContextItem::new(origin, key, msg, tokens, pinned, turn);
+        if let Some(ref k) = item.key {
+            if self.evicted_keys.remove(k.as_str()) {
+                self.regret += 1;
+                item.value.paged_in_after_evict = true;
+            }
+        }
         self.token_count += tokens;
-        self.entries.push(KnowledgeEntry {
-            key,
-            message: msg,
-            tokens,
-            pinned,
-            evict_at_boundary: false,
-            pending: None,
-            use_count: 0,
-            last_used_step: None,
-        });
+        self.entries.push(item);
+    }
+
+    /// Renew a resident item's lease from `turn`, as a fresh push of the same content would.
+    /// Returns whether a live item holds `key`.
+    pub fn renew(&mut self, key: &str) -> bool {
+        let turn = self.turn;
+        match self
+            .entries
+            .iter_mut()
+            .find(|entry| !entry.is_leaving() && entry.key.as_deref() == Some(key))
+        {
+            Some(entry) => {
+                entry.value.injected_turn = turn;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The model asked for the full form behind `key` (for a recall, `memory(record_id)`): the
+    /// strongest reference there is. A leaving item is wanted again.
+    pub fn note_expanded(&mut self, key: &str) -> bool {
+        let turn = self.turn;
+        match self.entries.iter_mut().find(|entry| entry.key.as_deref() == Some(key)) {
+            Some(entry) => {
+                entry.value.expanded = true;
+                entry.value.ref_count = entry.value.ref_count.saturating_add(1);
+                entry.value.last_referenced_turn = Some(turn);
+                if entry.leaving == Some(ItemEnd::Expired) {
+                    entry.leaving = None;
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Mark every item whose lease ran out at the current turn to leave at the next boundary.
+    /// Returns the keys newly marked.
+    pub fn expire_leases(&mut self) -> Vec<String> {
+        let turn = self.turn;
+        let mut expired = Vec::new();
+        for entry in self.entries.iter_mut().filter(|entry| !entry.is_leaving()) {
+            if entry.lease_expired(turn) {
+                entry.leaving = Some(ItemEnd::Expired);
+                if let Some(key) = &entry.key {
+                    expired.push(key.to_string());
+                }
+            }
+        }
+        expired
+    }
+
+    /// Promote every staged entry into system[1]. Returns the promoted tokens.
+    pub fn promote_staged(&mut self) -> u32 {
+        let mut promoted = 0;
+        for entry in self.entries.iter_mut().filter(|entry| entry.staged) {
+            entry.staged = false;
+            promoted += entry.tokens;
+        }
+        promoted
+    }
+
+    /// Tokens currently staged outside system[1].
+    pub fn staged_tokens(&self) -> u32 {
+        self.entries
+            .iter()
+            .filter(|entry| entry.staged)
+            .map(|entry| entry.tokens)
+            .sum()
+    }
+
+    /// The system[1] messages, in entry order.
+    pub fn resident_messages(&self) -> impl Iterator<Item = &CoreMessage> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.staged)
+            .map(|entry| &entry.message)
+    }
+
+    /// The staged messages, in entry order (rendered in the state turn).
+    pub fn staged_messages(&self) -> impl Iterator<Item = &CoreMessage> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.staged)
+            .map(|entry| &entry.message)
     }
 
     /// Record references from a journal-derived history message. This is deliberately driven by
@@ -173,8 +295,9 @@ impl KnowledgePartition {
             return;
         }
         let folded = text.to_lowercase();
+        let turn = self.turn;
         for entry in &mut self.entries {
-            if entry.evict_at_boundary {
+            if entry.is_leaving() {
                 continue;
             }
             let exact_key = entry
@@ -188,8 +311,9 @@ impl KnowledgePartition {
             let lexical_hit =
                 !entry_terms.is_empty() && overlap >= if entry_terms.len() == 1 { 1 } else { 2 };
             if exact_key || lexical_hit {
-                entry.use_count = entry.use_count.saturating_add(1);
-                entry.last_used_step = Some(step);
+                entry.value.ref_count = entry.value.ref_count.saturating_add(1);
+                entry.value.last_referenced_step = Some(step);
+                entry.value.last_referenced_turn = Some(turn);
             }
         }
     }
@@ -198,10 +322,10 @@ impl KnowledgePartition {
         let entry = self.entries.get(index)?;
         Some(deterministic_retention_score(RetentionFeatures {
             pinned: entry.pinned,
-            use_count: entry.use_count,
-            last_used_step: entry.last_used_step,
+            use_count: entry.value.ref_count,
+            last_used_step: entry.value.last_referenced_step,
             current_step,
-            lease_remaining_steps: None,
+            lease_remaining_steps: entry.lease_remaining_turns(self.turn).map(u64::from),
             kind: retention_kind(entry.key.as_deref()),
             tokens: entry.tokens,
             confidence_ppm: 0,
@@ -223,13 +347,20 @@ impl KnowledgePartition {
         };
         let entry = &mut self.entries[index];
         if entry.pending.take().is_some() {
-            entry.evict_at_boundary = true;
+            entry.leaving = Some(ItemEnd::Removed);
             return true;
         }
-        let tokens = entry.tokens;
-        self.entries.remove(index);
-        self.token_count = self.token_count.saturating_sub(tokens);
+        let entry = self.entries.remove(index);
+        self.token_count = self.token_count.saturating_sub(entry.tokens);
+        self.retired.push(entry.record(Some(ItemEnd::Removed)));
         true
+    }
+
+    /// A live entry holds `key` (one not already marked for removal).
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| !entry.is_leaving() && entry.key.as_deref() == Some(key))
     }
 
     /// Mark the keyed entry for removal at the next boundary. Errs-open: unknown key is a no-op.
@@ -241,7 +372,7 @@ impl KnowledgePartition {
             .find(|e| e.key.as_deref() == Some(key))
         {
             Some(entry) => {
-                entry.evict_at_boundary = true;
+                entry.leaving = Some(ItemEnd::Removed);
                 entry.pending = None;
                 true
             }
@@ -249,10 +380,14 @@ impl KnowledgePartition {
         }
     }
 
-    /// Apply pending upserts and drop marked entries. Call ONLY at compaction/renewal
-    /// boundaries — this is the one place existing system[1] bytes may be rewritten.
+    /// Apply pending upserts and drop marked entries (and every `until_boundary` one). Call ONLY at
+    /// compaction/renewal boundaries — this is the one place existing system[1] bytes may be
+    /// rewritten.
     pub fn sweep_at_boundary(&mut self) -> KnowledgeSweep {
         let mut sweep = KnowledgeSweep::default();
+        if self.promote_staged() > 0 {
+            sweep.changed = true;
+        }
         for entry in &mut self.entries {
             if let Some(replacement) = entry.pending.take() {
                 let (msg, tokens) = *replacement;
@@ -261,24 +396,42 @@ impl KnowledgePartition {
                 entry.tokens = tokens;
                 sweep.changed = true;
             }
+            if entry.lease == Lease::UntilBoundary && !entry.is_leaving() {
+                entry.leaving = Some(ItemEnd::Expired);
+            }
         }
         let before = self.entries.len();
+        let (evicted_keys, wasted_tokens, retired) =
+            (&mut self.evicted_keys, &mut self.wasted_tokens, &mut self.retired);
         self.entries.retain(|e| {
-            if e.evict_at_boundary {
-                if let Some(ref k) = e.key {
-                    sweep.removed_keys.push(k.to_string());
-                }
-                sweep.tokens_freed += e.tokens;
-                false
-            } else {
-                true
+            let Some(end) = e.leaving else {
+                return true;
+            };
+            if let Some(ref k) = e.key {
+                sweep.removed_keys.push(k.to_string());
+                evicted_keys.insert(k.to_string());
             }
+            if e.value.ref_count == 0 {
+                *wasted_tokens += u64::from(e.tokens);
+            }
+            sweep.tokens_freed += e.tokens;
+            retired.push(e.record(Some(end)));
+            false
         });
         if self.entries.len() != before {
             self.token_count = self.token_count.saturating_sub(sweep.tokens_freed);
             sweep.changed = true;
         }
         sweep
+    }
+
+    /// Every item of the run, retired ones first (in the order they left), then the resident ones.
+    pub fn item_records(&self) -> Vec<ItemRecord> {
+        self.retired
+            .iter()
+            .cloned()
+            .chain(self.entries.iter().map(|entry| entry.record(None)))
+            .collect()
     }
 
     /// The rendered messages, in entry order (renderer / snapshot surface).
@@ -578,7 +731,8 @@ mod tests {
         let mut p = KnowledgePartition::new();
         p.push(CoreMessage::system("existing"), 3);
         p.push_entry(Some("a".into()), CoreMessage::system("fresh"), 4, true);
-        // Appends are visible right away (cache-cheap direction: prefix only extends).
+        // Appends land in the partition right away; the manager stages one that arrives after
+        // the prefix was sent, so the cached history stays valid (plan task 1.2).
         assert_eq!(text_of(&p), vec!["existing", "fresh"]);
         assert_eq!(p.token_count, 7);
         assert!(p.entries[1].pinned);
@@ -602,9 +756,9 @@ mod tests {
 
         p.observe_references(&CoreMessage::assistant("Use project:orchid and Atlas"), 7);
 
-        assert_eq!(p.entries[0].use_count, 1);
-        assert_eq!(p.entries[0].last_used_step, Some(7));
-        assert_eq!(p.entries[1].use_count, 0);
+        assert_eq!(p.entries[0].value.ref_count, 1);
+        assert_eq!(p.entries[0].value.last_referenced_step, Some(7));
+        assert_eq!(p.entries[1].value.ref_count, 0);
         assert!(p.retention_score(0, 9) > p.retention_score(1, 9));
     }
 }

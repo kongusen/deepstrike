@@ -125,8 +125,9 @@ pub fn rebuild_os_snapshot_from_events(events: &[SessionEvent]) -> OsSnapshot {
                 let record = ProcessRecord {
                     turn: *turn,
                     agent_id: agent_id.clone(),
-                    parent_session_id: parent_session_id.clone(),
-                    state: state.clone(),
+                    parent_session_id: parent_session_id.clone().unwrap_or_default(),
+                    // An event without a state is a spawn (the shared projection's default).
+                    state: state.clone().unwrap_or_else(|| "running".into()),
                 };
                 if let Some(idx) = process_index.get(agent_id) {
                     snap.process_by_agent[*idx] = record;
@@ -234,11 +235,12 @@ mod tests {
             SessionEvent::AgentProcessChanged {
                 turn: 1,
                 agent_id: "child-1".into(),
-                parent_session_id: "parent".into(),
+                parent_task_id: None,
+                parent_session_id: Some("parent".into()),
                 role: "worker".into(),
                 isolation: "shared".into(),
                 context_inheritance: "none".into(),
-                state: "running".into(),
+                state: Some("running".into()),
                 permitted_capability_ids: vec![],
                 result_termination: None,
             },
@@ -259,11 +261,12 @@ mod tests {
             SessionEvent::AgentProcessChanged {
                 turn: 4,
                 agent_id: "child-1".into(),
-                parent_session_id: "parent".into(),
+                parent_task_id: None,
+                parent_session_id: Some("parent".into()),
                 role: "worker".into(),
                 isolation: "shared".into(),
                 context_inheritance: "none".into(),
-                state: "joined".into(),
+                state: Some("joined".into()),
                 permitted_capability_ids: vec![],
                 result_termination: Some("completed".into()),
             },

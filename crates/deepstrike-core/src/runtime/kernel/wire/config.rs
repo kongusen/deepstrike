@@ -25,7 +25,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::evolution::ArtifactSetBinding;
 
 use super::KernelBootstrapLimits;
 use super::command::{
@@ -81,10 +80,6 @@ fn require_le_u32(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationConfig {
-    /// Optional host-owned artifact identity this operation executes against. When omitted,
-    /// the operation runs without a bound artifact set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_set_binding: Option<ArtifactSetBinding>,
     /// Turn/token/wall budgets plus the loop guards (criteria gate, repeat fuse, entropy watch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_policy: Option<ExecutionPolicy>,
@@ -142,7 +137,6 @@ pub struct OperationConfig {
 impl Default for OperationConfig {
     fn default() -> Self {
         Self {
-            artifact_set_binding: None,
             execution_policy: None,
             governance_policy: None,
             scheduler_policy: None,
@@ -343,6 +337,31 @@ pub struct ContextPolicy {
     pub knowledge_budget_ppm: Option<Ppm>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_budget: Option<PromptBudget>,
+    /// Compaction tiers the provider performs natively, which the kernel then skips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_tiers: Option<DelegatedContextTiers>,
+}
+
+/// The compaction tiers a provider performs natively. The host declares them only when the
+/// provider it calls is configured to do the work; the kernel then skips its own tier rather than
+/// running both. Renewal has no flag: it is decided on the full local history and is never
+/// delegated, so it remains the safety net whatever the provider does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegatedContextTiers {
+    /// Old tool results are cleared by the provider: no idle decay, snip, micro-compact or
+    /// collapsed-preview projection in the kernel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_result_clearing: bool,
+    /// History is compacted by the provider: no context collapse or auto-compact in the kernel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compaction: bool,
+}
+
+impl DelegatedContextTiers {
+    pub fn is_none(&self) -> bool {
+        !self.tool_result_clearing && !self.compaction
+    }
 }
 
 /// The five pressure thresholds. Replaced as one value: a partial threshold ladder is how the
@@ -459,6 +478,10 @@ pub struct MemoryPolicy {
     /// Recall count at which a record becomes a promotion candidate. Absent ⇒ no suggestion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promotion_recall_threshold: Option<WireU64>,
+    /// The kernel recalls long-term memory for the run goal before the first provider call and
+    /// after each renewal. Needs a readable memory binding and `query_memory` support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -538,6 +561,8 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propose_memory_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_tool_enabled: Option<bool>,
@@ -589,10 +614,6 @@ impl HostEffectSupport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedOperationConfig {
-    /// Optional artifact identity captured in the genesis record. When None, the operation
-    /// runs without a bound artifact set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_set_binding: Option<ArtifactSetBinding>,
     pub execution_policy: ResolvedExecutionPolicy,
     pub governance_policy: ResolvedGovernancePolicy,
     pub scheduler_policy: ResolvedSchedulerPolicy,
@@ -699,6 +720,10 @@ pub struct ResolvedContextPolicy {
     pub idle_micro_compact_minutes: u32,
     pub knowledge_budget_ppm: Ppm,
     pub prompt_budget: PromptBudget,
+    /// Absent on the wire when nothing is delegated, so every configuration that predates
+    /// delegation resolves — and digests — exactly as before.
+    #[serde(default, skip_serializing_if = "DelegatedContextTiers::is_none")]
+    pub delegated_tiers: DelegatedContextTiers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -831,6 +856,8 @@ pub struct ResolvedMemoryPolicy {
     pub max_content_bytes: u32,
     pub max_name_length: u32,
     pub promotion_recall_threshold: Option<WireU64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall: bool,
 }
 
 impl ResolvedMemoryPolicy {
@@ -843,6 +870,7 @@ impl ResolvedMemoryPolicy {
         max_content_bytes: 10_000,
         max_name_length: 100,
         promotion_recall_threshold: None,
+        recall: false,
     };
 
     /// §22.13 · the one admission rule for a memory write, whoever proposes it.
@@ -887,6 +915,8 @@ impl ResolvedMemoryPolicy {
 #[serde(deny_unknown_fields)]
 pub struct ResolvedFeaturePolicy {
     pub memory_enabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub propose_memory_enabled: bool,
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
     pub stable_core_tool_ids: Vec<String>,
@@ -913,7 +943,6 @@ impl ConfigDefaults {
         Self {
             bootstrap_limits,
             baseline: ResolvedOperationConfig {
-                artifact_set_binding: None,
                 execution_policy: ResolvedExecutionPolicy {
                     max_context_tokens: 128_000,
                     max_turns: 25,
@@ -977,6 +1006,7 @@ impl ConfigDefaults {
                         output_reserve_tokens: 0,
                         safety_margin_tokens: 0,
                     },
+                    delegated_tiers: DelegatedContextTiers::default(),
                 },
                 recovery_policy: ResolvedRecoveryPolicy {
                     provider_recovery_attempts: 1,
@@ -1007,6 +1037,7 @@ impl ConfigDefaults {
                 verification_contracts: Vec::new(),
                 feature_policy: ResolvedFeaturePolicy {
                     memory_enabled: false,
+                    propose_memory_enabled: false,
                     knowledge_enabled: false,
                     plan_tool_enabled: false,
                     stable_core_tool_ids: Vec::new(),
@@ -1038,8 +1069,6 @@ pub fn resolve_operation_config(
     defaults: &ConfigDefaults,
 ) -> Result<ResolvedOperationConfig, WireRejection> {
     let base = &defaults.baseline;
-
-    let artifact_set_binding = config.artifact_set_binding.clone();
 
     let kernel_limits = resolve_kernel_limits(
         config.kernel_limits.as_ref(),
@@ -1112,7 +1141,6 @@ pub fn resolve_operation_config(
     }
 
     Ok(ResolvedOperationConfig {
-        artifact_set_binding,
         execution_policy,
         governance_policy,
         scheduler_policy,
@@ -1781,6 +1809,9 @@ fn resolve_context(
         if let Some(value) = policy.prompt_budget {
             resolved.prompt_budget = value;
         }
+        if let Some(value) = policy.delegated_tiers {
+            resolved.delegated_tiers = value;
+        }
     }
 
     let t = &resolved.pressure_thresholds_ppm;
@@ -1930,6 +1961,9 @@ fn resolve_memory_policy(
         if let Some(value) = policy.promotion_recall_threshold {
             resolved.promotion_recall_threshold = Some(value);
         }
+        if let Some(value) = policy.recall {
+            resolved.recall = value;
+        }
     }
     if resolved.retrieval_top_k == 0 {
         return Err(invalid("memory_policy.retrieval_top_k must be positive"));
@@ -1962,6 +1996,9 @@ fn resolve_features(
     if let Some(policy) = policy {
         if let Some(value) = policy.memory_enabled {
             resolved.memory_enabled = value;
+        }
+        if let Some(value) = policy.propose_memory_enabled {
+            resolved.propose_memory_enabled = value;
         }
         if let Some(value) = policy.knowledge_enabled {
             resolved.knowledge_enabled = value;
@@ -2161,7 +2198,6 @@ mod tests {
     /// A config exercising every field, so key-absence tests see the whole surface.
     fn fully_populated_config() -> OperationConfig {
         OperationConfig {
-            artifact_set_binding: None,
             execution_policy: Some(ExecutionPolicy {
                 max_context_tokens: Some(200_000),
                 max_turns: Some(40),
@@ -2249,6 +2285,7 @@ mod tests {
                     output_reserve_tokens: 4_000,
                     safety_margin_tokens: 500,
                 }),
+                delegated_tiers: None,
             }),
             recovery_policy: Some(RecoveryPolicy {
                 provider_recovery_attempts: Some(2),
@@ -2291,6 +2328,7 @@ mod tests {
                 max_content_bytes: Some(20_000),
                 max_name_length: Some(120),
                 promotion_recall_threshold: Some(WireU64::new(3)),
+                recall: None,
             }),
             tool_catalog: vec![
                 ToolSchema {
@@ -2328,6 +2366,7 @@ mod tests {
             }],
             feature_policy: Some(FeaturePolicy {
                 memory_enabled: Some(true),
+                propose_memory_enabled: Some(true),
                 knowledge_enabled: Some(true),
                 plan_tool_enabled: Some(true),
                 stable_core_tool_ids: Some(vec!["search".to_string()]),
@@ -2632,6 +2671,33 @@ mod tests {
         let text = serde_json::to_string(&resolved).unwrap();
         let back: ResolvedOperationConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back, resolved);
+    }
+
+    /// Delegation travels on the wire only when something is delegated, so a configuration that
+    /// predates it resolves — and digests — byte for byte as before.
+    #[test]
+    fn delegated_tiers_resolve_and_stay_off_the_wire_when_unset() {
+        let base = defaults().baseline.context_policy;
+        let unset = resolve_context(None, &base, 100_000).unwrap();
+        assert!(unset.delegated_tiers.is_none());
+        assert!(serde_json::to_value(&unset).unwrap().get("delegated_tiers").is_none());
+
+        let policy: ContextPolicy = serde_json::from_value(serde_json::json!({
+            "delegated_tiers": { "tool_result_clearing": true }
+        }))
+        .unwrap();
+        let resolved = resolve_context(Some(&policy), &base, 100_000).unwrap();
+        assert!(resolved.delegated_tiers.tool_result_clearing);
+        assert!(!resolved.delegated_tiers.compaction);
+        assert_eq!(
+            serde_json::to_value(&resolved).unwrap()["delegated_tiers"],
+            serde_json::json!({ "tool_result_clearing": true })
+        );
+        assert!(
+            serde_json::from_value::<DelegatedContextTiers>(serde_json::json!({ "renewal": true }))
+                .is_err(),
+            "renewal is never delegated"
+        );
     }
 
     #[test]

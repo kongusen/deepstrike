@@ -214,7 +214,9 @@ export function replayForTurn(
         ? { protocol: "openai-chat", reasoning_content: reasoning.reasoningContent }
         : undefined
     case "deepseek":
-      if (!reasoning.reasoningContent.trim()) return undefined
+      // A tool-call turn the model answered without reasoning still replays its empty reasoning:
+      // thinking mode requires the field on every tool-call turn and accepts it empty.
+      if (!reasoning.reasoningContent.trim() && toolCalls.length === 0) return undefined
       return {
         provider: dialect.providerId,
         protocol: "openai-chat",

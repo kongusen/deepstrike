@@ -104,6 +104,8 @@ async fn main() {
         on_turn_metrics: None,
         stable_core_tool_ids: vec![],
         on_milestone_evaluate: None,
+        memory_runtime_policy: None,
+        memory_candidate_sink: None,
     });
 
     // Same session_id → prior turns are replayed from SessionLog

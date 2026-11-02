@@ -1,5 +1,7 @@
 # Evaluation Runtime 中的 Context 契约
 
+> **历史设计（2026-11-01 已删除）。** 本文描述的上下文证据层（`ContextCandidate`、`ContextExecutionInput`、`context_prepared`、shared evidence、Evolution Runtime 与 artifact set 绑定）已从内核和四个 SDK 中删除。崩溃恢复只依赖 journal + checkpoint。原因与后续计划见 [上下文优先实施计划](../plans/context-lifecycle-first.md)。
+
 Context 通过两阶段边界，同时服务运行时优化和可验证执行。
 
 ```text

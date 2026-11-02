@@ -28,13 +28,13 @@ Reason, act, adjudicate, execute, observe, and delta are explicit state transiti
 
 ### Workflow dataflow
 
-One concrete typed pipeline shows how edges carry durable values from isolated agents through a zero-token reducer into writing and verification.
+One concrete typed pipeline shows how edges carry durable values from isolated agents into writing and verification.
 
 ![Workflow DAG dataflow](/agent_os_workflow_dag.svg)
 
 ### Dynamic workflow vocabulary
 
-Static loading, runtime growth, first-class control nodes, scheduler barriers, trust, budgets, and recovery form one mechanism.
+Static loading, runtime growth, scheduler barriers, trust, budgets, and recovery form one mechanism.
 
 ![Dynamic workflow mechanisms](/workflow_mechanisms.svg)
 
@@ -44,11 +44,11 @@ Pre-exposure filtering and call-time gates ensure the model never executes an ef
 
 ![Syscall governance funnel](/governance_pipeline.svg)
 
-### Structured outputs and reducers
+### Structured outputs
 
-The kernel carries schema contracts; the host validates and retries boundedly; deterministic reducers run without an LLM.
+The kernel carries schema contracts; the host validates and retries boundedly.
 
-![Structured output and reducers](/reducers_mechanisms.svg)
+![Structured output](/reducers_mechanisms.svg)
 
 ### Milestones
 

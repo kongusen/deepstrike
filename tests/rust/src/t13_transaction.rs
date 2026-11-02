@@ -227,10 +227,12 @@ fn replay_truncates_to_checkpoint_on_rollback() {
             agent_id: None,
             system_prompt: None,
             attachments: vec![],
+            route: None,
+            metadata: None,
         },
-        SessionEvent::LlmCompleted {
-            turn: 0,
-            message: CoreMessage {
+        SessionEvent::llm_completed(
+            0,
+            CoreMessage {
                 role: Role::Assistant,
                 content: Content::Text("I'll write a file".into()),
                 tool_calls: vec![ToolCall {
@@ -239,8 +241,8 @@ fn replay_truncates_to_checkpoint_on_rollback() {
                     arguments: serde_json::json!({}),
                 }],
             },
-            provider_replay: None,
-        },
+            None,
+        ),
         // Rollback brings history back to 1 message (the assistant turn before tool call)
         SessionEvent::Rollbacked {
             turn: 0,
@@ -276,10 +278,12 @@ fn replay_without_rollback_keeps_full_history() {
             agent_id: None,
             system_prompt: None,
             attachments: vec![],
+            route: None,
+            metadata: None,
         },
-        SessionEvent::LlmCompleted {
-            turn: 0,
-            message: CoreMessage {
+        SessionEvent::llm_completed(
+            0,
+            CoreMessage {
                 role: Role::Assistant,
                 content: Content::Text("I'll read a file".into()),
                 tool_calls: vec![ToolCall {
@@ -288,8 +292,8 @@ fn replay_without_rollback_keeps_full_history() {
                     arguments: serde_json::json!({}),
                 }],
             },
-            provider_replay: None,
-        },
+            None,
+        ),
     ];
 
     let messages =

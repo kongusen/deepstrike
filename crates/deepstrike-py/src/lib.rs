@@ -1737,18 +1737,6 @@ fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
-/// Framework Verifiable Runtime bridge. Rust core remains the single semantic implementation.
-#[pyfunction]
-fn verifiable_operation_json(request: String) -> PyResult<String> {
-    deepstrike_core::runtime::verifiable::operation_json(&request).map_err(PyValueError::new_err)
-}
-
-/// Framework Evolution Runtime bridge. Rust core remains the single E1–E8 validation authority.
-#[pyfunction]
-fn evolution_validate_json(request: String) -> PyResult<String> {
-    deepstrike_core::evolution::validate_evolution_json(&request).map_err(PyValueError::new_err)
-}
-
 /// §22.13 memory authority for a host with no live operation: write admission and the recall
 /// lifecycle, answered by the same kernel functions the in-operation paths use.
 #[pyfunction]
@@ -1797,11 +1785,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_eval_messages, m)?)?;
     m.add_function(wrap_pyfunction!(parse_verdict, m)?)?;
     m.add_function(wrap_pyfunction!(verdict_output_schema, m)?)?;
-    m.add_function(wrap_pyfunction!(verifiable_operation_json, m)?)?;
-    m.add_function(wrap_pyfunction!(evolution_validate_json, m)?)?;
     m.add_function(wrap_pyfunction!(memory_authority_json, m)?)?;
-    m.add_function(wrap_pyfunction!(context_prepare_json, m)?)?;
-    m.add_function(wrap_pyfunction!(context_verify_json, m)?)?;
     Ok(())
 }
 
@@ -1810,16 +1794,3 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // PyO3 feature breaks `cargo test` linking — the tested behavior is already
 // covered exhaustively in deepstrike-core's own test suite.
 
-/// Freeze host route and measurement against the kernel's committed Context candidate.
-#[pyfunction]
-fn context_prepare_json(request: String) -> PyResult<String> {
-    deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
-        .map_err(PyValueError::new_err)
-}
-
-/// Verify recorded execution evidence against a replayed Context candidate.
-#[pyfunction]
-fn context_verify_json(request: String) -> PyResult<String> {
-    deepstrike_core::context::execution::verify_context_dispatch_json(&request)
-        .map_err(PyValueError::new_err)
-}

@@ -36,7 +36,7 @@ def assess_reasoning_replay(
     replay_for_assistant: Callable[[str, list], dict | None] | None,
 ) -> dict:
     """Pure, raise-free assessment: which assistant tool-call turns lack the
-    non-empty reasoning replay a reasoning-requiring provider needs. Lets an
+    reasoning replay a reasoning-requiring provider needs (possibly empty, as the model returned it). Lets an
     embedder decide per-candidate whether to keep thinking on, disable it, or
     skip the candidate — before sending."""
     offending_call_ids: list[str] = []
@@ -45,7 +45,7 @@ def assess_reasoning_replay(
             continue
         replay = replay_for_assistant(message.content, message.tool_calls) if replay_for_assistant else None
         reasoning = replay.get("reasoning_content") if isinstance(replay, dict) else None
-        if not (isinstance(reasoning, str) and reasoning.strip()):
+        if not isinstance(reasoning, str):
             offending_call_ids.extend(tc.id for tc in message.tool_calls)
     return {"ok": not offending_call_ids, "offending_call_ids": offending_call_ids}
 
@@ -53,7 +53,7 @@ def assess_reasoning_replay(
 def _reasoning_replay_error(call_ids: list[str], descriptor: Any) -> ProviderReplayValidationError:
     who = f"{descriptor.provider}/{descriptor.model}" if descriptor is not None else "provider"
     return ProviderReplayValidationError(
-        f"{who} replay requires non-empty reasoning_content for assistant tool call turn {', '.join(call_ids)}. "
+        f"{who} replay requires the reasoning_content the model returned for assistant tool call turn {', '.join(call_ids)}. "
         "Disable thinking, rebuild this history with provider replay, switch to a provider that can replay this turn, "
         "or pass extensions['degrade_missing_reasoning_replay'] to send a degraded turn."
     )

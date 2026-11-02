@@ -29,7 +29,7 @@ function sidebar(prefix: '' | '/en'): SidebarGroup[] {
         { text: prefix ? 'Governance & Limits' : '治理与限制', link: `${p}/guides/governance` },
         { text: prefix ? 'Sub-Agents & Handoffs' : 'Sub-Agent 与 Handoff', link: `${p}/guides/sub-agents-and-collaboration` },
         { text: prefix ? 'Workflows' : '工作流', link: `${p}/guides/workflow` },
-        { text: prefix ? 'Structured Handoffs & Reducers' : '结构化交接与 Reducer', link: `${p}/guides/structured-output-and-reducers` },
+        { text: prefix ? 'Structured Handoffs' : '结构化交接', link: `${p}/guides/structured-output-and-reducers` },
         { text: prefix ? 'Signals & Reactive Agents' : 'Signals 与 Reactive Agent', link: `${p}/guides/signals-and-reactive` },
         { text: prefix ? 'Long-Running Sessions' : '长时间运行 Session', link: `${p}/guides/session-replay-and-recovery` },
         { text: prefix ? 'Evaluation' : '评估', link: `${p}/guides/harness-and-eval` },

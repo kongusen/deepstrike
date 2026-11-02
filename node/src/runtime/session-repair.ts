@@ -89,9 +89,6 @@ export function buildWorkflowNodeCompletedEvent(input: {
   agentId: string
   status: WorkflowNodeStatus
   termination: string
-  classifyBranch?: string
-  tournamentWinner?: string
-  loopContinue?: boolean
   output?: ModelMessage
 }): Extract<SessionEvent, { kind: "workflow_node_completed" }> {
   return {
@@ -100,9 +97,6 @@ export function buildWorkflowNodeCompletedEvent(input: {
     agent_id: input.agentId,
     status: input.status,
     termination: input.termination,
-    ...(input.classifyBranch !== undefined ? { classify_branch: input.classifyBranch } : {}),
-    ...(input.tournamentWinner !== undefined ? { tournament_winner: input.tournamentWinner } : {}),
-    ...(input.loopContinue !== undefined ? { loop_continue: input.loopContinue } : {}),
     ...(input.output ? { output: input.output } : {}),
   }
 }

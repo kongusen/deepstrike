@@ -357,7 +357,6 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
     return KernelRunnerAction(
       kind="call_provider", effect_id=effect_id,
       context=_context_from_kernel(_object(effect.get("context"))),
-      context_effect={key: value for key, value in effect.items() if key != "kind"},
       tools=[ToolSchema(str(t.get("name") or ""), str(t.get("description") or ""), json.dumps(t.get("parameters") or {}))
              for t in effect.get("tools") or [] if isinstance(t, dict)],
     )
@@ -447,7 +446,9 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
   )
 
 
-def canonical_action_from_projection_json(raw: str) -> KernelRunnerAction | None:
+def canonical_action_from_projection_json(
+  raw: str, *, observations: list[dict[str, Any]] | None = None,
+) -> KernelRunnerAction | None:
   """Adapt core-owned KernelProjection JSON to the Python action surface."""
   projection = _object(json.loads(raw))
   state = str(projection.get("state") or "idle")
@@ -458,7 +459,7 @@ def canonical_action_from_projection_json(raw: str) -> KernelRunnerAction | None
       "kind": "terminal", "terminal": _object(projection.get("action"))}})
   action = _object(projection.get("action"))
   payload = _object(action.get("payload"))
-  return _action_from_core_step({"disposition": {
+  return _action_from_core_step({"observations": observations or [], "disposition": {
     "kind": "effects", "effects": [{
       "effect_id": action.get("effect_id"),
       "causation_input_id": action.get("causation_input_id"),
@@ -472,13 +473,12 @@ class CanonicalRunnerRuntime:
   def __init__(
     self, kernel: CanonicalKernel, journal: KernelJournal, operation_id: str, *,
     max_context_tokens: int, max_turns: int | None = None, max_total_tokens: int | None = None,
-    max_wall_ms: int | None = None, artifact_set_digest: str | None = None,
+    max_wall_ms: int | None = None,
     memory_binding_id: str = "python-memory",
     persist_payload: Any = None,
   ) -> None:
     self.host = CanonicalKernelHost(kernel, journal, operation_id)
     self._config: dict[str, Any] = {
-      **({"artifact_set_binding": {"artifact_set_digest": artifact_set_digest}} if artifact_set_digest else {}),
       "execution_policy": {
         "max_context_tokens": max_context_tokens,
         **({"max_turns": max_turns} if max_turns is not None else {}),
@@ -759,6 +759,43 @@ class CanonicalRunnerRuntime:
         "record_ref": str(event["record_ref"]),
         "digest": str(event["digest"]),
       }})
+    if kind == "memory_candidate_result":
+      # M2 · the host's answer for a write it holds as a candidate. `pending` is terminal for the
+      # effect and carries no record: nothing is persisted, and the kernel must not present it as
+      # remembered. `accepted` names the record the store now holds, as `memory_persist_result`
+      # does. Malformed receipts and rejections fail non-retryably; a non-null error takes
+      # precedence and fails retryably (the same candidate id is redelivered).
+      error = event.get("error")
+      if error is not None:
+        message = error if isinstance(error, str) else json.dumps(
+          error, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return await self._failed(event, "storage_unavailable", message, True)
+      status = event.get("status")
+      if status == "pending":
+        if any(not isinstance(event.get(key), str) or not event[key]
+               for key in ("candidate_id", "receipt_id")):
+          return await self._failed(event, "storage_unavailable",
+                                    "memory candidate receipt names no candidate_id/receipt_id", False)
+        return await self._resolve(event, {"kind": "memory_persisted", "candidate": {
+          "binding_id": self._memory_binding_id,
+          "candidate_id": event["candidate_id"],
+          "receipt_id": event["receipt_id"],
+        }})
+      if status == "accepted":
+        if any(not isinstance(event.get(key), str) or not event[key]
+               for key in ("record_ref", "digest")):
+          return await self._failed(event, "storage_unavailable",
+                                    "memory candidate accepted without record_ref/digest", False)
+        return await self._resolve(event, {"kind": "memory_persisted", "receipt": {
+          "binding_id": self._memory_binding_id,
+          "record_ref": event["record_ref"],
+          "digest": event["digest"],
+        }})
+      reason = event.get("reason_code")
+      if not isinstance(reason, str) or not reason:
+        reason = "unspecified"
+      return await self._failed(
+        event, "storage_unavailable", f"memory candidate rejected: {reason}", False)
     if kind == "memory_query_result":
       if event.get("error"):
         return await self._failed(event, "storage_unavailable", str(event["error"]), True)
@@ -772,6 +809,10 @@ class CanonicalRunnerRuntime:
         recalls.append({"record_ref": str(record["record_id"]),
                         "name": str(record.get("name") or ""), "kind": str(record.get("kind") or "reference"),
                         "content": str(record.get("content") or ""),
+                        **({"description": record["description"]}
+                           if isinstance(record.get("description"), str) and record["description"].strip() else {}),
+                        **({"trust": str(_object(record.get("provenance")).get("trust"))}
+                           if isinstance(_object(record.get("provenance")).get("trust"), str) else {}),
                         **({"score": hit["score"]} if isinstance(hit.get("score"), (float, int)) else {}),
                         # M3: the store reports the count it holds; the kernel derives the next one.
                         **({"recall_count": str(int(record["recall_count"]))}
@@ -900,7 +941,9 @@ class CanonicalRunnerRuntime:
       if transition is not None:
         self._absorb_transition(transition)
         self._last_action = canonical_action_from_projection_json(
-          self.host.kernel.project_planned_step_json(json.dumps(transition.planned_step)))
+          self.host.kernel.project_planned_step_json(json.dumps(transition.planned_step)),
+          observations=transition.planned_step.get("observations") or [],
+        )
       if self._last_action is None or self._last_action.kind != "unsupported_effect":
         return self._last_action
       next_input = canonical_unsupported_effect_resolution(
@@ -1141,6 +1184,12 @@ class CanonicalRunnerRuntime:
       self._initial_context["messages"].append({"role": "system", "content": str(event.get("content") or ""),
                                                 **({"tokens": event["tokens"]} if event.get("tokens") is not None else {})})
       return True
+    if kind == "add_dependency_output":
+      if self._started:
+        return False
+      self._initial_context.setdefault("dependencies", []).append(
+        {"agent_id": str(event.get("agent_id") or ""), "content": str(event.get("content") or "")})
+      return True
     if kind == "add_knowledge_message":
       if self._started:
         return False
@@ -1174,8 +1223,15 @@ class CanonicalRunnerRuntime:
       return True
     if kind == "set_memory_enabled":
       self._feature_policy()["memory_enabled"] = bool(event.get("enabled"))
+      # Only sent when on, so kernels that predate the field still accept memory-enabled runs.
+      if event.get("propose_memory"):
+        self._feature_policy()["propose_memory_enabled"] = True
+      else:
+        self._feature_policy().pop("propose_memory_enabled", None)
+      if event.get("enabled") and event.get("recall"):
+        self._config["memory_policy"] = {**_object(self._config.get("memory_policy")), "recall": True}
       if event.get("enabled"):
-        self._config["memory_access"] = {"binding_id": self._memory_binding_id, "capabilities": {"read": True, "write": True}}
+        self._config["memory_access"] = {"binding_id": self._memory_binding_id, "capabilities": {"read": event.get("read", True), "write": event.get("write", True)}}
       return True
     if kind == "set_knowledge_enabled":
       self._feature_policy()["knowledge_enabled"] = bool(event.get("enabled"))
@@ -1208,7 +1264,7 @@ class CanonicalRunnerRuntime:
       self._execution_policy()["entropy_watch"] = watch
       return True
     if kind == "set_memory_policy":
-      policy: dict[str, Any] = {}
+      policy: dict[str, Any] = {"recall": True} if _object(self._config.get("memory_policy")).get("recall") else {}
       if event.get("stale_warning_days") is not None:
         policy["stale_warning_days"] = event["stale_warning_days"]
       if event.get("retrieval_top_k") is not None:

@@ -115,10 +115,21 @@ export function toAnthropicMessages(
       continue
     }
 
+    if (msg.role === "assistant" && !msg.toolCalls?.length) {
+      // A turn that carries a server compaction block goes back as the API sent it: the block is
+      // what tells the API to drop everything before it.
+      const replay = nativeReplay?.(msg)
+      if (replay?.some(block => block.type === "compaction")) {
+        // Copies: request-time annotations such as `cache_control` must not land on the replay.
+        result.push({ role: "assistant", content: replay.map(block => ({ ...block })) })
+        continue
+      }
+    }
+
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       const replay = nativeReplay?.(msg)
       if (replay) {
-        result.push({ role: "assistant", content: replay })
+        result.push({ role: "assistant", content: replay.map(block => ({ ...block })) })
         continue
       }
       const blocks: Array<Record<string, unknown>> = []

@@ -14,11 +14,8 @@ Dynamic workflows let an Agent turn a large goal into a plan of focused Agent ta
 | --- | --- |
 | Parallel research | Independent nodes run at the same time. |
 | Ordered handoff | `dependsOn` passes upstream output to a later Agent. |
-| Conditional work | `classify` selects a branch. |
-| Iterative work | `loop` repeats a task up to `maxIters`. |
-| Competition | `tournament` generates and judges alternatives. |
+| Branching, iteration, competition | A host program (`runDynamicWorkflow`) or the model's `submit_workflow_nodes` decides what runs next. |
 | Reliable data | `outputSchema` validates node results. |
-| Model-free merging | Reducers combine outputs without another model call. |
 
 A workflow is a reusable plan for a team of Agents. The application supplies providers and tools, while the runtime keeps dependencies, limits, and recovery explicit.
 
@@ -31,7 +28,6 @@ WorkflowSpec
   └── WorkflowNodeSpec[]  # each node = one sub-agent run
         ├── task / role / isolation
         ├── depends_on[]  # DAG edges
-        ├── loop / classify / tournament / reducer  # control flow
         └── submit_workflow_nodes / start_workflow  # runtime extension
 ```
 
@@ -101,49 +97,16 @@ Templates carry kernel role defaults (e.g. verifiers use `read_only` + `context_
 
 ---
 
-## Level 4: Control-flow nodes
+## Level 4: Branching, iteration and competition
 
-### Loop node
+A DAG node is always one agent run. Branches, loops and tournaments are control flow, and the host
+owns them:
 
-```python
-WorkflowNodeSpec(
-    task="Process checklist items one by one",
-    role="implement",
-    loop={"max_iters": 5},
-    depends_on=[0],
-)
-```
-
-The agent can end early by outputting `{"loop_continue": false}`. SDK helpers: `loop_instruction()`, `extract_loop_continue()`.
-
-### Classify node
-
-```python
-WorkflowNodeSpec(
-    task="Classify user intent",
-    role="plan",
-    classify={
-        "branches": [
-            {"label": "bug", "nodes": [1, 2]},
-            {"label": "feature", "nodes": [3]},
-        ]
-    },
-)
-```
-
-Agent returns `{"branch": "bug"}` → kernel runs that branch and prunes the rest.
-
-### Tournament node
-
-```python
-WorkflowNodeSpec(
-    task="Pick the best approach",
-    role="verify",
-    tournament={"entrants": ["Approach A description", "Approach B description"]},
-)
-```
-
-Parallel entrant generation → pairwise judge → winner selected.
+- **Host program**: write ordinary `if` / `for` / pairwise comparisons in a `runDynamicWorkflow()`
+  program. Every `agent()` call still goes through kernel admission (see "Node dynamic workflows").
+- **Model-driven**: a node calls `submit_workflow_nodes` with only the branch or next iteration it
+  chose.
+- **Retry with feedback**: the `gen_eval` template driven by `AttemptLoop`.
 
 ### Runtime dynamic extension
 
@@ -157,18 +120,6 @@ Agents can call meta-tools during a run:
 Governed by the canonical `AppendWorkflowNodes` syscall; `max_workflow_nodes` quota prevents runaway growth.
 
 Top-level agents can use `start_workflow` to switch into a new workflow, then resume the original reasoning loop when it finishes.
-
-### Reduce node (no LLM)
-
-```python
-WorkflowNodeSpec(
-    task="Merge outputs",
-    reducer="union",  # or a custom reducer
-    depends_on=[0, 1, 2],
-)
-```
-
-Register custom reducers: `RuntimeOptions(reducers={**builtin_reducers(), "my_merge": fn})`
 
 ## Node dynamic workflows
 
@@ -225,7 +176,7 @@ To execute a discovered artifact, pass that artifact as the first argument to th
 
 - [WorkflowNodeSpec reference](/en/reference/workflow-node-spec)
 - [Sub-Agents & Collaboration](./sub-agents-and-collaboration)
-- [Structured Output & Reducers](./structured-output-and-reducers)
+- [Structured Output](./structured-output-and-reducers)
 - [Provider Routing](./provider-routing)
 - [RunGroup budget](/en/concepts/run-group-budget)
 - Test: `python/tests/test_workflow_drive.py`

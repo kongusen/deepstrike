@@ -1,8 +1,8 @@
 /**
- * I4 (preQueryMemory) rerouted: strict dynamic context control means a proactive pre-turn-1 memory
- * fetch is still single-use retrieval content, not a stable skill — so it lands in `history` (an
- * ordinary turn the model sees on turn 1) rather than pinning itself into the durable `knowledge`
- * slot forever. It decays with the compression pyramid exactly like a live `memory` tool result.
+ * I4 (preQueryMemory): the proactive pre-turn-1 memory fetch lands each hit as an unpinned keyed
+ * `memory:<record_id>` knowledge entry — the same placement the renewal re-query uses, so one key
+ * dedupes a record across both. Unpinned entries are evicted at a boundary when usage needs the
+ * room, so a prefetch does not hold its slot forever.
  */
 import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
@@ -31,8 +31,8 @@ function memoryStore(): MemoryStore {
   }
 }
 
-describe("preQueryMemory prefetch lands in history, not knowledge", () => {
-  it("surfaces the prefetched content in turns on turn 1, and never in systemKnowledge", async () => {
+describe("preQueryMemory prefetch lands in knowledge, not history", () => {
+  it("surfaces the prefetched content in systemKnowledge on turn 1, and never in turns", async () => {
     let sawInTurns = false
     let sawInKnowledge = false
     const provider: LLMProvider = {
@@ -40,8 +40,8 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
-        if (JSON.stringify(context.turns).includes(RECALL)) sawInTurns = true
-        if ((context.systemKnowledge ?? "").includes(RECALL)) sawInKnowledge = true
+        if (JSON.stringify(context.turns).includes("prefetch fixture")) sawInTurns = true
+        if ((context.systemKnowledge ?? "").includes("prefetch fixture")) sawInKnowledge = true
         yield { type: "text_delta", delta: "done" }
       },
     }
@@ -57,7 +57,7 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
 
     await collectText(runner.run({ sessionId: "prequery", goal: "use the fact" }))
 
-    expect(sawInTurns).toBe(true)
-    expect(sawInKnowledge).toBe(false)
+    expect(sawInKnowledge).toBe(true)
+    expect(sawInTurns).toBe(false)
   })
 })

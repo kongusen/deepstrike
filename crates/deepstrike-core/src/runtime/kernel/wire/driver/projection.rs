@@ -46,6 +46,7 @@ impl CanonicalOperationDriver {
                     name: write.name.clone(),
                     kind: write.kind,
                     size_bytes: write.size_bytes,
+                    model_facing: write.model_facing,
                 })
                 .collect(),
             authored_memory_queries: self
@@ -56,6 +57,8 @@ impl CanonicalOperationDriver {
                     binding_id: query.binding_id.clone(),
                     text: query.text.clone(),
                     requested_k: query.requested_k,
+                    record_id: query.record_id.clone(),
+                    recall: query.recall,
                 })
                 .collect(),
             memory_write_window_ms: self
@@ -100,10 +103,8 @@ impl CanonicalOperationDriver {
                         task: wire.task.clone(),
                         depends_on: wire.depends_on.clone(),
                         run_spec: wire.run_spec.clone(),
-                        kind: workflow_kind_label(&runtime).to_string(),
                         status: workflow_status_label(runtime.status).to_string(),
                         active_agent_id: runtime.active_agent_id,
-                        iterations_completed: runtime.iterations_completed as u32,
                     })
                     .collect(),
             }
@@ -222,11 +223,18 @@ impl CanonicalOperationDriver {
         };
         let ctx = &engine.ctx;
         ContextVmState {
-            state_generation: ctx.state_generation(),
             system_measurements: ctx.partitions.system.measurements.clone(),
             history_measurements: ctx.partitions.history.measurements.clone(),
             knowledge_reference_step: ctx.knowledge_checkpoint_state().0,
             knowledge_budget_warned: ctx.knowledge_checkpoint_state().1,
+            prefix_sent: ctx.cache_checkpoint_state().0,
+            cache_invalidated_tokens: ctx.cache_checkpoint_state().1,
+            evicted_knowledge_keys: ctx.partitions.knowledge.evicted_keys.iter().cloned().collect(),
+            knowledge_regret: ctx.partitions.knowledge.regret,
+            knowledge_wasted_tokens: ctx.partitions.knowledge.wasted_tokens,
+            recall_top_k: ctx.recall_top_k,
+            recall_due: ctx.recall_due,
+            dependency_bodies: ctx.dependency_bodies.clone(),
             handles: ctx
                 .handles
                 .all()
@@ -290,7 +298,7 @@ impl CanonicalOperationDriver {
                     body: self.project_body(&entry.message),
                     tokens: entry.tokens,
                     pinned: entry.pinned,
-                    evict_at_boundary: entry.evict_at_boundary,
+                    evict_at_boundary: entry.is_leaving(),
                     tool_calls: entry
                         .message
                         .tool_calls
@@ -308,10 +316,25 @@ impl CanonicalOperationDriver {
                             pending.1,
                         ))
                     }),
-                    use_count: entry.use_count,
-                    last_used_step: entry.last_used_step,
+                    use_count: entry.value.ref_count,
+                    last_used_step: entry.value.last_referenced_step,
+                    staged: entry.staged,
+                    origin: Some(entry.origin),
+                    lease: Some(entry.lease),
+                    leaving: entry.leaving,
+                    injected_turn: entry.value.injected_turn,
+                    last_referenced_turn: entry.value.last_referenced_turn,
+                    expanded: entry.value.expanded,
+                    paged_in_after_evict: entry.value.paged_in_after_evict,
                 })
                 .collect(),
+            retired_items: ctx.partitions.knowledge.retired.clone(),
+            item_turn: ctx.partitions.knowledge.turn,
+            history_items: (0..ctx.partitions.history.messages.len())
+                .map(|index| ctx.partitions.history.tag(index))
+                .collect(),
+            last_item_id: ctx.last_item_id,
+            history_tally: ctx.history_tally.values().copied().collect(),
             signals: ctx.partitions.signals.clone(),
             messages: ctx
                 .partitions
@@ -637,6 +660,7 @@ impl CanonicalOperationDriver {
                         name: write.name.clone(),
                         kind: write.kind,
                         size_bytes: write.size_bytes,
+                        model_facing: write.model_facing,
                     },
                 )
             })
@@ -652,6 +676,8 @@ impl CanonicalOperationDriver {
                         binding_id: query.binding_id.clone(),
                         text: query.text.clone(),
                         requested_k: query.requested_k,
+                        record_id: query.record_id.clone(),
+                        recall: query.recall,
                     },
                 )
             })

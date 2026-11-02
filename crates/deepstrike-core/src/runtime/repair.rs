@@ -27,7 +27,7 @@ fn normalize_assistant_message_with_cap(message: &mut CoreMessage, max_bytes: us
 
 /// Normalize a single `LlmCompleted` for recovery (message fields only).
 ///
-/// Provider-neutral: the stored `provider_replay` envelope is left untouched.
+/// Provider-neutral: the provider replay envelope is left untouched.
 /// The core never synthesizes a protocol-specific replay shape.
 pub fn repair_llm_completed(
     message: &mut CoreMessage,
@@ -53,13 +53,12 @@ pub fn repair_events_with_cap(events: Vec<SessionEvent>, max_bytes: usize) -> Ve
     events
         .into_iter()
         .map(|mut event| {
+            // Provider replay state (inside `wire_evidence`) is left untouched.
             if let SessionEvent::LlmCompleted {
-                ref mut message,
-                ref mut provider_replay,
-                ..
+                ref mut message, ..
             } = event
             {
-                repair_llm_completed_with_cap(message, provider_replay, max_bytes);
+                normalize_assistant_message_with_cap(message, max_bytes);
             }
             event
         })
@@ -332,13 +331,15 @@ mod tests {
                 agent_id: None,
                 system_prompt: None,
                 attachments: vec![],
+                route: None,
+                metadata: None,
             },
             SessionEvent::PageOut {
                 turn: 1,
                 action: Some("auto_compact".into()),
                 summary: Some("sum".into()),
                 tier_hint: Some("durable".into()),
-                message_count: 3,
+                message_count: Some(3),
                 archive_ref: None,
             },
             SessionEvent::SignalDeliveryDisposed {
@@ -382,6 +383,8 @@ mod tests {
                 media_type: Some("image/png".into()),
                 detail: None,
             }],
+            route: None,
+            metadata: None,
         }];
         let messages = reconstruct_messages_with_fallback(&events, "s1", 0, |_| {
             Err(crate::context::fault::ContextFault::MissingArchive {
@@ -419,7 +422,7 @@ mod tests {
                 action: Some("auto_compact".into()),
                 summary: Some("fallback".into()),
                 tier_hint: Some("semantic".into()),
-                message_count: 1,
+                message_count: Some(1),
                 archive_ref: Some("archive://turn-2".into()),
             },
         ];

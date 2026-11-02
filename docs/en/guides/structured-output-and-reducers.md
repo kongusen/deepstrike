@@ -1,14 +1,12 @@
-# Structured Output & Reducers
+# Structured Output
 
-DeepStrike workflows support two mechanisms that make Agent collaboration easier to trust:
-
-- `output_schema`: require an agent node to produce a value matching a JSON Schema subset
-- `Reduce` node: run deterministic host code instead of an LLM to combine dependency outputs
+When Agents hand work to each other, `output_schema` requires an agent node to produce a value
+matching a JSON Schema subset. To combine several nodes' outputs with deterministic code, write an
+ordinary function in a host program (`runDynamicWorkflow`); no special node type is needed.
 
 **Code entry points**:
 
 - `python/deepstrike/runtime/output_schema.py`
-- `python/deepstrike/runtime/reducers.py`
 - `crates/deepstrike-core/src/orchestration/workflow/mod.rs`
 - `python/deepstrike/runtime/runner.py`
 
@@ -18,12 +16,9 @@ DeepStrike workflows support two mechanisms that make Agent collaboration easier
 | --- | --- |
 | Reliable handoffs | `output_schema` validates a specialist's result before another Agent consumes it. |
 | Recovery from mistakes | A schema mismatch can be returned as feedback for a bounded retry. |
-| Cheap merging | Reducers combine upstream results without another model call. |
 | Stable dependencies | Downstream Agents receive predictable structured input. |
 
 Together these features turn “ask the Agent for a structure” into a reliable handoff: validate, retry, and merge with ordinary application code.
-
-![Reducers & Output Validation Mechanisms](/reducers_mechanisms.svg)
 
 ## Level 1: Add output_schema
 
@@ -71,72 +66,9 @@ The kernel only carries the schema. The SDK:
 
 Unknown keywords are ignored. This is a lightweight SDK validator, not a full JSON Schema engine.
 
-## Level 2: Reduce Node
+## Level 2: Generate → Evaluate → Retry
 
-A Reduce node is host compute and does not call the model:
-
-```python
-from deepstrike import WorkflowNodeSpec
-
-reduce_node = WorkflowNodeSpec(
-    task="merge risk lists",
-    reducer="merge_json_arrays",
-    depends_on=[0, 1, 2],
-)
-```
-
-Built-in reducers:
-
-| reducer | Behavior |
-|---------|----------|
-| `concat` | concatenate dependency outputs |
-| `dedupe_lines` | dedupe by line |
-| `merge_json_arrays` | extract JSON values, merge arrays, dedupe |
-| `count` | count non-empty outputs |
-
-## Level 3: Register a Custom Reducer
-
-```python
-from deepstrike import RuntimeOptions, builtin_reducers
-
-def top_risks(inputs: list[dict]) -> str:
-    return "\n".join(i["output"] for i in inputs[:3])
-
-runner = RuntimeRunner(RuntimeOptions(
-    ...,
-    reducers={**builtin_reducers, "top_risks": top_risks},
-))
-```
-
-Custom reducers should be pure functions: same input, same output, no network / file / LLM I/O. If you need I/O, use a normal workflow node.
-
-## Level 4: Schema + Reducer
-
-```python
-spec = WorkflowSpec(nodes=[
-    WorkflowNodeSpec(
-        task="List module A risks as a JSON array",
-        role="verify",
-        output_schema={"type": "array", "items": {"type": "string"}},
-    ),
-    WorkflowNodeSpec(
-        task="List module B risks as a JSON array",
-        role="verify",
-        output_schema={"type": "array", "items": {"type": "string"}},
-    ),
-    WorkflowNodeSpec(
-        task="merge risks",
-        reducer="merge_json_arrays",
-        depends_on=[0, 1],
-    ),
-])
-```
-
-Verifier nodes use LLMs for structured findings; merge consumes no model tokens.
-
-## Level 5: Generate → Evaluate → Retry
-
-`gen_eval` combines an implementation loop and verifier:
+`gen_eval` combines a worker and a verifier:
 
 ```python
 from deepstrike import gen_eval
@@ -144,11 +76,10 @@ from deepstrike import gen_eval
 spec = gen_eval(
     implement="Write a CSV parser",
     evaluate="Verify quote, escape, and empty-cell handling",
-    max_iters=3,
 )
 ```
 
-Internally this uses a loop worker + verify node. Verdict structure can pair with `verdict_output_schema()`.
+Internally this is one worker node plus one verify node. `AttemptLoop` drives retry with feedback; the verdict structure pairs with `verdict_output_schema()`.
 
 ## Runtime and SDK Responsibilities
 
@@ -158,8 +89,6 @@ Internally this uses a loop worker + verify node. Verdict structure can pair wit
 | injecting schema instruction | SDK |
 | JSON extraction and validation | SDK |
 | retry prompt | SDK |
-| reducer node scheduling and dependencies | runtime |
-| reducer function execution | SDK |
 
 ## Common Issues
 
@@ -168,12 +97,9 @@ Internally this uses a loop worker + verify node. Verdict structure can pair wit
 | model returns markdown fence | `extract_json_value` attempts fenced JSON extraction |
 | model adds prose around JSON | attempts to slice first object / array |
 | schema uses `oneOf` / `pattern` | lightweight validator ignores unknown keywords |
-| reducer not found | node fails; check `RuntimeOptions.reducers` |
-| reducer needs file access | use a normal tool / workflow node instead |
 
 ## Verification Entry Points
 
 - `python/tests/test_output_schema.py`
-- `python/tests/test_workflow_reduce.py`
 - `python/tests/test_workflow_control_flow.py`
 - `node/tests/output-schema.test.ts`

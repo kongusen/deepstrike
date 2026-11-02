@@ -13,10 +13,14 @@ import json
 from typing import Any
 
 
-def _ask(request: dict[str, Any]) -> dict[str, Any]:
+def ask_memory_authority(request: dict[str, Any]) -> dict[str, Any]:
+  """One stateless question to the kernel's memory authority."""
   from deepstrike._kernel import memory_authority_json
 
   return json.loads(memory_authority_json(json.dumps(request)))
+
+
+_ask = ask_memory_authority
 
 
 def kernel_memory_policy_wire(flat: dict[str, Any] | None) -> dict[str, Any] | None:

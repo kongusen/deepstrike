@@ -26,9 +26,12 @@ export interface MemoryPromotion {
   recall_count: number
 }
 
-function ask(request: Record<string, unknown>): Record<string, unknown> {
+/** One stateless question to the kernel's memory authority. */
+export function askMemoryAuthority(request: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(getKernel().memoryAuthorityJson(JSON.stringify(request))) as Record<string, unknown>
 }
+
+const ask = askMemoryAuthority
 
 /** Would the kernel admit this write? Returns the refusal reason, or `undefined` when admitted. */
 export function checkMemoryWrite(

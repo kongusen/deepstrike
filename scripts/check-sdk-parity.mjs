@@ -72,12 +72,12 @@ const CHECKS = [
     patterns: ["categoryForKind", "kernelObservationToSessionEvent"],
   },
   {
-    // I4/K4 memory recall: run-start prefetch into decaying history + renewal re-query.
+    // Plan 2.1 memory recall: the kernel queries; the host only runs the (rewritable) search.
     // (The old applyKernelPageIn side-channel was retired with the PageInRequested observation.)
     id: "node-memory-recall",
     lang: "node",
     path: "node/src/runtime/runner.ts",
-    patterns: ["prefetchMemoryIntoHistory", 'action.kind === "execute_tool"'],
+    patterns: ["kernelRecallHits", 'action.kind === "execute_tool"'],
   },
   {
     // M2 资源配额 — Node is the reference: quotas flow into the kernel via the JSON event ABI.
@@ -184,7 +184,7 @@ const CHECKS = [
     id: "wasm-runner-native",
     lang: "wasm",
     path: "wasm/src/runtime/runner.ts",
-    patterns: ["osProfile", "assertNativeProfile", "canonicalKernelMaybeAction", "prefetchMemoryIntoHistory"],
+    patterns: ["osProfile", "assertNativeProfile", "canonicalKernelMaybeAction", "kernelRecallHits"],
   },
   {
     id: "python-os-profile",
@@ -202,7 +202,7 @@ const CHECKS = [
     id: "python-runner-native",
     lang: "python",
     path: "python/deepstrike/runtime/runner.py",
-    patterns: ["assert_native_profile", "CanonicalRunnerRuntime", "maybe_action_host", "_prefetch_memory_into_initial_context"],
+    patterns: ["assert_native_profile", "CanonicalRunnerRuntime", "maybe_action_host", "_kernel_recall_hits"],
   },
   {
     id: "core-replay",
@@ -249,7 +249,7 @@ const CHECKS = [
     id: "node-workflow-driver",
     lang: "node",
     path: "node/src/runtime/runner.ts",
-    patterns: ["dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
+    patterns: ["dependency_brief", "buildWorkflowNodeCompletedEvent"],
   },
   {
     id: "node-workflow-loop-pace",
@@ -267,7 +267,7 @@ const CHECKS = [
     id: "python-workflow-driver",
     lang: "python",
     path: "python/deepstrike/runtime/runner.py",
-    patterns: ["dependency_outputs_note", "build_workflow_node_completed_event"],
+    patterns: ["dependency_brief", "build_workflow_node_completed_event"],
   },
   {
     id: "python-loop-driver",
@@ -279,7 +279,7 @@ const CHECKS = [
     id: "wasm-workflow-driver",
     lang: "wasm",
     path: "wasm/src/runtime/runner.ts",
-    patterns: ["dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
+    patterns: ["dependency_brief", "buildWorkflowNodeCompletedEvent"],
   },
   // wasm LoopDriver: EXPLICIT node+python-first decision (edge cron loops re-arm via wake_at_ms
   // from the host today); revisit when a wasm host needs in-process pacing.

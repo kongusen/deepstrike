@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod handle;
 pub mod memory;
+pub mod memory_candidate;
 pub mod value;
 
 pub use handle::{

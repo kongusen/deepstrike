@@ -150,11 +150,9 @@ fn start_agent(kernel: &mut CanonicalKernel, operation_id: &str, input_id: &str,
 fn main() {
     let f1 = deepstrike_core::benchmark::f1_critical_path_skew();
     assert!(f1.policy_makespan < f1.id_order_makespan);
-    let f2 = deepstrike_core::benchmark::f2_loop_fairness();
-    assert_eq!(f2.waiting_rounds, 0);
     let f3 = deepstrike_core::benchmark::f3_termination_dependency_matrix();
     assert_eq!(f3.cases_checked, 12);
-    println!("DAG gates: F1={f1:?}, F2={f2:?}, F3={f3:?}");
+    println!("DAG gates: F1={f1:?}, F3={f3:?}");
 
     let started = begin_measurement();
     for index in 0..1_000 {

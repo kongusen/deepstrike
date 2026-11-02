@@ -6,7 +6,7 @@ import type {
   ToolSchema,
   MediaSource,
 } from "../types.js"
-import type { RollbackReason } from "./session-log.js"
+import type { ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
 import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
 
 interface TaskUpdate {
@@ -84,7 +84,7 @@ export interface KernelLoopResult {
 }
 
 export type KernelRunnerAction =
-  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[]; contextEffect: Record<string, unknown> }
+  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[] }
   | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
   | { kind: "request_approval"; effectId: string; requests: Array<{ callId: string; tool: string; arguments: string; reason: string }> }
   | { kind: "spawn_workflow"; effectId: string; nodes: Array<Record<string, unknown>>; budget?: Record<string, unknown> }
@@ -93,6 +93,9 @@ export type KernelRunnerAction =
   | { kind: "query_memory"; effectId: string; query: Record<string, unknown>; requestedK: number }
   | {
       kind: "archive_page_out"
+      action?: string
+      summary?: string
+      tier?: "semantic" | "durable"
       effectId: string
       archived: ModelMessage[]
       handleId?: string
@@ -116,6 +119,16 @@ export interface KernelObservation {
   rho_after?: number
   sprint?: number
   summary?: string
+  // lifecycle_report (plan 4.1): end-of-run context lifecycle metrics.
+  knowledge_entries?: number
+  knowledge_referenced?: number
+  regret?: number
+  waste_tokens?: number
+  cache_loss_tokens?: number
+  recalled?: number
+  recall_expanded?: number
+  items?: ContextItemRecord[]
+  history?: ContextOriginTally[]
   archived_count?: number
   turn?: number
   checkpoint_history_len?: number

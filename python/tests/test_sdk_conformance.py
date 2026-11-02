@@ -46,6 +46,18 @@ def prompt_measurement_fixture(expected_canonical: dict) -> dict:
 
 
 
+def expected_canonical_for(fixture: dict, sdk: str) -> dict:
+  """The runner's projection (scripts/run-sdk-conformance.mjs `expectedFor`): the registry fixture
+  lists every kind with the SDKs that carry it, and each SDK is compared against only its own."""
+  canonical = fixture["expected"]["canonical"]
+  if fixture.get("domain") != "session_event_vocabulary":
+    return canonical
+  return {"kinds": {
+    kind: {"required": entry["required"], "optional": entry["optional"]}
+    for kind, entry in canonical["kinds"].items() if sdk in entry["sdks"]
+  }}
+
+
 @pytest.mark.parametrize("fixture_path", sorted(FIXTURES.glob("*.json")), ids=lambda path: path.stem)
 def test_python_adapter_matches_shared_conformance_fixture(fixture_path: Path) -> None:
   fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -66,7 +78,7 @@ def test_python_adapter_matches_shared_conformance_fixture(fixture_path: Path) -
       "ok": True,
       "sdk": "python",
       "fixture": fixture["id"],
-      "canonical": fixture["expected"]["canonical"],
+      "canonical": expected_canonical_for(fixture, "python"),
     }
   else:
     assert envelope["ok"] is False

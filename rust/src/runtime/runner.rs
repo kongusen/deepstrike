@@ -5,13 +5,10 @@ use crate::runtime::sandboxed_skill::scan_skill_dir;
 use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
 use deepstrike_core::governance::quota::ResourceQuota;
-use deepstrike_core::mm::memory::{
-    MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
-    MemoryScope, MemoryTrustLevel,
-};
+use deepstrike_core::mm::memory::{MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope};
 use deepstrike_core::runtime::kernel::wire::{CancellationReason, MemoryPolicy};
 use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
-use deepstrike_core::runtime::session::SessionEvent;
+use deepstrike_core::runtime::session::{SessionEvent, WireEvidence};
 use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 use deepstrike_core::types::message::{CoreMessage, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
@@ -20,7 +17,11 @@ use futures::StreamExt;
 
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
-use crate::memory::MemoryStore;
+use crate::memory::{
+    MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
+    MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy, MemoryWriter,
+    memory_candidate_id, memory_fetch_recall,
+};
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
@@ -34,6 +35,9 @@ use crate::runtime::execution_plane::{
     PermissionResponse, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::host_projection::{HostAction, HostEffect};
+use crate::runtime::kernel_event_log::{
+    ProjectionOptions, canonical_compression_action, kernel_observation_to_session_event,
+};
 use crate::runtime::os_profile::{
     GovernancePolicy, OsProfile, SignalPolicy, assert_native_profile,
 };
@@ -116,8 +120,6 @@ pub struct RunLimits {
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
-    /// Host-owned artifact set identity captured in operation genesis.
-    pub artifact_set_digest: Option<String>,
     pub execution_plane: Option<Box<dyn ExecutionPlane>>,
     /// Defaults to an in-memory log. Supply a durable log for cross-process evidence retention.
     pub session_log: Option<Arc<dyn SessionLog>>,
@@ -143,6 +145,9 @@ pub struct RuntimeOptions {
     pub pre_query_memory: Option<std::sync::Arc<dyn Fn(&str) -> Vec<MemoryQuery> + Send + Sync>>,
     pub system_prompt: Option<String>,
     pub initial_memory: Vec<String>,
+    /// Plan task 3.1 · outputs of the workflow nodes this run depends on, by agent id. The kernel
+    /// holds them; the model reads one with `read_result(call_id="dep:<agent_id>")`.
+    pub dependency_outputs: std::collections::BTreeMap<String, String>,
     pub skill_dir: Option<std::path::PathBuf>,
     pub memory_store: Option<Box<dyn MemoryStore>>,
     pub knowledge_source: Option<Box<dyn KnowledgeSource>>,
@@ -155,6 +160,12 @@ pub struct RuntimeOptions {
     pub resource_quota: Option<ResourceQuota>,
     /// Opt-in long-term memory policy (`set_memory_policy`), enforced at the kernel memory traps.
     pub memory_policy: Option<MemoryPolicy>,
+    /// M1 · per-path memory switches (retrieval, session extraction, model writes, semantic
+    /// archive). `None` keeps every path on and writing to `memory_store`.
+    pub memory_runtime_policy: Option<MemoryRuntimePolicy>,
+    /// M2 · where a write path set to `CandidateSink` hands its writes instead of the store. A run
+    /// refuses to start when any path is `CandidateSink` and this is missing.
+    pub memory_candidate_sink: Option<Arc<dyn MemoryCandidateSink>>,
     pub tokenizer: Option<String>,
     pub enable_plan_tool: Option<bool>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
@@ -249,7 +260,9 @@ fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
 /// Orchestrates the agentic turn loop via the runtime kernel + session event log.
 pub struct RuntimeRunner {
     opts: RuntimeOptions,
-    plane: Box<dyn ExecutionPlane>,
+    /// The configured provider, shared with workflow child runs; `opts.provider` delegates to it.
+    provider: Arc<dyn LLMProvider>,
+    plane: Arc<dyn ExecutionPlane>,
     kernel_journal: Arc<dyn KernelJournal>,
     interrupted: AtomicBool,
     cancellation_reason: AtomicU8,
@@ -260,6 +273,8 @@ pub struct RuntimeRunner {
     /// caller awaits. The run loop applies them between effects so a command that publishes an
     /// effect never races an in-flight one.
     pending_control: std::sync::Mutex<Vec<PendingControl>>,
+    /// The goal of the live run, so a sprint renewal can re-run the memory prefetch for it.
+    current_goal: std::sync::Mutex<Option<String>>,
 }
 
 struct PendingControl {
@@ -283,17 +298,25 @@ impl RuntimeRunner {
         if opts.payload_store.is_none() {
             opts.payload_store = Some(Arc::new(FilePayloadStore::new(".payloads")));
         }
-        let plane = opts
-            .execution_plane
-            .take()
-            .unwrap_or_else(|| Box::new(LocalExecutionPlane::new()));
+        let plane: Arc<dyn ExecutionPlane> = Arc::from(
+            opts.execution_plane
+                .take()
+                .unwrap_or_else(|| Box::new(LocalExecutionPlane::new())),
+        );
+        let provider: Arc<dyn LLMProvider> = Arc::from(std::mem::replace(
+            &mut opts.provider,
+            Box::new(crate::runtime::replay_provider::ReplayProvider::new(Vec::new())),
+        ));
+        opts.provider = Box::new(provider.clone());
         Self {
             opts,
+            provider,
             plane,
             kernel_journal,
             interrupted: AtomicBool::new(false),
             cancellation_reason: AtomicU8::new(0),
             active_kernel: std::sync::Mutex::new(None),
+            current_goal: std::sync::Mutex::new(None),
             local_page_out_cache: std::sync::Mutex::new(Vec::new()),
             pending_control: std::sync::Mutex::new(Vec::new()),
         }
@@ -423,9 +446,23 @@ impl RuntimeRunner {
         session_id: Option<&str>,
         agent_id: Option<&str>,
     ) -> Result<bool> {
-        let Some(store) = &self.opts.memory_store else {
+        self.write_memory_routed(memory, session_id, agent_id, None)
+            .await
+    }
+
+    /// The one host write funnel. With `candidate`, the admitted write goes to the candidate sink
+    /// instead of the store (M2): it returns true when the sink accepted the write or holds it for
+    /// review, false when the sink rejected it.
+    async fn write_memory_routed(
+        &self,
+        memory: MemoryRecord,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        candidate: Option<(MemoryCandidateSource, String)>,
+    ) -> Result<bool> {
+        if self.opts.memory_store.is_none() {
             return Ok(false);
-        };
+        }
         let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
             return Ok(false);
         };
@@ -448,7 +485,22 @@ impl RuntimeRunner {
             return Ok(false);
         }
 
-        store.put(agent_id, memory.clone()).await?;
+        if let Some((source, candidate_id)) = candidate {
+            let receipt = self
+                .submit_memory_candidate(agent_id, source, candidate_id, memory.clone())
+                .await?;
+            let accepted = !matches!(receipt, MemoryCandidateReceipt::Rejected { .. });
+            if let Some(session_id) = session_id.or(self.opts.session_id.as_deref()) {
+                self.log(
+                    session_id,
+                    memory_candidate_session_event(turn, &receipt, source, &memory),
+                )
+                .await;
+            }
+            return Ok(accepted);
+        }
+
+        self.memory_writer().persist(agent_id, memory.clone()).await?;
         self.append_memory_syscall_observations(
             session_id,
             vec![KernelObservation::MemoryWritten {
@@ -462,6 +514,114 @@ impl RuntimeRunner {
         )
         .await;
         Ok(true)
+    }
+
+    /// The host's side of every memory write: the store, or the candidate sink's receipt contract.
+    fn memory_writer(&self) -> MemoryWriter<'_> {
+        MemoryWriter {
+            store: self.opts.memory_store.as_deref(),
+            sink: self.opts.memory_candidate_sink.as_deref(),
+        }
+    }
+
+    async fn submit_memory_candidate(
+        &self,
+        agent_id: &str,
+        source: MemoryCandidateSource,
+        candidate_id: String,
+        record: MemoryRecord,
+    ) -> Result<MemoryCandidateReceipt> {
+        let candidate = MemoryCandidate { candidate_id, source, record, attestation: None };
+        self.memory_writer().propose(agent_id, candidate).await
+    }
+
+    /// The host's answer to a PersistMemory effect when `model_writes` is `CandidateSink`: the
+    /// `memory_candidate_result` the kernel bridge resolves it with. The candidate id is derived
+    /// from the operation and the effect, so a redelivery after a lost acknowledgement asks the
+    /// sink for the same candidate (S04).
+    async fn memory_candidate_effect_result(
+        &self,
+        operation_id: &str,
+        effect_id: &str,
+        source: MemoryCandidateSource,
+        memory: MemoryRecord,
+    ) -> serde_json::Value {
+        let receipt = match self.opts.agent_id.as_deref() {
+            Some(agent_id) => {
+                // Child requests keep their v2 identity; direct model proposals are v3.
+                let version = match source {
+                    MemoryCandidateSource::ModelProposal => "v3",
+                    _ => "v2",
+                };
+                let candidate_id = memory_candidate_id(&[
+                    version,
+                    agent_id,
+                    source.label(),
+                    operation_id,
+                    effect_id,
+                    "0",
+                ]);
+                self.submit_memory_candidate(agent_id, source, candidate_id, memory)
+                .await
+            }
+            None => Err(Error::Other(
+                "memory persistence requires RuntimeOptions::agent_id".into(),
+            )),
+        };
+        match receipt {
+            Ok(receipt) => {
+                let mut event = serde_json::to_value(&receipt).expect("a receipt serializes");
+                event["kind"] = "memory_candidate_result".into();
+                event["effect_id"] = effect_id.into();
+                event
+            }
+            Err(error) => serde_json::json!({
+                "kind": "memory_candidate_result",
+                "effect_id": effect_id,
+                "error": error.to_string(),
+            }),
+        }
+    }
+
+    /// M1 · how a write path routes: `None` when the host set no policy (the store), else its
+    /// switch.
+    fn memory_write_policy(&self, source: MemoryCandidateSource) -> Option<MemoryWritePolicy> {
+        self.opts.memory_runtime_policy.map(|policy| match source {
+            MemoryCandidateSource::ChildRequest | MemoryCandidateSource::ModelProposal => policy.model_writes,
+        })
+    }
+
+    /// A write path is on unless the host set its switch to `Disabled`.
+    fn memory_write_enabled(&self, source: MemoryCandidateSource) -> bool {
+        self.memory_write_policy(source) != Some(MemoryWritePolicy::Disabled)
+    }
+
+    /// Off unless the host set the path to `CandidateSink` — without a policy, writes go to the
+    /// store.
+    fn memory_write_to_candidate_sink(&self, source: MemoryCandidateSource) -> bool {
+        self.memory_write_policy(source) == Some(MemoryWritePolicy::CandidateSink)
+    }
+
+    fn memory_retrieval_enabled(&self) -> bool {
+        self.opts
+            .memory_runtime_policy
+            .is_none_or(|policy| policy.retrieval != MemoryRetrievalPolicy::Disabled)
+    }
+
+    /// A `CandidateSink` path with no sink to hand to is a configuration error, reported before
+    /// the run starts rather than at the first write.
+    fn check_memory_runtime_policy(&self) -> Result<()> {
+        let Some(policy) = self.opts.memory_runtime_policy else {
+            return Ok(());
+        };
+        let sink_paths = policy.candidate_sink_paths();
+        if !sink_paths.is_empty() && self.opts.memory_candidate_sink.is_none() {
+            return Err(Error::Other(format!(
+                "memory runtime policy {} = candidate_sink needs RuntimeOptions::memory_candidate_sink",
+                sink_paths.join(", ")
+            )));
+        }
+        Ok(())
     }
 
     /// The kernel's verdict on a host-authored write, or `None` when it is admitted.
@@ -512,6 +672,9 @@ impl RuntimeRunner {
         let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
             return Ok(Vec::new());
         };
+        if !self.memory_retrieval_enabled() {
+            return Ok(Vec::new());
+        }
 
         let turn = self.active_kernel_turn().await;
         let mut canonical_query = query;
@@ -539,6 +702,37 @@ impl RuntimeRunner {
         self.log_memory_retrieval_result(session_id, hits.clone())
             .await;
         Ok(hits)
+    }
+
+    /// The kernel's own recall for the run goal (plan task 2.1). `pre_query_memory` may rewrite
+    /// it into several scoped queries; their hits are merged, one per record. A failing store
+    /// search is skipped: recall is best-effort.
+    async fn kernel_recall_hits(
+        &self,
+        store: &dyn MemoryStore,
+        agent_id: &str,
+        query: &MemoryQuery,
+    ) -> Vec<MemoryRecall> {
+        let queries = match &self.opts.pre_query_memory {
+            Some(pre) => pre(&query.query),
+            None => vec![query.clone()],
+        };
+        let mut accepted: Vec<MemoryRecall> = Vec::new();
+        for mut each in queries {
+            if each.query.trim().is_empty() {
+                continue;
+            }
+            each.top_k = each.top_k.min(query.top_k).max(1);
+            let Ok(hits) = store.search(agent_id, &each).await else {
+                continue;
+            };
+            for hit in hits.into_iter().take(each.top_k) {
+                if accepted.iter().all(|seen| seen.record.record_id != hit.record.record_id) {
+                    accepted.push(hit);
+                }
+            }
+        }
+        accepted
     }
 
     /// M3 · a host-initiated recall. The store reports the counts it holds; the kernel derives the
@@ -575,52 +769,6 @@ impl RuntimeRunner {
                 .map(|threshold| threshold.get()),
         );
         store.record_recall(agent_id, &recalls).await
-    }
-
-    async fn extract_session_memories(
-        &self,
-        session: &deepstrike_core::memory::durable::SessionData,
-        scope: &MemoryScope,
-    ) -> Result<Vec<MemoryRecord>> {
-        let transcript = session
-            .messages
-            .iter()
-            .map(|message| {
-                format!(
-                    "[{:?}] {}",
-                    message.role,
-                    message.content.as_text().unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            .chars()
-            .take(8_000)
-            .collect::<String>();
-        let prompt = format!(
-            "{transcript}\n\nReturn {{\"memories\":[{{\"name\":\"stable-kebab-key\",\"kind\":\"user|feedback|project|reference\",\"content\":\"fact\",\"description\":\"why durable\",\"confidence\":0.0,\"links\":[],\"pinned\":false,\"ttl_days\":null,\"evidence_refs\":[]}}]}} with at most 10 items. Return {{\"memories\":[]}} when nothing is durable."
-        );
-        let context = rendered_context_from_messages(vec![
-            CoreMessage::system(
-                "Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses.",
-            ),
-            CoreMessage::user(prompt),
-        ]);
-        let state = self.opts.provider.create_run_state();
-        let mut stream = self
-            .opts
-            .provider
-            .stream(&context, &[], None, state.as_ref())
-            .await?;
-        let mut output = String::new();
-        while let Some(event) = stream.next().await {
-            if let StreamEvent::TextDelta { delta } = event? {
-                output.push_str(&delta);
-            }
-        }
-        Ok(crate::memory::parse_extracted_memories(
-            &output, session, scope,
-        ))
     }
 
     async fn log_memory_retrieval_result(&self, session_id: Option<&str>, hits: Vec<MemoryRecall>) {
@@ -716,7 +864,6 @@ impl RuntimeRunner {
                 max_turns: Some(effective_max_turns),
                 max_total_tokens: limits.and_then(|limits| limits.max_total_tokens),
                 max_wall_ms: effective_timeout,
-                artifact_set_digest: self.opts.artifact_set_digest.clone(),
                 memory_binding_id: self
                     .opts
                     .agent_id
@@ -740,63 +887,10 @@ impl RuntimeRunner {
             return;
         };
         for obs in observations {
-            match obs {
-                KernelObservation::MemoryWritten {
-                    turn,
-                    record_id,
-                    scope,
-                    memory_kind,
-                    name,
-                    size_bytes,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryWritten {
-                            turn,
-                            record_id,
-                            scope,
-                            memory_kind,
-                            name,
-                            size_bytes,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MemoryQueried {
-                    turn,
-                    scope,
-                    query,
-                    requested_k,
-                    requires_async_response,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryQueried {
-                            turn,
-                            scope,
-                            query,
-                            requested_k,
-                            requires_async_response,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MemoryValidationFailed {
-                    turn,
-                    record_id,
-                    error,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryValidationFailed {
-                            turn,
-                            record_id,
-                            error,
-                        },
-                    )
-                    .await;
-                }
-                _ => {}
+            if let Some(event) =
+                kernel_observation_to_session_event(&obs, 0, &ProjectionOptions::default())
+            {
+                self.log(session_id, event).await;
             }
         }
     }
@@ -891,6 +985,7 @@ impl RuntimeRunner {
         attachments: &'a [deepstrike_core::types::message::ContentPart],
         limits: Option<RunLimits>,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + 'a>>> {
+        self.check_memory_runtime_policy()?;
         let session_id = session_id
             .map(str::to_string)
             .or_else(|| self.opts.session_id.clone())
@@ -936,6 +1031,8 @@ impl RuntimeRunner {
                     agent_id: self.opts.agent_id.clone(),
                     system_prompt: self.opts.system_prompt.clone(),
                     attachments: attachments.to_vec(),
+                    route: None,
+                    metadata: None,
                 },
             )
             .await;
@@ -1075,10 +1172,21 @@ impl RuntimeRunner {
             let skill_watcher = self.opts.skill_dir.as_deref().and_then(SkillWatcher::start);
 
             if !resume_mid_run {
+                let native_context = self.opts.provider.native_context_tiers();
                 if self.opts.kernel_reliability.is_some()
                     || self.opts.scheduler_policy.is_some()
+                    || native_context.tool_result_clearing
+                    || native_context.compaction
                 {
                     let mut config = serde_json::Map::new();
+                    if native_context.tool_result_clearing || native_context.compaction {
+                        config.insert("context_policy".into(), serde_json::json!({
+                            "delegated_tiers": {
+                                "tool_result_clearing": native_context.tool_result_clearing,
+                                "compaction": native_context.compaction,
+                            }
+                        }));
+                    }
                     if let Some(reliability) = self.opts.kernel_reliability.as_ref() {
                         config.insert(
                             "reliability".into(),
@@ -1128,10 +1236,23 @@ impl RuntimeRunner {
                 ).await?;
 
                 if self.opts.memory_store.is_some() && self.opts.agent_id.is_some() {
+                    // The kernel binding carries the same capability bits as the host gates, so a
+                    // model-driven syscall (child parent_requests) is refused in the kernel.
                     kernel_apply(
                         &kernel,
                         &mut pending_observations,
-                        serde_json::json!({ "kind": "set_memory_enabled", "enabled": true }),
+                        serde_json::json!({
+                            "kind": "set_memory_enabled",
+                            "enabled": true,
+                            "read": self.memory_retrieval_enabled(),
+                            "write": self.memory_write_enabled(MemoryCandidateSource::ChildRequest),
+                            // Proposals must land in review, never straight in the store.
+                            "propose_memory": self.opts.memory_candidate_sink.is_some()
+                                && self.memory_write_to_candidate_sink(MemoryCandidateSource::ModelProposal),
+                            // The kernel recalls for the goal before the first call and after
+                            // each renewal.
+                            "recall": self.opts.pre_query_memory.is_some() || self.opts.memory_scope.is_some(),
+                        }),
                     ).await?;
                 }
                 if self.opts.knowledge_source.is_some() {
@@ -1151,6 +1272,17 @@ impl RuntimeRunner {
                             "kind": "add_system_message",
                             "content": sp,
                             "tokens": tokens,
+                        }),
+                    ).await?;
+                }
+                for (agent_id, content) in &self.opts.dependency_outputs {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "add_dependency_output",
+                            "agent_id": agent_id,
+                            "content": content,
                         }),
                     ).await?;
                 }
@@ -1298,60 +1430,7 @@ impl RuntimeRunner {
                     ).await?;
                 }
 
-                // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
-                // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing memory_store/agent_id
-                // or a faulty closure silently skip the pre-fetch.
-                if !resume_mid_run {
-                    if let (Some(pre), Some(store), Some(agent_id)) = (
-                        self.opts.pre_query_memory.clone(),
-                        self.opts.memory_store.as_ref(),
-                        self.opts.agent_id.as_deref(),
-                    ) {
-                        let queries = pre(goal.as_str());
-                        let mut recalled = Vec::new();
-                        let mut recalled_hits: Vec<MemoryRecall> = Vec::new();
-                        for q in &queries {
-                            if q.query.trim().is_empty() {
-                                continue;
-                            }
-                            if let Ok(hits) = store.search(agent_id, q).await {
-                                for hit in hits {
-                                    if recalled_hits
-                                        .iter()
-                                        .any(|seen| seen.record.record_id == hit.record.record_id)
-                                    {
-                                        continue;
-                                    }
-                                    recalled_hits.push(hit.clone());
-                                    recalled.push(format!(
-                                        "[memory record_id={} trust={} score={:.3}] {}",
-                                        hit.record.record_id,
-                                        match hit.record.provenance.trust {
-                                            MemoryTrustLevel::Untrusted => "untrusted",
-                                            MemoryTrustLevel::UserAsserted => "user_asserted",
-                                            MemoryTrustLevel::HostVerified => "host_verified",
-                                        },
-                                        hit.score,
-                                        hit.record.content
-                                    ));
-                                }
-                            }
-                        }
-                        if !recalled.is_empty() {
-                            kernel_apply(
-                                &kernel,
-                                &mut pending_observations,
-                                serde_json::json!({
-                                    "kind": "add_history_message",
-                                    "message": CoreMessage::user(recalled.join("\n")),
-                                }),
-                            ).await?;
-                        }
-                        // M3 · the prefetch is a recall too; its counts are the kernel's to derive.
-                        let _ = Box::pin(self.record_host_memory_recall(&recalled_hits, agent_id))
-                            .await;
-                    }
-                }
+                *self.current_goal.lock().unwrap() = Some(goal.clone());
             }
 
             let mut action = if resume_mid_run {
@@ -1520,11 +1599,12 @@ impl RuntimeRunner {
                 }
 
                 match &action.effect {
-                    HostEffect::CallProvider { context, tools, context_effect } => {
+                    HostEffect::CallProvider { context, tools } => {
                         let provider_effect_id = action.effect_id.clone();
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
                         let mut turn_tokens: u32 = 0;
+                        let mut turn_output_tokens: u32 = 0;
                         let mut turn_input_tokens: u32 = 0;
                         let mut turn_cache_read_tokens: u32 = 0;
                         let mut turn_cache_creation_tokens: u32 = 0;
@@ -1538,8 +1618,6 @@ impl RuntimeRunner {
                         // reassigned before the metrics emit below.
                         let tools_exposed = provider_tools.len();
 
-                        // Freeze host-owned route and preflight evidence against the committed
-                        // candidate before any provider I/O. Core owns all digest/plan validation.
                         let mut route = self.opts.provider.context_route();
                         let prepared_request = self.opts.provider.prepare_context_request(
                             provider_context, provider_tools, ext.as_ref(), provider_state.as_ref(),
@@ -1554,29 +1632,15 @@ impl RuntimeRunner {
                         });
                         let material_bytes = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(&material)
                             .map_err(|error| Error::Other(error.to_string()))?;
-                        let fingerprint = deepstrike_core::evolution::ContentDigest::from_bytes(material_bytes.as_slice());
-                        // Advisory estimate only; native provider usage settles the execution later.
-                        let counted_material = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(
-                            prepared_request.get("body").unwrap_or(&prepared_request),
-                        ).map_err(|error| Error::Other(error.to_string()))?;
-                        let estimated = counted_material.as_slice().len().div_ceil(4) as u64;
-                        let preparation = deepstrike_core::context::execution::prepare_context_dispatch(
-                            &deepstrike_core::context::execution::ContextDispatchRequest {
-                                effect: context_effect.clone(), request_fingerprint: fingerprint.clone(),
-                                provider_route: route,
-                                prompt_measurement: deepstrike_core::context::execution::ContextPromptMeasurement {
-                                    request_fingerprint: fingerprint, input_tokens: estimated,
-                                    source: deepstrike_core::context::measurement::MeasurementSource::Heuristic,
-                                    confidence: deepstrike_core::context::measurement::MeasurementConfidence::LowConfidence,
-                                },
-                            },
-                        ).map_err(|error| Error::Other(error.to_string()))?;
-                        if let Some(log) = &self.opts.session_log {
-                            log.append(&session_id, SessionEvent::ContextPrepared {
-                                turn: kernel.lock().await.turn(),
-                                effect_id: provider_effect_id.clone(), preparation: Box::new(preparation),
-                            }).await.map_err(Error::Io)?;
-                        }
+                        let fingerprint = {
+                            use sha2::{Digest as _, Sha256};
+                            let hex: String = Sha256::digest(material_bytes.as_slice()).iter().map(|b| format!("{b:02x}")).collect();
+                            format!("sha256:{hex}")
+                        };
+                        // The same fingerprint and protocol identify the request in llm_completed's
+                        // wire evidence.
+                        let wire_protocol = route.get("protocol").and_then(|p| p.as_str()).unwrap_or_default().to_string();
+                        let wire_fingerprint = fingerprint;
 
                         let mut provider_stream = match self
                             .opts
@@ -1647,6 +1711,7 @@ impl RuntimeRunner {
                                 StreamEvent::Usage {
                                     total_tokens,
                                     input_tokens,
+                                    output_tokens,
                                     cache_read_input_tokens,
                                     cache_creation_input_tokens,
                                     cache_read_input_tokens_by_slot,
@@ -1654,6 +1719,7 @@ impl RuntimeRunner {
                                     ..
                                 } => {
                                     turn_tokens = total_tokens;
+                                    turn_output_tokens = output_tokens;
                                     // P0-C: capture input + prompt-cache split for the hit-rate baseline.
                                     turn_input_tokens = input_tokens;
                                     turn_cache_read_tokens = cache_read_input_tokens;
@@ -1711,6 +1777,13 @@ impl RuntimeRunner {
                             &final_tool_calls,
                         );
                         repair_llm_completed(&mut assistant, &mut provider_replay);
+                        let wire_evidence = WireEvidence {
+                            protocol: wire_protocol.clone(),
+                            request_fingerprint: Some(wire_fingerprint.clone()),
+                            response_id: None,
+                            raw_usage: None,
+                            replay_state: provider_replay,
+                        };
 
                         action = kernel_action(
                             &kernel,
@@ -1728,7 +1801,13 @@ impl RuntimeRunner {
                             SessionEvent::LlmCompleted {
                                 turn: kernel.lock().await.turn(),
                                 message: assistant,
-                                provider_replay,
+                                token_count: [turn_output_tokens, turn_tokens]
+                                    .into_iter()
+                                    .find(|tokens| *tokens > 0)
+                                    .map(u64::from),
+                                effect_id: Some(provider_effect_id.clone()),
+                                invocation_id: None,
+                                wire_evidence: Some(wire_evidence),
                             },
                         )
                         .await;
@@ -1839,28 +1918,106 @@ impl RuntimeRunner {
                             }),
                         ).await?;
                     }
-                    HostEffect::SpawnWorkflow { nodes, .. } => {
-                        // This runner has no workflow child orchestrator. Report each
-                        // requested spawn as a completed failure instead of treating the
-                        // action as an observation or leaving the effect unresolved.
-                        let workflow_effect_id = action.effect_id.clone();
-                        let failures: Vec<deepstrike_core::runtime::kernel::WorkflowSpawnFailure> = nodes
-                            .into_iter()
-                            .map(|node| deepstrike_core::runtime::kernel::WorkflowSpawnFailure {
-                                agent_id: node.agent_id.clone(),
-                                error: "Rust RuntimeRunner has no workflow orchestrator".to_string(),
-                            })
-                            .collect();
-                        action = kernel_action(
-                            &kernel,
-                            &mut pending_observations,
-                            serde_json::json!({
-                                "kind": "workflow_spawn_result",
-                                "effect_id": workflow_effect_id,
-                                "started_agent_ids": [],
-                                "failures": failures,
-                            }),
-                        ).await?;
+                    HostEffect::SpawnWorkflow { .. } => {
+                        // Plan task 6.3 · each spawned node runs as a child run on this runner's
+                        // provider and plane. Completions are fed back as they land (no round
+                        // barrier); the kernel answers with more spawns, a preemption, the
+                        // parent's next provider call, or the end of the operation.
+                        let mut children = futures::stream::FuturesUnordered::new();
+                        let mut running: std::collections::HashMap<String, futures::future::AbortHandle> =
+                            std::collections::HashMap::new();
+                        let mut queue = std::collections::VecDeque::from([action.clone()]);
+                        let mut continuation: Option<HostAction> = None;
+                        let mut finished: Option<HostAction> = None;
+                        loop {
+                            while let Some(next) = queue.pop_front() {
+                                match &next.effect {
+                                    HostEffect::SpawnWorkflow { nodes, dependency_outputs, .. } => {
+                                        let started: Vec<String> =
+                                            nodes.iter().map(|node| node.agent_id.clone()).collect();
+                                        if let Some(reply) = kernel_maybe_action(
+                                            &kernel,
+                                            &mut pending_observations,
+                                            serde_json::json!({
+                                                "kind": "workflow_spawn_result",
+                                                "effect_id": next.effect_id,
+                                                "started_agent_ids": started,
+                                                "failures": [],
+                                            }),
+                                        ).await? {
+                                            queue.push_back(reply);
+                                        }
+                                        for node in nodes {
+                                            let outputs = dependency_outputs
+                                                .get(&node.agent_id)
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            let (child, handle) = futures::future::abortable(
+                                                self.workflow_child(node, &session_id, outputs),
+                                            );
+                                            running.insert(node.agent_id.clone(), handle);
+                                            children.push(child);
+                                        }
+                                    }
+                                    HostEffect::PreemptSubAgents { agent_ids, .. } => {
+                                        let already_finished: Vec<&String> =
+                                            agent_ids.iter().filter(|id| !running.contains_key(*id)).collect();
+                                        for id in agent_ids {
+                                            if let Some(handle) = running.remove(id) {
+                                                handle.abort();
+                                            }
+                                        }
+                                        if let Some(reply) = kernel_maybe_action(
+                                            &kernel,
+                                            &mut pending_observations,
+                                            serde_json::json!({
+                                                "kind": "preempt_result",
+                                                "effect_id": next.effect_id,
+                                                "already_finished_agent_ids": already_finished,
+                                            }),
+                                        ).await? {
+                                            queue.push_back(reply);
+                                        }
+                                    }
+                                    HostEffect::CallProvider { .. } => continuation = Some(next),
+                                    HostEffect::Done { .. } => {
+                                        finished = Some(next);
+                                        break;
+                                    }
+                                    other => Err(Error::Other(format!(
+                                        "workflow returned unexpected effect: {}",
+                                        host_effect_kind(other)
+                                    )))?,
+                                }
+                            }
+                            if finished.is_some() {
+                                break;
+                            }
+                            let Some(landed) = children.next().await else {
+                                break;
+                            };
+                            // A preempted child resolves as aborted; the kernel already knows.
+                            let Ok(result) = landed else {
+                                continue;
+                            };
+                            let agent_id = result["agent_id"].as_str().unwrap_or_default().to_string();
+                            if running.remove(&agent_id).is_none() {
+                                continue;
+                            }
+                            if let Some(reply) = kernel_maybe_action(
+                                &kernel,
+                                &mut pending_observations,
+                                serde_json::json!({ "kind": "sub_agent_completed", "result": result }),
+                            ).await? {
+                                queue.push_back(reply);
+                            }
+                        }
+                        for handle in running.values() {
+                            handle.abort();
+                        }
+                        action = finished.or(continuation).ok_or_else(|| {
+                            Error::Other("workflow settled without a kernel continuation".into())
+                        })?;
                     }
                     HostEffect::PreemptSubAgents { agent_ids, .. } => {
                         // RuntimeRunner does not launch external child runners, so there is no
@@ -1876,61 +2033,102 @@ impl RuntimeRunner {
                             }),
                         ).await?;
                     }
-                    HostEffect::PersistMemory { memory } => {
+                    HostEffect::PersistMemory { memory, model_proposal } => {
+                        let source = if *model_proposal {
+                            MemoryCandidateSource::ModelProposal
+                        } else {
+                            MemoryCandidateSource::ChildRequest
+                        };
                         let effect_id = action.effect_id.clone();
                         let mut memory = memory.clone();
-                        let error = match (
-                            self.opts.memory_store.as_ref(),
-                            self.opts.agent_id.as_deref(),
-                        ) {
-                            (Some(store), Some(agent_id)) => {
-                                if let Some(scope) = self.opts.memory_scope.as_ref() {
-                                    memory.scope = scope.clone();
+                        if let Some(scope) = self.opts.memory_scope.as_ref() {
+                            memory.scope = scope.clone();
+                        }
+                        memory.provenance.session_id = Some(session_id.clone());
+                        let event = if self
+                            .memory_write_to_candidate_sink(source)
+                        {
+                            // M2 · the sink holds the write; its answer is the effect's result.
+                            let operation_id = kernel.lock().await.operation_id().to_string();
+                            Box::pin(self.memory_candidate_effect_result(
+                                &operation_id,
+                                &effect_id,
+                                source,
+                                memory,
+                            ))
+                            .await
+                        } else {
+                            let receipt = if !self.memory_write_enabled(source) {
+                                Err("model memory writes are disabled by memory_runtime_policy.model_writes"
+                                    .to_string())
+                            } else {
+                                match self.opts.agent_id.as_deref() {
+                                    Some(agent_id) => self
+                                        .memory_writer()
+                                        .persist(agent_id, memory)
+                                        .await
+                                        .map_err(|error| error.to_string()),
+                                    None => Err(
+                                        "memory persistence is unavailable without memory_store and agent_id"
+                                            .to_string(),
+                                    ),
                                 }
-                                memory.provenance.session_id = Some(session_id.clone());
-                                store
-                                    .put(agent_id, memory.clone())
-                                    .await
-                                    .err()
-                                    .map(|error| error.to_string())
+                            };
+                            // The receipt names what the store now holds: the record id and a
+                            // digest of its content.
+                            match receipt {
+                                Err(error) => serde_json::json!({
+                                    "kind": "memory_persist_result",
+                                    "effect_id": effect_id,
+                                    "error": error,
+                                }),
+                                Ok(receipt) => serde_json::json!({
+                                    "kind": "memory_persist_result",
+                                    "effect_id": effect_id,
+                                    "record_ref": receipt.record_ref,
+                                    "digest": receipt.digest,
+                                }),
                             }
-                            _ => Some(
-                                "memory persistence is unavailable without memory_store and agent_id"
-                                    .to_string(),
-                            ),
-                        };
-                        // The receipt names what the store now holds: the record id and a digest
-                        // of its content.
-                        let event = match error {
-                            Some(error) => serde_json::json!({
-                                "kind": "memory_persist_result",
-                                "effect_id": effect_id,
-                                "error": error,
-                            }),
-                            None => serde_json::json!({
-                                "kind": "memory_persist_result",
-                                "effect_id": effect_id,
-                                "record_ref": memory.record_id,
-                                "digest": deepstrike_core::runtime::kernel::wire::canonical_digest(
-                                    memory.content.as_bytes(),
-                                ).as_str(),
-                            }),
                         };
                         action = kernel_action(&kernel, &mut pending_observations, event).await?;
                     }
-                    HostEffect::QueryMemory { query, requested_k } => {
+                    HostEffect::QueryMemory {
+                        query,
+                        requested_k,
+                        record_id,
+                        recall_sprint,
+                    } => {
                         let effect_id = action.effect_id.clone();
                         let (hits, error) = match (
                             self.opts.memory_store.as_ref(),
                             self.opts.agent_id.as_deref(),
                         ) {
+                            // M1 · retrieval off answers with no hits, as the other SDKs do.
+                            _ if !self.memory_retrieval_enabled() => (Vec::new(), None),
                             (Some(store), Some(agent_id)) => {
                                 let mut query = query.clone();
                                 query.top_k = *requested_k;
                                 if let Some(scope) = self.opts.memory_scope.as_ref() {
                                     query.scope = scope.clone();
                                 }
-                                match store.search(agent_id, &query).await {
+                                // `memory(record_id)` is a point read under the same gate as a
+                                // search: that record, or nothing.
+                                let result = match record_id.as_deref() {
+                                    _ if recall_sprint.is_some() => {
+                                        Ok(self.kernel_recall_hits(store.as_ref(), agent_id, &query).await)
+                                    }
+                                    Some(record_id) => {
+                                        let now_ms = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as u64;
+                                        store.get(agent_id, record_id).await.map(|record| {
+                                            memory_fetch_recall(record, &query, now_ms)
+                                        })
+                                    }
+                                    None => store.search(agent_id, &query).await,
+                                };
+                                match result {
                                     Ok(hits) => (hits, None),
                                     Err(error) => (Vec::new(), Some(error.to_string())),
                                 }
@@ -1960,16 +2158,12 @@ impl RuntimeRunner {
                     }
                     HostEffect::ArchivePageOut {
                         archived,
-                        tier,
-                        action: pressure_action,
                         payload_content,
                         payload_digest,
                         ..
                     } => {
                         let effect_id = action.effect_id.clone();
                         let archived = archived.clone();
-                        let tier = tier.clone();
-                        let action_name = action_str_of(*pressure_action);
                         let archive_start = *active_page_out_start.get_or_insert_with(|| {
                             pending_page_out_starts.pop_front().unwrap_or(next_archive_start)
                         });
@@ -1997,9 +2191,6 @@ impl RuntimeRunner {
                         let (archive_ref, error) = match archive_result {
                             Ok(archive_ref) => {
                                 self.local_page_out_cache.lock().unwrap().extend(archived.clone());
-                                if tier == "semantic" {
-                                    self.archive_semantic_page_out(archived, Some(action_name)).await;
-                                }
                                 (archive_ref, None)
                             }
                             Err(error) => (None, Some(error.to_string())),
@@ -2186,6 +2377,7 @@ impl RuntimeRunner {
                             SessionEvent::ToolCompleted {
                                 turn: kernel.lock().await.turn(),
                                 results: tool_results.clone(),
+                                effect_id: Some(action.effect_id.clone()),
                             },
                         )
                         .await;
@@ -2349,13 +2541,6 @@ impl RuntimeRunner {
                                     updated_at_ms: now_ms,
                                 };
                                 let _ = store.save_session(session.clone()).await;
-                                if let Some(scope) = self.opts.memory_scope.as_ref() {
-                                    if let Ok(memories) = self.extract_session_memories(&session, scope).await {
-                                        for memory in memories {
-                                            let _ = self.write_memory(memory, Some(&session_id), Some(agent_id)).await;
-                                        }
-                                    }
-                                }
                             }
                         }
 
@@ -2420,13 +2605,6 @@ impl RuntimeRunner {
                             updated_at_ms: now_ms,
                         };
                         let _ = store.save_session(session.clone()).await;
-                        if let Some(scope) = self.opts.memory_scope.as_ref() {
-                            if let Ok(memories) = self.extract_session_memories(&session, scope).await {
-                                for memory in memories {
-                                    let _ = self.write_memory(memory, Some(&session_id), Some(agent_id)).await;
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -2437,6 +2615,133 @@ impl RuntimeRunner {
                 status,
             };
         }
+    }
+
+    /// The options of a workflow node's child run: this runner's provider, plane, stores and
+    /// policies, with the node's own identity and dependency outputs.
+    fn workflow_child_options(
+        &self,
+        node: &deepstrike_core::orchestration::workflow::WorkflowSpawnInfo,
+        session_id: String,
+        dependency_outputs: std::collections::BTreeMap<String, String>,
+    ) -> RuntimeOptions {
+        let opts = &self.opts;
+        RuntimeOptions {
+            provider: Box::new(self.provider.clone()),
+            execution_plane: Some(Box::new(self.plane.clone())),
+            session_log: opts.session_log.clone(),
+            compression_store: opts.compression_store.clone(),
+            payload_store: opts.payload_store.clone(),
+            kernel_reliability: opts.kernel_reliability.clone(),
+            session_id: Some(session_id),
+            max_tokens: opts.max_tokens,
+            max_turns: node.max_turns.or(opts.max_turns),
+            timeout_ms: node.max_wall_ms.or(opts.timeout_ms),
+            extensions: opts.extensions.clone(),
+            agent_id: Some(node.agent_id.clone()),
+            memory_scope: None,
+            pre_query_memory: None,
+            system_prompt: opts.system_prompt.clone(),
+            initial_memory: Vec::new(),
+            dependency_outputs,
+            skill_dir: opts.skill_dir.clone(),
+            memory_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: opts.governance.clone(),
+            os_profile: opts.os_profile.clone(),
+            governance_policy: opts.governance_policy.clone(),
+            signal_policy: opts.signal_policy.clone(),
+            scheduler_policy: opts.scheduler_policy.clone(),
+            resource_quota: opts.resource_quota.clone(),
+            memory_policy: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
+            tokenizer: opts.tokenizer.clone(),
+            enable_plan_tool: opts.enable_plan_tool,
+            on_tool_suspend: opts.on_tool_suspend.clone(),
+            on_permission_request: opts.on_permission_request.clone(),
+            milestone_policy: opts.milestone_policy,
+            milestone_contract: None,
+            run_spec: None,
+            allowed_tool_ids: opts.allowed_tool_ids.clone(),
+            baseline_tool_ids: opts.baseline_tool_ids.clone(),
+            on_turn_metrics: opts.on_turn_metrics.clone(),
+            stable_core_tool_ids: opts.stable_core_tool_ids.clone(),
+            on_milestone_evaluate: opts.on_milestone_evaluate.clone(),
+        }
+    }
+
+    /// Run one workflow node to completion and describe it as the kernel's `sub_agent_completed`
+    /// result. A child that fails, or cannot start, is an ordinary failed completion.
+    fn workflow_child(
+        &self,
+        node: &deepstrike_core::orchestration::workflow::WorkflowSpawnInfo,
+        parent_session_id: &str,
+        dependency_outputs: std::collections::BTreeMap<String, String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value>>> {
+        let session_id = format!("{parent_session_id}-{}", node.agent_id);
+        let opts = self.workflow_child_options(node, session_id.clone(), dependency_outputs);
+        let journal = self.kernel_journal.clone();
+        let agent_id = node.agent_id.clone();
+        let goal = node.goal.clone();
+        let limits = RunLimits {
+            max_turns: node.max_turns,
+            max_total_tokens: node.token_budget,
+            max_wall_ms: node.max_wall_ms,
+        };
+        Box::pin(async move {
+            let runner = RuntimeRunner::new_with_kernel_journal(opts, journal);
+            // The node's output is its last turn's text; narration before a tool call is not.
+            let mut text = String::new();
+            let mut done: Option<(u32, u64, String)> = None;
+            let mut error: Option<String> = None;
+            match runner
+                .run_streaming_with_attachments_and_limits(
+                    &goal,
+                    &[],
+                    None,
+                    Some(&session_id),
+                    &[],
+                    Some(limits),
+                )
+                .await
+            {
+                Ok(mut stream) => {
+                    while let Some(event) = stream.next().await {
+                        match event {
+                            Ok(RunEvent::TextDelta(delta)) => text.push_str(&delta),
+                            Ok(RunEvent::ToolCall { .. }) => text.clear(),
+                            Ok(RunEvent::Done { iterations, total_tokens, status }) => {
+                                done = Some((iterations, total_tokens, status));
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                error = Some(err.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(err) => error = Some(err.to_string()),
+            }
+            let (turns_used, total_tokens, status) = done.unwrap_or((0, 0, "error".into()));
+            let termination = match (error.is_some(), status.as_str()) {
+                (true, _) => "error".to_string(),
+                (false, "userabort") => "user_abort".to_string(),
+                (false, other) => other.to_string(),
+            };
+            serde_json::json!({
+                "agent_id": agent_id,
+                "result": {
+                    "termination": termination,
+                    "final_message": { "role": "assistant", "content": text },
+                    "turns_used": turns_used,
+                    "total_tokens_used": total_tokens,
+                },
+                "error": error,
+            })
+        })
     }
 
     pub(crate) async fn append_observations(
@@ -2467,14 +2772,14 @@ impl RuntimeRunner {
         };
 
         for (index, obs) in drained.into_iter().enumerate() {
-            match obs {
+            match &obs {
+                // The archive window depends on this log's seq numbers, and the summary is
+                // counted with the kernel tokenizer rather than the projection's chars/4 estimate.
                 KernelObservation::Compressed {
-                    turn: _,
                     action,
-                    rho_after: _,
                     summary,
                     archived_count,
-                    invalidates_prefix_at: _,
+                    ..
                 } => {
                     let Some(log) = &self.opts.session_log else {
                         continue;
@@ -2484,12 +2789,12 @@ impl RuntimeRunner {
                         continue;
                     }
                     let end = latest;
-                    if archived_count > 0 {
+                    if *archived_count > 0 {
                         pending_page_out_starts.push_back(next_archive_start);
                     }
 
                     let summary_tokens = summary_tokens_by_index.get(index).copied().flatten();
-                    let action_str = action_str_of(action);
+                    let action_str = action_str_of(*action);
 
                     if let Ok(compressed_seq) = log
                         .append(
@@ -2497,7 +2802,8 @@ impl RuntimeRunner {
                             SessionEvent::Compressed {
                                 turn,
                                 archived_seq_range: (next_archive_start, end),
-                                action: Some(action_str),
+                                action: canonical_compression_action(Some(&action_str))
+                                    .map(str::to_string),
                                 summary: summary.clone(),
                                 summary_tokens,
                                 preserved_refs: preserved_refs.clone(),
@@ -2507,358 +2813,24 @@ impl RuntimeRunner {
                     {
                         next_archive_start = compressed_seq + 1;
                     }
+                    continue;
                 }
-                KernelObservation::PageOutArchived {
-                    turn,
-                    action,
-                    summary,
-                    tier,
-                    message_count,
-                    archive_ref,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::PageOut {
-                            turn,
-                            action: Some(action_str_of(action)),
-                            summary,
-                            tier_hint: Some(tier),
-                            message_count,
-                            archive_ref,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::PageOutArchiveFailed { .. } => {}
-                // Payload residency is already durable in the canonical transaction record.
-                KernelObservation::PayloadResidencyChanged { .. }
-                | KernelObservation::PayloadLoadFailed { .. } => {}
-                KernelObservation::Rollbacked {
-                    turn,
-                    checkpoint_history_len,
-                    reason,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::Rollbacked {
-                            turn,
-                            checkpoint_history_len,
-                            reason,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::CapabilityChanged {
-                    turn,
-                    added,
-                    removed,
-                    change_kind,
-                    capability_id,
-                    version,
-                    mounted_by,
-                    mount_reason,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::CapabilityChanged {
-                            turn,
-                            added,
-                            removed,
-                            change_kind,
-                            capability_id,
-                            version,
-                            mounted_by,
-                            mount_reason,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MilestoneAdvanced {
-                    turn,
-                    phase_id,
-                    capabilities_unlocked,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MilestoneAdvanced {
-                            turn,
-                            phase_id,
-                            capabilities_unlocked,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MilestoneBlocked {
-                    turn,
-                    phase_id,
-                    reason,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MilestoneBlocked {
-                            turn,
-                            phase_id,
-                            reason,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::Renewed { .. } => {}
-                KernelObservation::ContextBudgetExceeded { .. } => {}
-                KernelObservation::KnowledgeSwept { .. } => {}
-                KernelObservation::KnowledgeBudgetExceeded { .. } => {}
-                KernelObservation::RepeatFuseTripped { .. } => {}
-                KernelObservation::CriteriaGateFired { .. } => {}
-                KernelObservation::CheckpointTaken { turn, history_len } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::CheckpointTaken { turn, history_len },
-                    )
-                    .await;
-                }
-                KernelObservation::EntropySample {
-                    turn,
-                    score,
-                    rho,
-                    repeat_pressure,
-                    failure_rate,
-                    rollbacks_in_window,
-                    window_turns,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::EntropySample {
-                            turn,
-                            score,
-                            rho,
-                            repeat_pressure,
-                            failure_rate,
-                            rollbacks_in_window,
-                            window_turns,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::EntropyAlert {
-                    turn,
-                    score,
-                    threshold,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::EntropyAlert {
-                            turn,
-                            score,
-                            threshold,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::AgentProcessChanged { .. } => {}
-                // Local process supervision and scheduling traces are durable canonical audit
-                // facts. The Rust SDK does not maintain a second session-log projection for them.
-                KernelObservation::ChildSupervised { .. }
-                | KernelObservation::LocalRunnableTrace { .. } => {}
-                // W0-ABI workflow lifecycle. The rust SDK has no workflow drive yet
-                // (node/python only), so these are observed-but-ignored here.
-                KernelObservation::WorkflowBatchSpawned { turn, nodes, .. } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowBatchSpawned { turn, nodes },
-                    )
-                    .await;
-                }
-                KernelObservation::WorkflowSpawnFailed { turn, error } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowSpawnFailed { turn, error },
-                    )
-                    .await;
-                }
-                KernelObservation::WorkflowCompleted {
-                    turn,
-                    node_outcomes,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowCompleted {
-                            turn,
-                            node_outcomes,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::NodesRejected { .. } => {}
-                KernelObservation::AgentPreempted { .. } => {}
-                KernelObservation::AgentPreemptFailed { .. } => {}
-                KernelObservation::MemoryWriteFailed { .. } => {}
-                KernelObservation::MemoryQueryFailed { .. } => {}
                 // M3 · mirror the recall counts the kernel derived; the store never computes them.
                 KernelObservation::MemoryRecalled { recalls, .. } => {
                     if let (Some(store), Some(agent_id)) =
                         (&self.opts.memory_store, self.opts.agent_id.as_deref())
                     {
-                        let _ = store.record_recall(agent_id, &recalls).await;
+                        let _ = store.record_recall(agent_id, recalls).await;
                     }
                 }
-                // M4 promotion suggestions are advisory; the Rust runner has no host callback yet.
-                KernelObservation::PromotionSuggested { .. } => {}
-                // Governance flagged a tool call for user approval. The kernel does
-                // not block it; the SDK-side human-approval workflow is a follow-up.
-                KernelObservation::ToolGated { .. } => {}
-                // In-kernel signal routing decision. The rust SDK does not yet drive
-                // signals through the kernel attention policy; observation is logged
-                // by the generic observation path elsewhere if needed.
-                KernelObservation::SignalDeliveryDisposed { .. } => {}
-                KernelObservation::SignalDisplaced { .. }
-                | KernelObservation::SignalExpired { .. }
-                | KernelObservation::SignalsPending { .. } => {}
-                KernelObservation::BudgetExceeded {
-                    turn,
-                    operation_id,
-                    reservation_id,
-                    budget,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::BudgetExceeded {
-                            turn,
-                            operation_id,
-                            reservation_id,
-                            budget,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::BudgetUsageReported {
-                    operation_id,
-                    reservation_id,
-                    tokens,
-                    subagents,
-                    rounds,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::BudgetUsageReported {
-                            turn,
-                            operation_id,
-                            reservation_id,
-                            tokens,
-                            subagents,
-                            rounds,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::OperationCancelled {
-                    turn,
-                    operation_id,
-                    reason,
-                    pending_call_ids,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::OperationCancelled {
-                            turn,
-                            operation_id,
-                            reason,
-                            pending_call_ids,
-                        },
-                    )
-                    .await;
-                }
-                // §13.2 · live policy patches are not exposed through this SDK's public runner, so
-                // no host path currently produces this canonical observation.
-                KernelObservation::LivePolicyChanged { .. } => {}
-                KernelObservation::Suspended { .. }
-                | KernelObservation::ApprovalResolutionFailed { .. } => {}
-                KernelObservation::Resumed { .. } => {}
-                // R3-1: submission bookkeeping — the rust SDK has no workflow driver, so the
-                // base-index observation has no session record to enrich here.
-                KernelObservation::WorkflowNodesSubmitted {
-                    turn,
-                    base,
-                    count,
-                    submitter,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowNodesSubmitted {
-                            turn,
-                            base,
-                            count,
-                            submitter,
-                        },
-                    )
-                    .await;
-                }
-                // ③ loop-agent pacing: the rust SDK has no loop driver yet; the decision also
-                // rides LoopResult.pace_decision for embedders that want it.
-                KernelObservation::RoundPaced { .. } => {}
-                KernelObservation::MemoryWritten {
-                    turn,
-                    record_id,
-                    scope,
-                    memory_kind,
-                    name,
-                    size_bytes,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryWritten {
-                            turn,
-                            record_id,
-                            scope,
-                            memory_kind,
-                            name,
-                            size_bytes,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MemoryQueried {
-                    turn,
-                    scope,
-                    query,
-                    requested_k,
-                    requires_async_response,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryQueried {
-                            turn,
-                            scope,
-                            query,
-                            requested_k,
-                            requires_async_response,
-                        },
-                    )
-                    .await;
-                }
-                // Phase 7 / M3: no dedicated session kinds yet in rust SDK.
-                KernelObservation::MemoryValidationFailed {
-                    turn,
-                    record_id,
-                    error,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryValidationFailed {
-                            turn,
-                            record_id,
-                            error,
-                        },
-                    )
-                    .await;
-                }
-                // Rejections are already durable in the kernel transaction record. Call-specific
-                // APIs inspect the observation directly; the generic runner has no host effect.
-                KernelObservation::ControlRequestRejected { .. } => {}
-                // The runner's skill-content bookkeeping reads this from the provider resolution.
-                KernelObservation::SkillAdmitted { .. } => {}
-                KernelObservation::StepPublishedEffects { .. } => {}
-                KernelObservation::DynamicWorkflowPlanCommitted { .. } => {}
-                KernelObservation::DynamicWorkflowReplayRecorded { .. } => {}
+                _ => {}
+            }
+            // Every other observation is recorded through the shared projection, the same session
+            // event Node/Python/WASM write; one with no session kind stays a `kernel_observation`.
+            if let Some(event) =
+                kernel_observation_to_session_event(&obs, turn, &ProjectionOptions::default())
+            {
+                self.log(session_id, event).await;
             }
         }
         next_archive_start
@@ -2878,136 +2850,6 @@ impl RuntimeRunner {
         }
     }
 
-    async fn archive_semantic_page_out(&self, archived: Vec<CoreMessage>, action: Option<String>) {
-        let (Some(_store), Some(agent_id), Some(scope)) = (
-            &self.opts.memory_store,
-            &self.opts.agent_id,
-            &self.opts.memory_scope,
-        ) else {
-            return;
-        };
-
-        let summary = match self.summarize_for_long_term_memory(&archived).await {
-            Ok(s) => s,
-            Err(_) => return, // non-fatal
-        };
-
-        // P2 write-funnel: route through the ONE gated write_memory syscall so validation,
-        // the rolling write quota, dedup, and the memory_written audit all apply. Score is
-        // advisory (0.6) — an automatic summary must never outrank curated content.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let name = format!("page-out-{now}");
-        let request = MemoryRecord {
-            record_id: format!("{}:{}:project:{}", scope.tenant_id, scope.namespace, name),
-            scope: scope.clone(),
-            name,
-            kind: MemoryKind::Project,
-            content: summary,
-            description: format!(
-                "auto summary of {} archive",
-                action.as_deref().unwrap_or("compaction")
-            ),
-            provenance: MemoryProvenance {
-                session_id: self.opts.session_id.clone(),
-                author: MemoryAuthor::Extraction,
-                trust: MemoryTrustLevel::Untrusted,
-                evidence_refs: Vec::new(),
-            },
-            created_at: now,
-            updated_at: now,
-            last_recalled_at: None,
-            recall_count: 0,
-            confidence: 0.6,
-            links: Vec::new(),
-            pinned: false,
-            ttl_days: None,
-        };
-        let _ = self.write_memory(request, None, Some(agent_id)).await;
-    }
-
-    async fn summarize_for_long_term_memory(
-        &self,
-        archived: &[CoreMessage],
-    ) -> crate::Result<String> {
-        let transcript = archived
-            .iter()
-            .map(|m| {
-                let role_str = match m.role {
-                    deepstrike_core::types::message::Role::System => "system",
-                    deepstrike_core::types::message::Role::User => "user",
-                    deepstrike_core::types::message::Role::Assistant => "assistant",
-                    deepstrike_core::types::message::Role::Tool => "tool",
-                };
-                let content_str = message_content_as_text(&m.content);
-                format!("{}: {}", role_str, content_str)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let system_prompt_opt = self.opts.system_prompt.as_deref();
-        let system_text = match system_prompt_opt {
-            Some(sp) => format!(
-                "{}\n\nSummarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
-                sp
-            ),
-            None => "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.".to_string(),
-        };
-
-        let context = deepstrike_core::context::renderer::InternalRenderedContext {
-            system_text,
-            system_stable: String::new(),
-            system_knowledge: String::new(),
-            turns: vec![deepstrike_core::types::message::CoreMessage {
-                role: deepstrike_core::types::message::Role::User,
-                content: deepstrike_core::types::message::Content::Text(transcript.clone()),
-                tool_calls: vec![],
-            }],
-            state_turn: None,
-            frozen_prefix_len: None,
-            budget_overflow: None,
-        };
-
-        let synth_state = self.opts.provider.create_run_state();
-        let mut stream = self
-            .opts
-            .provider
-            .stream(&context, &[], None, synth_state.as_ref())
-            .await?;
-
-        let mut synthesis_text = String::new();
-        while let Some(evt) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta { delta }) = evt {
-                synthesis_text.push_str(&delta);
-            }
-        }
-
-        let text = synthesis_text.trim();
-        if text.is_empty() {
-            Ok(transcript.chars().take(2000).collect())
-        } else {
-            Ok(text.to_string())
-        }
-    }
-}
-
-fn message_content_as_text(content: &deepstrike_core::types::message::Content) -> String {
-    match content {
-        deepstrike_core::types::message::Content::Text(s) => s.clone(),
-        deepstrike_core::types::message::Content::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                deepstrike_core::types::message::ContentPart::Text { text } => Some(text.as_str()),
-                deepstrike_core::types::message::ContentPart::ToolResult { output, .. } => {
-                    Some(output.as_str())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
 }
 
 fn action_str_of(action: KernelPressureAction) -> String {
@@ -3047,6 +2889,26 @@ async fn kernel_action(
 ) -> Result<HostAction> {
     let mut runtime = kernel.lock().await;
     canonical_kernel_action(&mut runtime, pending_observations, event).await
+}
+
+/// Like [`kernel_action`], for transitions after which the kernel may simply wait (a spawn
+/// acknowledgement, a child completion that leaves siblings running).
+async fn kernel_maybe_action(
+    kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
+    pending_observations: &mut Vec<KernelObservation>,
+    event: serde_json::Value,
+) -> Result<Option<HostAction>> {
+    let mut runtime = kernel.lock().await;
+    let action = runtime.apply_host_event(event).await?;
+    pending_observations.extend(runtime.drain_host_observations());
+    Ok(action)
+}
+
+fn host_effect_kind(effect: &HostEffect) -> String {
+    serde_json::to_value(effect)
+        .ok()
+        .and_then(|value| value.get("kind").and_then(|kind| kind.as_str()).map(str::to_string))
+        .unwrap_or_default()
 }
 
 async fn kernel_start_agent(
@@ -3164,6 +3026,51 @@ fn pending_call_ids(action: &HostAction) -> Vec<String> {
 
 /// A record's shape — identity, scope, description — checked before it is offered to the kernel.
 /// The admission rule itself (name and content limits) is the kernel's alone.
+#[cfg(test)]
+#[path = "runner_memory_candidate_tests.rs"]
+mod memory_candidate_tests;
+
+/// The audit fact for a candidate sink's answer. Only an accepted candidate is a written record.
+fn memory_candidate_session_event(
+    turn: u32,
+    receipt: &MemoryCandidateReceipt,
+    source: MemoryCandidateSource,
+    memory: &MemoryRecord,
+) -> SessionEvent {
+    match receipt {
+        MemoryCandidateReceipt::Pending {
+            candidate_id,
+            receipt_id,
+        } => SessionEvent::MemoryCandidatePending {
+            turn,
+            candidate_id: candidate_id.clone(),
+            source: source.label().to_string(),
+            name: memory.name.clone(),
+            receipt_id: Some(receipt_id.clone()),
+        },
+        MemoryCandidateReceipt::Rejected {
+            candidate_id,
+            receipt_id,
+            reason_code,
+        } => SessionEvent::MemoryCandidateRejected {
+            turn,
+            candidate_id: candidate_id.clone(),
+            source: source.label().to_string(),
+            name: memory.name.clone(),
+            receipt_id: receipt_id.clone(),
+            reason_code: reason_code.clone(),
+        },
+        MemoryCandidateReceipt::Accepted { record_ref, .. } => SessionEvent::MemoryWritten {
+            turn,
+            record_id: record_ref.clone(),
+            scope: memory.scope.clone(),
+            memory_kind: memory.kind,
+            name: memory.name.clone(),
+            size_bytes: memory.content.len() as u32,
+        },
+    }
+}
+
 fn memory_record_shape_error(memory: &MemoryRecord) -> Option<String> {
     if memory.record_id.trim().is_empty() {
         return Some("missing required field: record_id".into());

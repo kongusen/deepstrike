@@ -50,6 +50,25 @@ async def test_memory_only_agent_does_not_require_provider():
 
 
 @pytest.mark.asyncio
+async def test_a_denied_host_write_raises_and_reaches_no_store():
+    """M4 · remember() reports the kernel's refusal instead of returning an unstored record."""
+    from deepstrike.runtime.runner import MemoryPolicy
+
+    store = InMemoryMemoryStore()
+    agent = create_agent(
+        "memory-denied",
+        runtime_binding={
+            "memory_store": store,
+            "memory_scope": MemoryScope("tenant", "default"),
+            "runtime_options": {"memory_policy": MemoryPolicy(max_name_length=3)},
+        },
+    )
+    with pytest.raises(RuntimeError, match="memory write denied"):
+        await agent.remember({"name": "too-long", "content": "should be denied"})
+    assert await agent.recall("should be denied") == []
+
+
+@pytest.mark.asyncio
 async def test_agent_delegate_requires_declared_target_and_resolves_host_agent():
     child = create_agent("child", runtime_binding={"provider": Provider()})
     parent = create_agent(

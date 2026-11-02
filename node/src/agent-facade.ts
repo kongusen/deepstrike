@@ -33,7 +33,7 @@ export interface RuntimeBinding {
   resolveAgent?: (name: string) => Agent | undefined | Promise<Agent | undefined>
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager">
 }
 
 export interface AgentRunOptions {
@@ -64,10 +64,8 @@ export interface RunResult<T = string> {
   outputValidation?: { ok: boolean; errors: string[] }
   /** Host-owned execution evidence captured for evaluation and replay. */
   evidence?: {
-    contextBinding?: unknown
     route?: unknown
     measurement?: unknown
-    artifactSet?: unknown
   }
 }
 
@@ -313,16 +311,12 @@ class AgentRuntimeImpl implements Agent {
     const started = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
     const usageEvent = [...events].reverse().find(event => event.type === "usage") as (StreamEvent & Partial<TokenUsage>) | undefined
     const output = events.filter(event => event.type === "text_delta").map(event => String((event as { delta?: unknown }).delta ?? "")).join("")
-    const prepared = [...persisted].reverse().find(entry => entry.event.kind === "context_prepared")
     const measured = [...persisted].reverse().find(entry => entry.event.kind === "prompt_measured")
     const attempt = [...persisted].reverse().find(entry => entry.event.kind === "provider_attempt")
     const runStarted = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
-    const binding = this.bindings.runtimeBinding
     const evidence = {
-      ...(prepared?.event.kind === "context_prepared" ? { contextBinding: prepared.event.preparation.binding } : {}),
       ...(attempt?.event.kind === "provider_attempt" ? { route: attempt.event.route } : runStarted?.event.kind === "run_started" && runStarted.event.route ? { route: runStarted.event.route } : {}),
       ...(measured?.event.kind === "prompt_measured" ? { measurement: measured.event.measurement } : {}),
-      ...(binding?.runtimeOptions?.artifactSetDigest ? { artifactSet: { digest: binding.runtimeOptions.artifactSetDigest } } : {}),
     }
     const outputValidation = this.declaration.outputSchema
       ? validateAgainstSchema(extractJsonValue(output), this.declaration.outputSchema as Record<string, unknown>)

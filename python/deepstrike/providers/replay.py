@@ -55,6 +55,14 @@ def openai_chat_wire_replay_fields(replay: dict[str, Any] | None) -> dict[str, A
     return fields
 
 
+
+def reasoning_replay_key(content: str, tool_calls: list[ToolCall]) -> str:
+    """The key an OpenAI-chat reasoning replay is stored under. A tool-call turn is identified by
+    its tool calls alone: the kernel may rewrite an old turn's text (narration collapse,
+    compaction) but never its calls, and a reasoning model rejects the turn if its reasoning
+    cannot be found again."""
+    return assistant_replay_key("" if tool_calls else content, tool_calls)
+
 class ReasoningReplayMixin:
     """OpenAI-compatible providers: persist reasoning_content / reasoning_details
     across tool turns as a provider-scoped replay envelope."""
@@ -65,13 +73,13 @@ class ReasoningReplayMixin:
         self._replay_fields = {}
 
     def remember_replay_fields(self, message: ModelMessage, fields: dict[str, Any]) -> None:
-        self._replay_fields[assistant_replay_key(message.content, message.tool_calls or [])] = {
+        self._replay_fields[reasoning_replay_key(message.content, message.tool_calls or [])] = {
             "protocol": "openai-chat",
             **fields,
         }
 
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
-        fields = self._replay_fields.get(assistant_replay_key(content, tool_calls))
+        fields = self._replay_fields.get(reasoning_replay_key(content, tool_calls))
         if fields and ("reasoning_content" in fields or "reasoning_details" in fields):
             return dict(fields)
         return None
@@ -103,7 +111,7 @@ class ReasoningReplayMixin:
                 continue
             if source.role == "assistant":
                 replay = self._replay_fields.get(
-                    assistant_replay_key(source.content, source.tool_calls or [])
+                    reasoning_replay_key(source.content, source.tool_calls or [])
                 )
                 wire = openai_chat_wire_replay_fields(replay)
                 if not wire and degrade_missing_reasoning and source.tool_calls:
@@ -119,11 +127,11 @@ class ReasoningReplayMixin:
 
     def assess_reasoning(self, context: RenderedContext) -> dict:
         """Raise-free pre-flight check: which assistant tool-call turns in
-        ``context`` lack the non-empty reasoning replay this provider needs."""
+        ``context`` lack the reasoning replay this provider needs."""
         return assess_reasoning_replay(
             context.turns,
             lambda content, tool_calls: self._replay_fields.get(
-                assistant_replay_key(content, tool_calls)
+                reasoning_replay_key(content, tool_calls)
             ),
         )
 
