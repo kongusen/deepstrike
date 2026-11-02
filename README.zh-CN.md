@@ -131,9 +131,9 @@ system 知识块渲染在对话之前，改它一个字节就让身后已缓存�
 
 ## 一图看懂 DeepStrike
 
-从任务执行、过程验证到评估与受控演进，Agent Process Runtime 是整套机制的执行基础。
+模型的注意力是预算，上下文是一张图：模型按需拉动，kernel 记账与准入，宿主只取字节，反馈沿边归因。
 
-![DeepStrike 的四项职责：执行、验证、评估与受控演进](./docs/public/readme/architecture-zh.svg)
+![DeepStrike 上下文图：模型驱动 · Kernel 上下文图 · 宿主 I/O · 反馈闭环](./docs/public/readme/architecture-zh.svg)
 
 一次任务如何向前推进：Intent 提交给 Kernel，获准的 Effect 由 Host 执行，Fact 返回 Kernel 驱动下一次状态转换——策略在 kernel，I/O 在宿主。
 

@@ -131,9 +131,9 @@ The first row compares before handle-shaped dependency edges; the other two comp
 
 ## DeepStrike at a glance
 
-Execution, verification, evaluation, and governed evolution build on the same Agent Process Runtime foundation.
+The model's attention is a budget; context is a graph: the model pulls on demand, the kernel admits and accounts, the host only fetches bytes, and feedback lands on items along edges.
 
-![Four connected DeepStrike responsibilities: execute, verify, evaluate, and evolve](./docs/public/readme/architecture.svg)
+![The DeepStrike context graph: model-driven · kernel context graph · host I/O · feedback loop](./docs/public/readme/architecture.svg)
 
 How work moves forward: Intent enters the Kernel, the Host executes admitted Effects, and returned Facts drive the next kernel transition — policy in the kernel, I/O in the host.
 

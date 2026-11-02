@@ -1,31 +1,102 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 775" role="img" aria-labelledby="title desc">
-<title id="title">One runtime, four connected responsibilities</title><desc id="desc">Application: agents, skills, tools, memory and workflows</desc>
+<title id="title">Others wire agents into graphs. DeepStrike wires context into one.</title><desc id="desc">Model-driven · the kernel context graph · host I/O · the feedback loop</desc>
 <g font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif">
 <rect x="0" y="0" width="1200" height="775" rx="0" fill="#111714" stroke="#111714" stroke-width="2"/>
-<text x="42" y="43" font-size="15" fill="#b9e77a">DEEPSTRIKE  /  RUNTIME NOTES  /  0.2.70</text>
-<text x="42" y="99" font-size="34" fill="#f4f1e8">One runtime, four connected responsibilities</text>
-<text x="42" y="136" font-size="19" fill="#adb9ae">Application: agents, skills, tools, memory and workflows</text>
-<rect x="42" y="177" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
-<text x="64" y="235" font-size="25" fill="#b9e77a">01  Execute</text>
-<text x="320" y="216" font-size="24" fill="#f4f1e8">Agent Process Runtime</text>
-<text x="320" y="252" font-size="20" fill="#adb9ae">Lifecycle · scheduling · capabilities · budget</text>
-<path d="M600 285 L600 298" stroke="#405348" stroke-width="3"/>
-<polygon points="600,298 595.205744613958,289.22417438109625 604.794255386042,289.22417438109625" fill="#405348"/>
-<rect x="42" y="303" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
-<text x="64" y="361" font-size="25" fill="#80d7d0">02  Verify</text>
-<text x="320" y="342" font-size="24" fill="#f4f1e8">Verifiable Runtime</text>
-<text x="320" y="378" font-size="20" fill="#adb9ae">Inspect · verify · evidence-only replay · read-only fork</text>
-<path d="M600 411 L600 424" stroke="#405348" stroke-width="3"/>
-<polygon points="600,424 595.205744613958,415.22417438109625 604.794255386042,415.22417438109625" fill="#405348"/>
-<rect x="42" y="429" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
-<text x="64" y="487" font-size="25" fill="#b8afff">03  Evaluate</text>
-<text x="320" y="468" font-size="24" fill="#f4f1e8">Evaluation context</text>
-<text x="320" y="504" font-size="20" fill="#adb9ae">Bind executed inputs to host-provided evaluation evidence</text>
-<path d="M600 537 L600 550" stroke="#405348" stroke-width="3"/>
-<polygon points="600,550 595.205744613958,541.2241743810963 604.794255386042,541.2241743810963" fill="#405348"/>
-<rect x="42" y="555" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
-<text x="64" y="613" font-size="25" fill="#ffbb85">04  Evolve</text>
-<text x="320" y="594" font-size="24" fill="#f4f1e8">EvolutionRuntime</text>
-<text x="320" y="630" font-size="20" fill="#adb9ae">Validate proposal, evaluation, promotion and activation</text>
-<text x="42" y="728" font-size="21" fill="#b9e77a">Shared Rust core + SDKs: Node.js / Python / Rust / WASM</text>
+<text x="42" y="43" font-size="15" fill="#b9e77a">DEEPSTRIKE  /  RUNTIME NOTES  /  CONTEXT GRAPH</text>
+<text x="42" y="99" font-size="34" fill="#f4f1e8">Others wire agents into graphs. We wire context into one.</text>
+<text x="42" y="136" font-size="19" fill="#adb9ae">Every item is a node — scope · form · lifetime · write authority from origin; relationships are edges</text>
+
+<rect x="42" y="170" width="270" height="452" rx="18" fill="#1c2520" stroke="#b9e77a" stroke-width="2"/>
+<text x="64" y="204" font-size="23" fill="#b9e77a">Model-driven</text>
+<text x="64" y="226" font-size="13.5" fill="#adb9ae">model pulls · kernel admits</text>
+<rect x="62" y="246" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="78" y="272" font-size="15.5" fill="#f4f1e8">skill(name)</text>
+<text x="78" y="295" font-size="12.5" fill="#adb9ae">body loads · toolset narrows</text>
+<rect x="62" y="322" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="78" y="348" font-size="15.5" fill="#f4f1e8">memory(record_id)</text>
+<text x="78" y="371" font-size="12.5" fill="#adb9ae">index line · fetch full text</text>
+<rect x="62" y="398" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="78" y="424" font-size="15.5" fill="#f4f1e8">read_result(call_id)</text>
+<text x="78" y="447" font-size="12.5" fill="#adb9ae">page back collapsed results</text>
+<rect x="62" y="474" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="78" y="500" font-size="15.5" fill="#f4f1e8">submit_workflow_nodes</text>
+<text x="78" y="523" font-size="12.5" fill="#adb9ae">submit the next batch of nodes</text>
+<text x="64" y="566" font-size="13.5" fill="#adb9ae">control flow is model capability,</text>
+<text x="64" y="586" font-size="13.5" fill="#adb9ae">not a fill-in-the-blank</text>
+
+<path d="M312 396 L334 396" stroke="#b9e77a" stroke-width="2.5"/>
+<polygon points="342,396 333,391.5 333,400.5" fill="#b9e77a"/>
+<text x="327" y="386" font-size="13" fill="#b9e77a" text-anchor="middle">admit</text>
+
+<rect x="342" y="170" width="516" height="460" rx="18" fill="#1c2520" stroke="#80d7d0" stroke-width="2"/>
+<text x="364" y="204" font-size="23" fill="#80d7d0">Kernel · the context graph</text>
+<text x="364" y="226" font-size="13.5" fill="#adb9ae">deterministic over recorded inputs · no model calls · no clocks</text>
+<text x="364" y="246" font-size="13.5" fill="#b9e77a">system knowledge changes only at compaction / renewal boundaries</text>
+
+<rect x="372" y="262" width="190" height="66" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="386" y="289" font-size="15" fill="#f4f1e8">assistant call #17</text>
+<text x="386" y="312" font-size="12" fill="#adb9ae">named audit-rule</text>
+<rect x="596" y="262" width="190" height="66" rx="10" fill="#1c2520" stroke="#b9e77a" stroke-width="1.5"/>
+<text x="610" y="289" font-size="15" fill="#f4f1e8">skill:ledger-audit</text>
+<text x="610" y="312" font-size="12" fill="#adb9ae">full text · while active</text>
+
+<rect x="372" y="352" width="190" height="66" rx="10" fill="#1c2520" stroke="#ffbb85" stroke-width="1.5"/>
+<text x="386" y="379" font-size="15" fill="#f4f1e8">tool_result #17</text>
+<text x="386" y="402" font-size="12" fill="#adb9ae">collapses to a preview</text>
+<rect x="596" y="352" width="190" height="66" rx="10" fill="#1c2520" stroke="#80d7d0" stroke-width="1.5"/>
+<text x="610" y="379" font-size="15" fill="#f4f1e8">memory:audit-rule</text>
+<text x="610" y="402" font-size="12" fill="#adb9ae">handle · 8 idle turns</text>
+
+<rect x="372" y="442" width="190" height="66" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="386" y="469" font-size="15" fill="#f4f1e8">read_result(#17)</text>
+<text x="386" y="492" font-size="12" fill="#adb9ae">the model reads back</text>
+<rect x="596" y="442" width="190" height="66" rx="10" fill="#1c2520" stroke="#ffbb85" stroke-width="1.5"/>
+<text x="610" y="469" font-size="15" fill="#f4f1e8">dep:n3 output</text>
+<text x="610" y="492" font-size="12" fill="#adb9ae">handle · this edge only</text>
+
+<rect x="372" y="522" width="190" height="66" rx="10" fill="#1c2520" stroke="#b8afff" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="386" y="549" font-size="15" fill="#f4f1e8">provider_summary</text>
+<text x="386" y="572" font-size="12" fill="#adb9ae">provider · covers 12 items</text>
+<rect x="596" y="522" width="190" height="66" rx="10" fill="#1c2520" stroke="#b9e77a" stroke-width="1.5"/>
+<text x="610" y="549" font-size="15" fill="#f4f1e8">blackboard:rules</text>
+<text x="610" y="572" font-size="12" fill="#adb9ae">workflow-wide · all agents</text>
+
+<path d="M467 352 L467 338" stroke="#adb9ae" stroke-width="2"/>
+<polygon points="467,328 462.5,337 471.5,337" fill="#adb9ae"/>
+<text x="474" y="347" font-size="12.5" fill="#adb9ae">answers</text>
+<path d="M467 442 L467 428" stroke="#adb9ae" stroke-width="2"/>
+<polygon points="467,418 462.5,427 471.5,427" fill="#adb9ae"/>
+<text x="474" y="437" font-size="12.5" fill="#adb9ae">reads_back</text>
+<path d="M562 300 C588 318 622 326 636 346" stroke="#adb9ae" stroke-width="2" fill="none"/>
+<polygon points="640,352 630.8,347.5 639,341.8" fill="#adb9ae"/>
+<text x="596" y="342" font-size="12.5" fill="#adb9ae">references · strong</text>
+<text x="600" y="606" font-size="13" fill="#adb9ae" text-anchor="middle">edges: answers · references strong/weak 4:1 · reads_back</text>
+<text x="600" y="622" font-size="13" fill="#adb9ae" text-anchor="middle">summarizes · inherited_from · depends_on</text>
+
+<path d="M858 396 L880 396" stroke="#b8afff" stroke-width="2.5"/>
+<polygon points="888,396 879,391.5 879,400.5" fill="#b8afff"/>
+<text x="873" y="386" font-size="13" fill="#b8afff" text-anchor="middle">I/O</text>
+
+<rect x="888" y="170" width="270" height="452" rx="18" fill="#1c2520" stroke="#b8afff" stroke-width="2"/>
+<text x="910" y="204" font-size="23" fill="#b8afff">Host I/O</text>
+<text x="910" y="226" font-size="13.5" fill="#adb9ae">kernel books · host fetches bytes</text>
+<rect x="908" y="246" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="924" y="272" font-size="15.5" fill="#f4f1e8">memory store</text>
+<text x="924" y="295" font-size="12.5" fill="#adb9ae">search · point lookup</text>
+<rect x="908" y="322" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="924" y="348" font-size="15.5" fill="#f4f1e8">payload store</text>
+<text x="924" y="371" font-size="12.5" fill="#adb9ae">paging · archives</text>
+<rect x="908" y="398" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="924" y="424" font-size="15.5" fill="#f4f1e8">provider</text>
+<text x="924" y="447" font-size="12.5" fill="#adb9ae">requests · estimate calibration</text>
+<rect x="908" y="474" width="230" height="64" rx="10" fill="#1c2520" stroke="#405348" stroke-width="1.5"/>
+<text x="924" y="500" font-size="15.5" fill="#f4f1e8">tools · MCP</text>
+<text x="924" y="523" font-size="12.5" fill="#adb9ae">through effect admission</text>
+<text x="910" y="566" font-size="13.5" fill="#adb9ae">side effects, separately governed:</text>
+<text x="910" y="586" font-size="13.5" fill="#adb9ae">governance · approval · sandbox</text>
+
+<rect x="42" y="646" width="1116" height="108" rx="18" fill="#1c2520" stroke="#ffbb85" stroke-width="2"/>
+<text x="64" y="686" font-size="19" fill="#ffbb85">Feedback loop — a lifecycle report for every run</text>
+<text x="64" y="716" font-size="17" fill="#f4f1e8">regret (evicted, then asked back) · waste (never referenced) · cache loss · recall hit rate — feedback lands on items</text>
+<text x="64" y="742" font-size="15" fill="#adb9ae">policy changes pass a deepstrike-lab gate — accuracy no worse · estimate error ≤ 10% · one Rust kernel · Node.js / Python / Rust / WASM</text>
 </g></svg>
