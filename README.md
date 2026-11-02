@@ -7,14 +7,14 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>Build AI assistants that do useful work, work together, and leave a record you can check.</strong>
+  <strong>An agent framework that spends attention like a budget:<br>under a finite attention budget, deciding for every piece of information its scope, form, lifetime, and write authority.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/kongusen/deepstrike/releases"><img alt="Release" src="https://img.shields.io/github/v/release/kongusen/deepstrike?sort=semver&style=for-the-badge&label=release&labelColor=111827&color=374151"></a>
   <a href="https://www.npmjs.com/package/@deepstrike/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@deepstrike/sdk?style=for-the-badge&logo=npm&logoColor=white&label=npm&labelColor=111827&color=374151"></a>
-  <a href="https://pypi.org/project/deepstrike/"><img alt="PyPI" src="https://img.shields.io/pypi/v/deepstrike?style=for-the-badge&logo=pypi&logoColor=white&label=pypi&labelColor=111827&color=374151"></a>
-  <a href="https://crates.io/crates/deepstrike-sdk"><img alt="crates.io" src="https://img.shields.io/crates/v/deepstrike-sdk?style=for-the-badge&logo=rust&logoColor=white&label=crates&labelColor=111827&color=374151"></a>
+  <a href="https://pypi.org/project/deepstrike/"><img alt="PyPI" src="https://img.shields.io/pypi/v/deepstrike?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI&labelColor=111827&color=374151"></a>
+  <a href="https://crates.io/crates/deepstrike-sdk"><img alt="crates.io" src="https://img.shields.io/crates/v/deepstrike-sdk?style=for-the-badge&logo=rust&logoColor=white&label=crates.io&labelColor=111827&color=374151"></a>
   <a href="https://discord.gg/cwS3RBYCv"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=111827"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT%20%2B%20Commercial-374151?style=for-the-badge&labelColor=111827"></a>
 </p>
@@ -28,9 +28,97 @@
 
 ---
 
-DeepStrike helps developers build AI assistants that work through real tasks: gather information, use tools, remember project context, coordinate with other assistants, and ask for approval when needed.
+DeepStrike helps developers build AI assistants that carry real work over long tasks: gathering information, using tools, remembering project context, dividing work between assistants, and waiting for approval when needed. What sets it apart is its answer to the question every other framework waves off: **what exactly should the model see on each turn?**
 
-You connect the models, data, tools, and rules for your application. DeepStrike provides the framework for running the work, controlling what each assistant can do, keeping execution records, and recovering interrupted tasks when durable storage is configured.
+## The problem we found: agents don't fail at reasoning — they fail at attention
+
+When a forty-turn task fails, it is rarely because the model cannot think. It is because by turn 40, it is looking at the wrong things:
+
+- memory injected in full on turn 1, then left behind as the task drifted;
+- a skill body squatting in the window long after the task needed it;
+- tool results stacking up until something overflows and gets truncated arbitrarily;
+- ten parallel nodes inlining their full outputs, so the downstream node's first call grows with its fan-in;
+- one mid-task knowledge insert invalidating the entire cached conversation prefix behind it.
+
+What a model can see each turn is finite. Memory, skills, tool results, dependency outputs, summaries — they all compete for the same **attention budget**. Most frameworks treat context as a **log**: append, append, append, truncate when full.
+
+Before building 0.2.78 we audited our own framework against its code, and grouped what we found into five failures:
+
+| Failure | What we verified in the code |
+| --- | --- |
+| **No first-class lifecycle** | Memory prefetch logic was written once per SDK runner (~15k lines combined); recall, skills, dependency outputs and tool results each took their own path — no single answer to "where does it live, how long, in what form" |
+| **The cache lied** | Knowledge rendered ahead of the turns, so one mid-run append invalidated the whole cached history behind it — a code comment even called this "the cheap direction"; delegate compaction to the provider, and the context the model saw was no longer the one the kernel budgeted against |
+| **Relevance by word overlap** | Common words tied any note to any conversation: unrelated content never counted as waste, and worth-keeping content got evicted |
+| **Orchestration unconstrained by context** | DAG edges were string concatenation cut at character counts; plan/implement sub-agents inherited the parent transcript by default; three parallel paths existed for dynamic orchestration |
+| **No feedback** | Evict a piece of knowledge and never learn whether that was wrong; inject a memory and never learn it was wasted; nobody accounted for cache lost mid-run |
+
+## Our answer: a contract for every piece of information
+
+> **Under a finite attention budget, decide for every piece of information its scope (who may see it), its form (full text, a summary, or a one-line handle), its lifetime (how long it lives and which event ends it), and its write authority (who may change or remove it) — and let results correct those decisions.**
+
+This is not a slogan. It is the kernel's data structure.
+
+### One context object: the ContextItem
+
+There is only one kind of thing in context: an item. Memory index lines, skill bodies, host reference material, tool results, dependency outputs, orchestration shared state, provider summaries — all the same object. Its five attributes are not set ad hoc by callers; they are looked up from one table by **origin**. Origin is the contract.
+
+| Origin | Scope | Form | Lifetime | Write authority |
+| --- | --- | --- | --- | --- |
+| System identity | this operation | full | permanent | kernel |
+| Memory index line `memory:<id>` | this session | handle | 8 turns without a reference | host |
+| Skill body `skill:<name>` | this task | full | until the skill deactivates — pinned or not | model |
+| Host reference | this operation | full | permanent (pinnable) | host |
+| Orchestration state `blackboard:<key>` | this workflow | full | permanent (phase-scoped entries leave with their phase) | host |
+| Tool result | this task | full, collapsible/pageable | governed by the compression pipeline | host |
+| Dependency output | this edge only | handle | permanent | kernel |
+| Provider summary | this operation | full | permanent | provider |
+
+So: a recalled memory line lives eight turns from its last reference; a skill body leaves when the skill is deactivated — a host trying to remove it mid-activation is refused outright; a dependency output belongs to its downstream node alone; a provider summary can only be written by the provider.
+
+### Policy in the kernel, I/O in the host
+
+"Where, in what form, for how long" is decided once, in the kernel — a deterministic state machine over recorded inputs that never calls a model and never reads a clock, and replays byte-for-byte after a crash from its journal and checkpoints. Hosts only fetch bytes: run a search, read the payload store, make a request.
+
+### Boundaries and the cache invariant
+
+The system knowledge block renders ahead of the turns; change one byte of it and the whole cached conversation behind it is invalidated. So the kernel rewrites it only at two kinds of **boundary** (compaction, renewal); every other change — expiry, removal, same-key update — is merely marked and lands at the next boundary. Knowledge arriving mid-run stages in the state turn, at a counted cache cost. Compaction itself escalates through tiers (truncate → collapse tool results → archive by utility → summarize → renew), and re-anchors the cache only when a pass actually breaks the prefix.
+
+### Progressive loading everywhere
+
+| Content | Resident form | Expanded on demand |
+| --- | --- | --- |
+| Memory | one index line `[MEMORY record_id=… kind=… trust=…] description` | `memory(record_id=…)` point lookup of the full record |
+| Dependency output | a 600-character preview | `read_result("dep:<node>")`, answered by the kernel itself |
+| Tool result | collapsed to a preview under pressure, or paged out | `read_result(call_id)` pages it back in |
+| Skill | catalog metadata only | the body loads on activation, and the toolset narrows with it |
+
+Every expansion path is limited to content the caller already holds an address for — it can never become a general-purpose read primitive.
+
+### Graded evidence and a feedback loop
+
+References are not counted by word overlap: naming a key, passing a record id in tool arguments, or calling `memory(record_id)` is **strong** evidence; bare lexical overlap is weak (retention scoring weighs them 4:1). Every run ends with a lifecycle report: which knowledge was never referenced (waste), what was evicted and then requested again (regret), how many cached tokens a mid-run promotion spent (cache loss), and the recall hit rate. Policy stops being guesswork — `deepstrike-lab report / gate` compares policy variants on real benchmarks, and a change that fails its gate does not land.
+
+### One truth about what the model sees
+
+- The provider compacted or cleared context server-side? The kernel absorbs it as a fact: covered history becomes a `provider_summary` item, cleared tool results degrade to handles — pressure, utility and renewal now reason over exactly what the model sees.
+- Reasoning replay is held by the kernel alongside its item: after narration collapse, compaction, or renewal, it still renders back, verbatim.
+- Token estimates are calibrated per request against the provider's own counts — raised, never lowered.
+
+### Orchestration built on the same semantics
+
+A dynamic workflow is a host program plus kernel admission: loops, branches and parallelism live in the program (`ctx.agent / parallelAgents / phase`), and each batch lowers to a canonical DAG the kernel admits under governance. Shared state between the program and its agents is not closure variables pasted into prompts — `ctx.blackboard` writes context items that every agent spawned afterwards starts with, whatever its inheritance setting. Edges default to handles (preview plus on-demand full text), so a node's starting context no longer grows with fan-in. What a child agent inherits is decided by item scope, not convention.
+
+## Measured results
+
+From `deepstrike-lab` and two live-model benchmarks (DeepSeek `deepseek-flash`):
+
+| Metric | Before | After |
+| --- | --- | --- |
+| fan-out → synthesis, downstream first call ¹ | 48.5k chars | **4.5k chars (−91%)**, full text still readable via `read_result` |
+| Answer accuracy (24 questions) ² | 24/24 | 24/24 (no regression) |
+| Kernel estimate vs provider-reported tokens (size-weighted) ² | 11.6% | **0.7%** |
+
+¹ Against the pre-context-lifecycle kernel. ² 0.2.79 → 0.2.80. All three gates (accuracy no worse, weighted estimate error ≤ 10%) passed; the measurement harness and results live in `benchmark/context-lifecycle/`.
 
 ## DeepStrike at a glance
 
@@ -38,57 +126,23 @@ Execution, verification, evaluation, and governed evolution build on the same Ag
 
 ![Four connected DeepStrike responsibilities: execute, verify, evaluate, and evolve](./docs/public/readme/architecture.svg)
 
+How work moves forward: Intent enters the Kernel, the Host executes admitted Effects, and returned Facts drive the next kernel transition — policy in the kernel, I/O in the host.
+
+![Animated execution loop: Intent → Kernel → Effect → Host → Fact](./docs/public/readme/execution.gif)
+
 ## What can you build?
 
 | Application | A task you could give it | How DeepStrike helps |
 | --- | --- | --- |
 | **Research assistant** | “Compare these three vendors and prepare a recommendation.” | Connect search and document tools, divide the research, review the findings, and assemble a report with source references. |
 | **Project knowledge assistant** | “Continue our proposal using the requirements we agreed on last time.” | Connect project documents and persistent memory so relevant information can be retrieved across tasks. |
-| **Writing and review team** | “Turn this brief into a draft, then check facts and style.” | Give separate assistants research, writing, and review roles, with a defined sequence and revision limits. |
 | **Development assistant** | “Investigate this bug, propose a fix, and run the checks.” | Connect repository and development tools, isolate delegated work, and control which actions need approval. |
 | **Business workflow assistant** | “Group these customer issues, draft replies, and wait for approval before sending.” | Connect your business APIs, pass work between steps, and pause at approval points. |
 | **Recurring reporting assistant** | “Prepare a briefing from the latest project updates.” | Let your application trigger the task on a schedule, gather information through connected tools, and retain records for follow-up. |
 
 These are applications you can build with the framework. Search, email, databases, scheduling, and other external services are supplied by your application through tools, MCP integrations, or custom adapters.
 
-## Example: a weekly research report
-
-Suppose you want a weekly report about changes in your industry. Your application could define this workflow:
-
-1. **Read the brief.** Load the topics, sources, and output format for this project.
-2. **Gather information.** Use connected search and document tools. Split independent topics between assistants when useful.
-3. **Review the draft.** Run your checks or a review assistant to flag missing sources and unanswered questions.
-4. **Ask when needed.** Pause for a person's approval before an action you have marked as sensitive.
-5. **Deliver and retain the work.** Save the report and execution records. With durable storage, an interrupted task can resume from recorded runtime state.
-
-You choose the tools and the review criteria. The framework manages the task flow, delegation, limits, and records around them. The [example curriculum](./example/README.md) builds up from sourced Q&A to a multi-assistant editorial workflow in eight runnable levels.
-
-### How work moves forward
-
-![Animated execution loop: Intent enters the Kernel, the Host executes admitted Effects, and returned Facts drive the next kernel transition](./docs/public/readme/execution.gif)
-
-[View the static diagram](./docs/public/readme/execution.svg). This is a conceptual runtime sequence. The host reports intent and external facts; the kernel owns admission, decisions, and state transitions. A model's tool request still passes through execution controls.
-
-## What the framework takes care of
-
-- **Tools and integrations.** Give assistants access to files, services, and MCP servers through a controlled execution boundary.
-- **Reusable expertise.** Package specialized instructions and tool guidance as skills that can be loaded when needed.
-- **Project memory.** Connect a persistent memory store and define what may be recalled or written.
-- **Teamwork.** Run assistants in parallel, pass results to the next step, and set clear responsibilities.
-- **Longer tasks.** Manage growing context, compress older material, and page large tool results as work continues.
-- **Control.** Set permissions, budgets, deadlines, approval points, and cancellation rules.
-- **Recovery and inspection.** Persist runtime state for recovery and keep evidence that helps explain what happened.
-
-You can begin with one assistant and a few tools, then add the mechanisms your application needs. Model and integration availability varies by SDK.
-
-## Get started
-
-Choose an SDK: [Node.js](./node/README.md) · [Python](./python/README.md) · [Rust](./rust/README.md) · [WASM](./wasm/README.md).
-
-For a first application, follow [Hello Agent](./docs/en/getting-started/hello-agent.md). To explore without provider credentials, use the examples' `--dry-run` mode.
-
-<details>
-<summary>Developer example: an assistant with a tool and a local execution log</summary>
+## Example: an assistant with a tool
 
 Install the Node.js SDK and choose a model available to your account:
 
@@ -128,9 +182,19 @@ const result = await agent.run("What is 17 + 28?")
 console.log(result.output)
 ```
 
-The Agent facade provides in-memory sessions by default. Configure a durable session store when recovery must survive process restarts; retain the payloads and other host data your tools and integrations require.
+The Agent facade provides in-memory sessions by default. Configure a durable session store when recovery must survive process restarts; retain the payloads and other host data your tools and integrations require. To explore without provider credentials, use the examples' `--dry-run` mode; the [example curriculum](./example/README.md) builds from sourced Q&A to a multi-assistant editorial workflow in eight runnable levels.
 
-</details>
+## What the framework takes care of
+
+- **Tools and integrations.** Files, services, and MCP servers behind a controlled execution boundary; side effects constrained by a separate admission line (governance, approval, sandbox, quotas).
+- **Reusable expertise.** Skill catalogs stay resident, bodies load on activation, the toolset narrows with them, and deactivation releases the space.
+- **Project memory.** Kernel-issued recall and re-recall, index lines first with on-demand expansion; writes go through an attested candidate ledger that rejects duplicates and unauthorized writes.
+- **Teamwork.** Dynamic workflows, handle-shaped dependency edges, a blackboard that is itself context — orchestration no longer blows up the context it runs on.
+- **Longer tasks.** Item-level compression tiers, tool-result collapse and paging, renewal at the threshold — with the cache prefix defended throughout.
+- **Control.** Permissions, budgets, deadlines, approval points, and cancellation rules.
+- **Recovery and inspection.** Deterministic replay from journal + checkpoints; a lifecycle report that records, item by item, what was injected, referenced, and why it left.
+
+Start with one assistant and a few tools, then add the mechanisms your application needs. Model and integration availability varies by SDK. SDKs: [Node.js](./node/README.md) · [Python](./python/README.md) · [Rust](./rust/README.md) · [WASM](./wasm/README.md).
 
 ## What to plan for
 
@@ -138,7 +202,7 @@ DeepStrike is a framework you integrate into an application. You provide model a
 
 The task scheduler runs locally. Connecting remote tools does not provide a distributed worker system. Actions that affect an external system may be retried, so integrations should prevent duplicate side effects where necessary.
 
-**Upgrading to 0.2.70:** upgrade the kernel and SDK bindings together and start new operations. Earlier saved runtime records and removed APIs have no automatic migration path. See [CHANGELOG.md](./CHANGELOG.md).
+**Upgrading to 0.2.78 and later:** upgrade the kernel and SDK bindings together, and finish or abandon in-flight operations first — journals and checkpoints written by 0.2.77 or earlier cannot be restored. Per-version migration notes live in [MIGRATION-*.md](./MIGRATION-0.2.77-to-0.2.78.md); see [CHANGELOG.md](./CHANGELOG.md) for the full history.
 
 ## Go deeper
 

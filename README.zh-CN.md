@@ -7,14 +7,14 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>让 AI 助手能做事、能协作，工作过程可检查、改进有依据。</strong>
+  <strong>把上下文当预算来花的 Agent 框架：<br>在有限的注意力预算下，为每一条信息决定它的作用域、形态、寿命和写入权。</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/kongusen/deepstrike/releases"><img alt="Release" src="https://img.shields.io/github/v/release/kongusen/deepstrike?sort=semver&style=for-the-badge&label=release&labelColor=111827&color=374151"></a>
   <a href="https://www.npmjs.com/package/@deepstrike/sdk"><img alt="npm" src="https://img.shields.io/npm/v/@deepstrike/sdk?style=for-the-badge&logo=npm&logoColor=white&label=npm&labelColor=111827&color=374151"></a>
-  <a href="https://pypi.org/project/deepstrike/"><img alt="PyPI" src="https://img.shields.io/pypi/v/deepstrike?style=for-the-badge&logo=pypi&logoColor=white&label=pypi&labelColor=111827&color=374151"></a>
-  <a href="https://crates.io/crates/deepstrike-sdk"><img alt="crates.io" src="https://img.shields.io/crates/v/deepstrike-sdk?style=for-the-badge&logo=rust&logoColor=white&label=crates&labelColor=111827&color=374151"></a>
+  <a href="https://pypi.org/project/deepstrike/"><img alt="PyPI" src="https://img.shields.io/pypi/v/deepstrike?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI&labelColor=111827&color=374151"></a>
+  <a href="https://crates.io/crates/deepstrike-sdk"><img alt="crates.io" src="https://img.shields.io/crates/v/deepstrike-sdk?style=for-the-badge&logo=rust&logoColor=white&label=crates.io&labelColor=111827&color=374151"></a>
   <a href="https://discord.gg/cwS3RBYCv"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=for-the-badge&logo=discord&logoColor=white&labelColor=111827"></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT%20%2B%20Commercial-374151?style=for-the-badge&labelColor=111827"></a>
 </p>
@@ -28,9 +28,97 @@
 
 ---
 
-DeepStrike 帮助开发者搭建能完成实际任务的 AI 助手。它可以查资料、调用工具、记住项目背景、与其他助手分工，并在需要时等待人的确认。
+DeepStrike 帮开发者搭建能完成真实长任务的 AI 助手：查资料、用工具、记住项目背景、多助手分工、需要时等审批。它区别于其他框架的，是它对"模型每一轮到底该看见什么"这件事给出了系统性的答案。
 
-你为应用接入模型、资料、工具和工作规则，DeepStrike 负责组织任务执行、限制助手的权限、保留执行记录，并在配置持久化存储后支持中断恢复。
+## 我们先发现了问题：Agent 不是败在推理，是败在注意力
+
+一个跑了几十轮的长任务失败，很少是因为模型不会想——更多时候是因为到第 40 轮，它看见的东西已经不对了：
+
+- 记忆在第 1 轮全文注入，之后任务漂移了也无人过问；
+- 技能正文加载后一直占着窗口，任务早就不需要它了；
+- 工具结果一层层堆高，直到溢出，被任意截断；
+- 十个并行节点的输出全文内联，下游第一个调用的上下文随扇入宽度线性膨胀；
+- 任务中途注入一条知识，身后整段已缓存的对话前缀全部作废。
+
+模型每一轮能"看见"的内容是有限的。记忆、技能、工具结果、依赖输出、摘要——都在竞争同一份**注意力预算**。而大多数框架把上下文当**日志**用：追加、追加、追加，满了截断。
+
+构建 0.2.78 之前，我们对照代码逐条审计了自己的框架，把发现的问题归为五类：
+
+| 问题 | 我们在代码里核实到的 |
+| --- | --- |
+| **生命周期没有一等对象** | 记忆预取逻辑在四个 SDK 的 runner 里各写一遍（合计约 1.5 万行）；recall、skill、依赖输出、工具结果各走各的路径——"放哪、留多久、什么形态"没有统一答案 |
+| **缓存在说谎** | 知识块渲染在对话轮之前，运行中追加一条就让身后整段已缓存 history 作废，代码注释还称之为 "cheap direction"；把压缩下放给 provider 后，模型实际看到的上下文和 kernel 用来计算压力的又不是同一份 |
+| **相关性只靠词法重叠** | 常见词能把任何笔记"关联"到任何对话：无关内容不计入浪费，该留的反被误杀 |
+| **编排不受上下文约束** | DAG 边靠字符串拼接、按字符截断；plan/implement 子 agent 默认继承父对话全文；动态编排同时存在三条并行路径 |
+| **没有反馈** | 淘汰一条知识，不知道淘汰错了没有；注入一条记忆，不知道白费了没有；缓存损失了多少 token，无人记账 |
+
+## 我们的答案：给每条信息一份契约
+
+> **在有限的注意力预算下，为每一条信息决定它的作用域（谁能看见它）、形态（以全文、摘要还是一行句柄呈现）、寿命（活到什么时候、由什么事件终结）和写入权（谁能改它、谁能删它），并让这些决定能被结果修正。**
+
+这不是一句口号——它是 kernel 的数据结构。
+
+### 一种内容对象：ContextItem
+
+上下文里只有一种东西：item。记忆索引行、技能正文、宿主资料、工具结果、依赖输出、编排共享状态、provider 摘要，全是同一种对象。它的五个属性不由调用方随手指定，而是由**来源**从一张表里查出来：来源即契约。
+
+| 来源 | 作用域 | 形态 | 寿命 | 写入权 |
+| --- | --- | --- | --- | --- |
+| 系统身份 | 本 operation | 全文 | 永久 | kernel |
+| 记忆索引行 `memory:<id>` | 本 session | 句柄 | 8 轮未被引用即离场 | host |
+| 技能正文 `skill:<name>` | 本 task | 全文 | 直到技能停用——钉住也一样 | model |
+| 宿主资料 | 本 operation | 全文 | 永久（可 pin） | host |
+| 编排共享状态 `blackboard:<key>` | 本 workflow | 全文 | 永久（phase 级条目随 phase 结束） | host |
+| 工具结果 | 本 task | 全文，可折叠/换页 | 随压缩管线 | host |
+| 依赖输出 | 仅这条边 | 句柄 | 永久 | kernel |
+| provider 摘要 | 本 operation | 全文 | 永久 | provider |
+
+于是：一行记忆索引从最近一次被引用起只活 8 轮；一条技能正文随技能停用离开，宿主想在激活期间删它会被整条拒绝；一条依赖输出只属于它的下游节点；一条 provider 摘要只有 provider 能改。
+
+### 策略在 kernel，I/O 在宿主
+
+"放哪、什么形态、留多久"只在 kernel 写一次。kernel 是已记录输入上的确定状态机：不调模型、不读时钟，崩溃后靠 journal + checkpoint 确定性重放。宿主只负责取回正文——跑一次检索、读一次 payload store、发一次请求。
+
+### 边界与缓存不变式
+
+system 知识块渲染在对话之前，改它一个字节就让身后已缓存的整段对话作废。所以 kernel 只在两类**边界**（压缩、换气 renewal）重写它；其余一切变更——到期、删除、同 key 更新——都只是标记，到边界才生效。运行中途到达的知识先进 state turn，缓存代价可算；压缩本身分级递进（截断 → 工具结果折叠 → 按效用归档 → 摘要 → 换气），且只在真正破坏缓存前缀时才重锚。
+
+### 一律渐进加载
+
+| 内容 | 常驻形态 | 按需展开 |
+| --- | --- | --- |
+| 记忆 | 一行索引 `[MEMORY record_id=… kind=… trust=…] 描述` | `memory(record_id=…)` 点查全文 |
+| 依赖输出 | 600 字符预览 | `read_result("dep:<node>")`，kernel 直接作答 |
+| 工具结果 | 压力升高时折叠为预览、或换页出窗 | `read_result(call_id)` 换页回读 |
+| 技能 | 目录里只有元数据 | 激活时才载入正文，工具集随之收窄 |
+
+每条展开路径都被限制在"调用者已持有地址"的内容上——它永远成不了通用读原语。
+
+### 证据分级与反馈闭环
+
+引用不再数"词重叠"：模型点名 key、在工具参数里传记录 id、显式 `memory(record_id)` 是**强引用**，纯词法只算弱引用（留任打分按 4:1）。每个 run 结束输出生命周期报告：哪些知识从未被引用（waste）、哪些淘汰后又被打了回来（regret）、多少 token 的缓存被中途提升牺牲（cache loss）、recall 命中率多少。策略不再靠拍脑袋——`deepstrike-lab report / gate` 用真实基准对比策略变体，gate 不过不合入。
+
+### 一份真相：模型看见什么，kernel 就记账什么
+
+- provider 在服务端压缩、清理了上下文？kernel 把它作为 fact 吸收：被覆盖的历史变成一个 `provider_summary` item，被清理的工具结果降级为句柄——此后压力、效用、换气判据全部基于模型实际可见的内容。
+- reasoning 回放由 kernel 随 item 持有：叙述被折叠、压缩、换气之后，依然原样渲染回去。
+- token 估算按 provider 实测逐请求校准，只抬高不压低。
+
+### 编排建在同一套语义上
+
+动态工作流 = 宿主程序 + kernel 准入：循环、分支、并行写在程序里（`ctx.agent / parallelAgents / phase`），每批请求降为 canonical DAG 由 kernel 审批治理。程序与它运行的 agent 之间共享状态，不靠闭包变量拼 prompt——`ctx.blackboard` 写的就是 context item，此后派生的每个 agent 无论继承设置如何都能拿到；节点间的边默认是句柄（预览 + 按需全文），下游初始上下文不再随扇入膨胀；子 agent 继承什么，由 item 的作用域决定，而不是约定。
+
+## 实测结果
+
+来自 `deepstrike-lab` 与两个真实模型基准（DeepSeek `deepseek-flash`）：
+
+| 指标 | 之前 | 之后 |
+| --- | --- | --- |
+| fan-out → 汇总，下游首个调用 ¹ | 48.5k 字符 | **4.5k 字符（−91%）**，全文仍可 `read_result` 读回 |
+| 答题正确率（24 题） ² | 24/24 | 24/24（不降） |
+| kernel 估算 vs provider 实测误差（按请求大小加权） ² | 11.6% | **0.7%** |
+
+¹ 对比上下文生命周期改造前的内核。² 0.2.79 → 0.2.80 对比。三组 gate（正确率不降、加权估算误差 ≤10%）全部通过；测量脚本与结果见 `benchmark/context-lifecycle/`。
 
 ## 一图看懂 DeepStrike
 
@@ -38,46 +126,31 @@ DeepStrike 帮助开发者搭建能完成实际任务的 AI 助手。它可以�
 
 ![DeepStrike 的四项职责：执行、验证、评估与受控演进](./docs/public/readme/architecture-zh.svg)
 
+一次任务如何向前推进：Intent 提交给 Kernel，获准的 Effect 由 Host 执行，Fact 返回 Kernel 驱动下一次状态转换——策略在 kernel，I/O 在宿主。
+
+![运行流程动图：Intent → Kernel → Effect → Host → Fact](./docs/public/readme/execution-zh.gif)
+
 ## 你可以用它做什么
 
 | 你想搭建的应用 | 可以交给它的任务 | DeepStrike 如何帮助你实现 |
 | --- | --- | --- |
 | **研究与资料整理助手** | “比较这三家供应商，整理差异并给出建议。” | 接入搜索和文档工具，分工调研、复核发现，再汇总成带来源的报告。 |
 | **项目知识助手** | “根据上次确定的要求，继续完善这份方案。” | 接入项目文档和持久记忆，让助手在后续任务中检索相关背景。 |
-| **写作与审稿团队** | “按这份需求写初稿，再检查事实和表达。” | 分配研究、写作、审稿角色，设定交接顺序和修改次数。 |
 | **研发协作助手** | “调查这个 bug，提出修改并运行检查。” | 接入代码仓库与开发工具，隔离委托任务，并控制哪些操作需要审批。 |
 | **业务流程助手** | “归类这些客户问题，生成回复草稿，批准后再发送。” | 接入业务接口，把工作传给下一步骤，在审批节点暂停。 |
 | **日报与简报助手** | “根据最新项目进展，准备一份简报。” | 由你的应用定时触发任务，通过已接入的工具收集信息，并保留后续跟进需要的记录。 |
 
 这些是可以用框架搭建的应用。搜索、邮件、数据库、定时触发等外部能力，需要由你的应用通过工具、MCP 集成或自定义适配器接入。
 
-## 举个例子：研究助理如何完成一份周报
-
-假设你每周需要一份行业动态报告，可以把工作安排成下面的流程。
-
-1. **读取任务要求。** 加载项目关心的主题、资料来源和报告格式。
-2. **收集资料。** 使用已接入的搜索与文档工具；独立的主题可以交给不同助手并行研究。
-3. **复核初稿。** 用你设定的检查规则或审稿助手，找出缺少来源、尚未回答的问题。
-4. **需要时请人确认。** 在你标记为敏感的操作前暂停，等待审批。
-5. **交付并保留过程。** 保存报告与执行记录；配置持久化存储后，中断的任务可以根据已记录的运行状态继续。
-
-你决定使用哪些工具、按照什么标准审查。框架负责这些工作之间的调度、分工、限制和记录。[示例课程](./example/README.md) 用八个可运行等级，从带来源的问答逐步搭建到多个助手协作的编辑流程。
-
-### 一次任务如何向前推进
-
-![运行流程动图：Intent 提交给 Kernel，获准的 Effect 由 Host 执行，Fact 返回 Kernel 驱动下一次状态转换](./docs/public/readme/execution-zh.gif)
-
-[查看静态流程图](./docs/public/readme/execution-zh.svg)。这是运行机制示意。Host 提交意图和外部事实，Kernel 负责准入、决策与状态转换；模型提出的工具调用仍需经过执行控制。
-
 ## 框架替你处理哪些工作
 
-- **接入工具。** 让助手在受控边界内使用文件、外部服务和 MCP Server。
-- **复用专业能力。** 把专门的工作指引和工具说明整理成 Skill，任务需要时再加载。
-- **保留项目记忆。** 接入持久记忆存储，规定哪些信息可以被召回和写入。
-- **安排分工。** 让多个助手并行工作、交接结果，并各自承担明确职责。
-- **支持较长任务。** 管理不断增长的上下文，压缩较早的内容，对大型工具结果分页处理。
-- **控制执行。** 设置权限、预算、时限、审批节点和取消规则。
-- **恢复和检查。** 保存用于恢复的运行状态，以及帮助解释执行过程的证据。
+- **接入工具。** 让助手在受控边界内使用文件、外部服务和 MCP Server；副作用由独立的 effect 准入线约束（治理、审批、沙箱、配额）。
+- **按需专业技能。** Skill 目录常驻、正文激活时才载入，工具集随之收窄，停用即离场。
+- **项目记忆。** kernel 发起召回与续召，索引行先行、按需展开；写入走带校验的候选账本，杜绝重复与越权。
+- **分工协作。** 动态工作流、句柄化的依赖边、作为 item 的 blackboard——编排本身不再撑爆上下文。
+- **长任务。** item 级压缩阶梯、工具结果折叠与换页、到阈值换气续跑，全程守住缓存前缀。
+- **控制执行。** 权限、预算、时限、审批节点和取消规则。
+- **恢复和检查。** journal + checkpoint 确定性重放；生命周期报告逐 item 记录注入、引用、离开与原因。
 
 可以从一个助手和几个工具开始，按应用需要增加能力。各 SDK 支持的模型和集成范围有所不同。
 
@@ -93,7 +166,7 @@ DeepStrike 帮助开发者搭建能完成实际任务的 AI 助手。它可以�
 安装 Node.js SDK，选择你的模型账户可用的模型。
 
 ```bash
-npm install @deepstrike/sdk@0.2.70
+npm install @deepstrike/sdk@0.2.80
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="your-model-id"
 ```
@@ -119,7 +192,8 @@ const add = tool("add", "Add two numbers.", {
 
 const agent = createAgent({
   name: "math",
-  provider: new OpenAIResponsesProvider(apiKey, model),
+  model: `openai/${model}`,
+  runtimeBinding: { provider: new OpenAIResponsesProvider(apiKey, model) },
   tools: [add],
 })
 
@@ -137,7 +211,7 @@ DeepStrike 是供开发者接入应用的框架。你需要提供模型访问、
 
 任务调度器在本地运行，接入远程工具不等于获得分布式 worker 系统。影响外部系统的操作可能被重试，集成时应按需避免重复产生副作用。
 
-**升级到 0.2.70 时：** Kernel 与 SDK bindings 需要一起升级，并创建新 operation。旧运行记录和已移除的 API 没有自动迁移路径，详见 [CHANGELOG.md](./CHANGELOG.md)。
+**升级到 0.2.78 及之后版本时：** Kernel 与 SDK bindings 需要一起升级，先结束或放弃在途任务再升级——0.2.77 及更早版本写下的 journal 与 checkpoint 无法恢复。逐版本迁移说明见 [MIGRATION-*.md](./MIGRATION-0.2.77-to-0.2.78.md)，变更明细见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 继续了解
 
