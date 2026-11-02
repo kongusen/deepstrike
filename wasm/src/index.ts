@@ -192,3 +192,16 @@ export { memoryFetchRecall } from "./memory/recall-projection.js"
 export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./memory/candidate-sink.js"
 export { resolveMemoryRuntimePolicy } from "./memory/runtime-policy.js"
 export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./memory/runtime-policy.js"
+export {
+  DynamicWorkflowContextImpl,
+  DynamicWorkflowLimitError,
+  dynamicAgentTask,
+  type DynamicWorkflowAgentOptions,
+  type DynamicWorkflowAgentRequest,
+  type DynamicWorkflowAgentResult,
+  type DynamicWorkflowBlackboard,
+  type DynamicWorkflowContext,
+  type DynamicWorkflowLimits,
+  type DynamicWorkflowProgress,
+  type DynamicWorkflowRun,
+} from "./runtime/dynamic-workflow.js"

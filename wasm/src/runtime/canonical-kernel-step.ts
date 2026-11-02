@@ -1068,6 +1068,38 @@ export class CanonicalRunnerRuntime {
     return action
   }
 
+  /** Plan task 6.3 · open a dynamic workflow root: the host program appends nodes to it. */
+  async startDynamicWorkflow(): Promise<KernelRunnerAction | null> {
+    await this.ensureConfigured()
+    const action = await this.commit({
+      kind: "start_operation",
+      entry: { kind: "dynamic_workflow" },
+      initial_context: this.initialContext,
+    })
+    this.started = true
+    this.workflowNodeCount = 0
+    return action
+  }
+
+  /** Append host-program nodes to the active dynamic workflow root. */
+  async appendWorkflowNodes(specValue: Record<string, unknown>, plan?: Record<string, unknown>): Promise<KernelRunnerAction | null> {
+    await this.ensureConfigured()
+    if (!this.started) throw new Error("cannot append dynamic workflow nodes before operation start")
+    return this.commit({
+      kind: "host_control",
+      command: {
+        kind: "append_workflow_nodes",
+        nodes: canonicalWorkflowSpec(specValue, true, this.appendBase()).nodes,
+        ...(plan ? { plan } : {}),
+      },
+    })
+  }
+
+  /** Close the dynamic workflow root so the kernel commits its terminal. */
+  async completeDynamicWorkflow(): Promise<KernelRunnerAction | null> {
+    return this.commit({ kind: "host_control", command: { kind: "complete_dynamic_workflow" } })
+  }
+
   private appendBase(): WorkflowNodeIdBase {
     return this.workflowNodeCount ?? `wf-append-${crypto.randomUUID().slice(0, 8)}`
   }
