@@ -251,6 +251,11 @@ pub enum SessionEvent {
         /// History items by origin: admitted, still in history at the end, read back.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         history: Vec<crate::context::item::OriginTally>,
+        /// The latest history items one by one (capped); older ones are only counted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        history_items: Vec<crate::context::item::HistoryItemRecord>,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        history_items_omitted: u32,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

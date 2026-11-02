@@ -1039,7 +1039,7 @@ impl LoopStateMachine {
             let tokens = self.message_tokens(&msg);
             self.ctx.push_history(msg, tokens);
         }
-        self.session_history_baseline = self.ctx.partitions.history.messages.len();
+        self.session_history_baseline = self.ctx.partitions.history.len();
     }
 
     /// Continue from preloaded history without appending a new user turn.
@@ -1059,7 +1059,7 @@ impl LoopStateMachine {
     pub fn resume_after_preload(&mut self) -> LoopAction {
         self.observations.clear();
         let mut calls = crate::runtime::repair::pending_tool_calls_from_messages(
-            &self.ctx.partitions.history.messages,
+            self.ctx.partitions.history.messages(),
         );
         if !self.pending_denied_results.is_empty() {
             let answered: HashSet<CompactString> = self
@@ -1092,7 +1092,7 @@ impl LoopStateMachine {
     /// Call after `LoopAction::Done` to get the complete turn transcript
     /// for persistence to a SessionStore.
     pub fn drain_new_messages(&self) -> Vec<CoreMessage> {
-        let history = &self.ctx.partitions.history.messages;
+        let history = self.ctx.partitions.history.messages();
         let start = self.session_history_baseline.min(history.len());
         history[start..].to_vec()
     }
@@ -1175,7 +1175,7 @@ impl LoopStateMachine {
                     invalidates_prefix_at,
                 });
             }
-            self.session_history_baseline = self.ctx.partitions.history.messages.len();
+            self.session_history_baseline = self.ctx.partitions.history.len();
         }
         let user_msg = "Proceed with the task described in [TASK STATE].".to_string();
 
@@ -1832,6 +1832,8 @@ impl LoopStateMachine {
             recall_expanded: metrics.recall_expanded,
             items: metrics.items,
             history: metrics.history,
+            history_items: metrics.history_items,
+            history_items_omitted: metrics.history_items_omitted,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
@@ -1942,7 +1944,7 @@ impl LoopStateMachine {
                 self.pending_termination = Some(term);
             }
         }
-        self.checkpoint.history_len = self.ctx.partitions.history.messages.len();
+        self.checkpoint.history_len = self.ctx.partitions.history.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());
         self.delivered_signals_len = self.ctx.partitions.signals.len();
@@ -2191,11 +2193,7 @@ impl LoopStateMachine {
     }
 
     pub fn rollback(&mut self, reason: RollbackReason) {
-        self.ctx
-            .partitions
-            .history
-            .messages
-            .truncate(self.checkpoint.history_len);
+        self.ctx.truncate_history(self.checkpoint.history_len);
         self.ctx
             .partitions
             .signals

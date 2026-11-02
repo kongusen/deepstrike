@@ -4,7 +4,7 @@
 //! Every item gets its scope, fidelity, lease and authority from one table keyed by origin
 //! ([`ItemOrigin::defaults`]); a host cannot set them per item. Knowledge-tier items (system[1] and
 //! the staged state-turn copy) are held as [`ContextItem`]s today; history messages and handles
-//! join the same table in task 1.1b.
+//! join the same table as [`ItemTag`] rows of a [`crate::context::partitions::Partition`].
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
@@ -27,12 +27,19 @@ pub struct ItemTag {
     pub origin: ItemOrigin,
     #[serde(default)]
     pub injected_turn: u32,
+    /// What the history row renders of its source. Full until compaction excerpts it.
+    #[serde(default, skip_serializing_if = "Fidelity::is_full")]
+    pub fidelity: Fidelity,
 }
 
 impl ItemTag {
+    pub fn new(id: ItemId, origin: ItemOrigin, injected_turn: u32) -> Self {
+        Self { id, origin, injected_turn, fidelity: Fidelity::Full }
+    }
+
     /// The tag of a message with no recorded identity: id `0`, origin from its role.
     pub fn untracked(message: &CoreMessage) -> Self {
-        Self { id: 0, origin: ItemOrigin::of_message(message), injected_turn: 0 }
+        Self::new(0, ItemOrigin::of_message(message), 0)
     }
 }
 
@@ -53,7 +60,7 @@ pub struct OriginTally {
     pub read_back: u32,
 }
 
-fn is_zero_u32(value: &u32) -> bool {
+pub(crate) fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
@@ -126,9 +133,9 @@ impl ItemOrigin {
         use Lease as L;
         let (scope, fidelity, lease, authority) = match self {
             Self::System => (S::Operation, F::Full, L::Permanent, A::Kernel),
-            // A skill leaves when it is deactivated or its activation lease runs out
-            // (`ContextManager::deactivate_skill`); the item itself does not expire.
-            Self::Skill => (S::Task, F::Full, L::Permanent, A::Model),
+            // A skill body stays while the skill is active: it leaves when the skill is deactivated
+            // or its activation lease runs out (`ContextManager::deactivate_skill`).
+            Self::Skill => (S::Task, F::Full, L::Until(LeaseEvent::SkillDeactivated), A::Model),
             Self::MemoryRecall => (S::Session, F::Handle, L::Turns(RECALL_LEASE_TURNS), A::Host),
             Self::Reference => (S::Operation, F::Full, L::Permanent, A::Host),
             Self::ToolResult => (S::Task, F::Full, L::Permanent, A::Host),
@@ -143,25 +150,64 @@ impl ItemOrigin {
     }
 }
 
+/// How far an item travels: what it belongs to, and so which runs may see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemScope {
+    /// This operation's run.
     Operation,
+    /// The task the run is working on.
     Task,
+    /// One workflow edge: only the downstream node of that edge reads it.
     Edge,
+    /// The session the run belongs to.
     Session,
+    /// The agent's identity, whatever it works on.
     Agent,
+}
+
+impl ItemScope {
+    /// Whether an item of this scope stays across a renewal. A renewal starts a new sprint of the
+    /// same operation and task, so everything but an edge's data does.
+    pub fn survives_renewal(self) -> bool {
+        self != Self::Edge
+    }
+
+    /// Whether a child run spawned with `inheritance` starts with a copy of the parent's item. A
+    /// `system_only` child inherits who the agent is; a `full` child also inherits what the parent
+    /// knows about its operation, task and session. An edge's data reaches only its own
+    /// downstream node, as a dependency output.
+    pub fn inherited_by(self, inheritance: crate::types::agent::ContextInheritance) -> bool {
+        use crate::types::agent::ContextInheritance as I;
+        match (self, inheritance) {
+            (Self::Edge, _) | (_, I::None) => false,
+            (Self::Agent, I::SystemOnly) => true,
+            (_, I::SystemOnly) => false,
+            (_, I::Full) => true,
+        }
+    }
 }
 
 /// How much of the source the item renders: all of it, a structured form, or a handle line the
 /// model expands on demand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Fidelity {
+    #[default]
     Full,
     Structured,
+    /// Compaction rewrote the item in place to a head/tail or JSON excerpt of the source.
+    Excerpt,
     Handle,
 }
+
+impl Fidelity {
+    pub fn is_full(&self) -> bool {
+        *self == Self::Full
+    }
+}
+
+
 
 /// How long an item stays. An expired item leaves at the next boundary, like any other removal
 /// from system[1].
@@ -175,6 +221,30 @@ pub enum Lease {
     Turns(u32),
     /// Leaves once it has been referenced.
     SingleUse,
+    /// Leaves when the kernel sees `event` happen to the item (see [`LeaseEvent`]).
+    Until(LeaseEvent),
+}
+
+impl Lease {
+    /// The lease an item gets: its origin's, unless the host pinned it. A pin keeps an item past
+    /// any time limit (turns, a boundary, a first use); it does not keep it past an event that ends
+    /// what the item is for.
+    pub fn for_item(origin: ItemOrigin, pinned: bool) -> Self {
+        match origin.defaults().lease {
+            event @ Self::Until(_) => event,
+            _ if pinned => Self::Permanent,
+            lease => lease,
+        }
+    }
+}
+
+/// Something that ends an item's purpose. Each event names the items it ends by key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseEvent {
+    /// The skill whose body the item holds (`skill:<name>`) was deactivated or its activation
+    /// lease ran out.
+    SkillDeactivated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +254,17 @@ pub enum Authority {
     Kernel,
     Model,
     Provider,
+}
+
+impl Authority {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Kernel => "kernel",
+            Self::Model => "model",
+            Self::Provider => "provider",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,8 +283,39 @@ pub enum ItemEnd {
     Evicted,
     /// Its lease ran out.
     Expired,
-    /// Removed by name (a host mutation, a deactivated skill, a withdrawn note).
+    /// Removed by name (a host mutation, a deactivated skill, a withdrawn note), or rolled back
+    /// with the turn that added it.
     Removed,
+    /// A history item compaction archived into the compression summary.
+    Compacted,
+    /// A history item a renewal did not carry into the new sprint.
+    Renewed,
+}
+
+/// How many history items the end-of-run report lists one by one; older ones are only counted.
+pub const HISTORY_ITEM_DETAIL_CAP: usize = 128;
+
+/// One history item's lifecycle for the end-of-run report (plan task 4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryItemRecord {
+    pub id: ItemId,
+    pub origin: ItemOrigin,
+    pub tokens: u32,
+    #[serde(default)]
+    pub injected_turn: u32,
+    /// What it rendered when it left, or renders now: full, an excerpt, or a handle.
+    #[serde(default, skip_serializing_if = "Fidelity::is_full")]
+    pub fidelity: Fidelity,
+    /// Why it left; `None` while still in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<ItemEnd>,
+}
+
+impl HistoryItemRecord {
+    pub fn of(tag: ItemTag, tokens: u32, fidelity: Fidelity, end: Option<ItemEnd>) -> Self {
+        Self { id: tag.id, origin: tag.origin, tokens, injected_turn: tag.injected_turn, fidelity, end }
+    }
 }
 
 /// One knowledge-tier item.
@@ -265,7 +377,7 @@ impl ContextItem {
         pinned: bool,
         turn: u32,
     ) -> Self {
-        let lease = if pinned { Lease::Permanent } else { origin.defaults().lease };
+        let lease = Lease::for_item(origin, pinned);
         Self {
             key,
             origin,
@@ -305,7 +417,7 @@ impl ContextItem {
     /// Whether the lease has run out at `current_turn`.
     pub fn lease_expired(&self, current_turn: u32) -> bool {
         match self.lease {
-            Lease::Permanent | Lease::UntilBoundary => false,
+            Lease::Permanent | Lease::UntilBoundary | Lease::Until(_) => false,
             Lease::Turns(_) => self.lease_remaining_turns(current_turn) == Some(0),
             Lease::SingleUse => self.value.ref_count > 0,
         }
@@ -365,6 +477,31 @@ mod tests {
         recall.value.last_referenced_turn = Some(6);
         assert!(!recall.lease_expired(3 + RECALL_LEASE_TURNS));
         assert!(recall.lease_expired(6 + RECALL_LEASE_TURNS));
+    }
+
+    #[test]
+    fn a_pinned_skill_still_leaves_with_its_skill() {
+        let skill = item(ItemOrigin::Skill, true);
+        assert_eq!(skill.lease, Lease::Until(LeaseEvent::SkillDeactivated));
+        assert!(!skill.lease_expired(u32::MAX));
+        assert_eq!(
+            serde_json::to_value(skill.lease).unwrap(),
+            serde_json::json!({"until": "skill_deactivated"})
+        );
+    }
+
+    #[test]
+    fn scope_decides_what_a_child_inherits_and_what_survives_renewal() {
+        use crate::types::agent::ContextInheritance as I;
+        assert!(ItemScope::Agent.inherited_by(I::SystemOnly));
+        assert!(!ItemScope::Operation.inherited_by(I::SystemOnly));
+        for scope in [ItemScope::Operation, ItemScope::Task, ItemScope::Session, ItemScope::Agent] {
+            assert!(scope.inherited_by(I::Full), "{scope:?}");
+            assert!(!scope.inherited_by(I::None), "{scope:?}");
+            assert!(scope.survives_renewal(), "{scope:?}");
+        }
+        assert!(!ItemScope::Edge.inherited_by(I::Full));
+        assert!(!ItemScope::Edge.survives_renewal());
     }
 
     #[test]

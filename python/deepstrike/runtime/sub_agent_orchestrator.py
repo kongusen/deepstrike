@@ -37,6 +37,8 @@ class SubAgentRunContext:
   context_input: str | None = None
   # Plan task 3.1 · the outputs of the workflow nodes this child depends on, by agent id.
   dependency_outputs: dict[str, str] | None = None
+  # Plan task 1.1 · the parent knowledge the kernel lets this child inherit.
+  inherited_knowledge: list[dict[str, Any]] | None = None
 
 
 def _termination_from_status(status: str) -> str:
@@ -177,6 +179,8 @@ def _build_child_opts(
     nested_group_vehicle=True,
     # A child reads only its own dependencies, never ones inherited from the parent's options.
     dependency_outputs=ctx.dependency_outputs,
+    # Likewise only the knowledge the kernel chose for this child, never the parent's own.
+    inherited_knowledge=ctx.inherited_knowledge,
     # The child runs under ITS OWN spec, never the parent's: the replace() above would otherwise
     # leak the parent's ``run_spec`` (identity, capability filter — and a LoopDriver's armed
     # ``loop_round``, giving every child a phantom pace tool). A loop-node iteration carries its

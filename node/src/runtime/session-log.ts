@@ -46,7 +46,19 @@ export interface ContextItemRecord {
     paged_in_after_evict?: boolean
   }
   /** Why it left; absent while resident. */
-  end?: "evicted" | "expired" | "removed"
+  end?: "evicted" | "expired" | "removed" | "compacted" | "renewed"
+}
+
+/** One history item's lifecycle in a `context_lifecycle_reported` event (plan task 4.1). */
+export interface ContextHistoryItemRecord {
+  id: number
+  origin: ContextItemRecord["origin"]
+  tokens: number
+  injected_turn: number
+  /** What it rendered when it left, or renders now; absent = full. */
+  fidelity?: "structured" | "excerpt" | "handle"
+  /** Why it left; absent while still in history. */
+  end?: "removed" | "compacted" | "renewed"
 }
 
 export type SessionEvent =
@@ -107,6 +119,9 @@ export type SessionEvent =
       items?: ContextItemRecord[]
       /** History items by origin: admitted, still in history at the end, read back with `read_result`. */
       history?: ContextOriginTally[]
+      /** The latest history items one by one (at most 128); older ones are only counted. */
+      history_items?: ContextHistoryItemRecord[]
+      history_items_omitted?: number
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

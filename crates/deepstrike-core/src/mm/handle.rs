@@ -107,6 +107,14 @@ pub struct Handle {
     /// in-context anchor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<CompactString>,
+    /// The history item whose body this handle addresses (plan task 1.1): the handle is that
+    /// item's residency. `0` for a handle with no item (a page-out archive, an older checkpoint).
+    #[serde(default, skip_serializing_if = "is_no_item")]
+    pub item: crate::context::item::ItemId,
+}
+
+fn is_no_item(item: &crate::context::item::ItemId) -> bool {
+    *item == 0
 }
 
 impl Handle {
@@ -117,6 +125,7 @@ impl Handle {
             residency: Residency::Resident,
             tokens,
             source: None,
+            item: 0,
         }
     }
 
@@ -133,6 +142,7 @@ impl Handle {
             residency: Residency::Resident,
             tokens,
             source: Some(source.into()),
+            item: 0,
         }
     }
 }
@@ -187,6 +197,17 @@ impl HandleTable {
             .iter()
             .find(|h| h.source.as_deref() == Some(source))
             .map(|h| &h.residency)
+    }
+
+    /// History items at least one of whose bodies is out of the rendered view (`Collapsed` or
+    /// `PagedOut`): those items render as handles.
+    pub fn projected_items(&self) -> std::collections::HashSet<crate::context::item::ItemId> {
+        self.handles
+            .iter()
+            .filter(|h| h.item != 0)
+            .filter(|h| matches!(h.residency, Residency::Collapsed | Residency::PagedOut { .. }))
+            .map(|h| h.item)
+            .collect()
     }
 
     /// Tool-result handles in insertion (recency) order — oldest first. Used by the residency
@@ -545,6 +566,7 @@ mod tests {
             },
             tokens: 5000,
             source: None,
+            item: 0,
         });
         table.insert(Handle {
             id: 3,
@@ -552,6 +574,7 @@ mod tests {
             residency: Residency::Collapsed,
             tokens: 200,
             source: None,
+            item: 0,
         });
         assert_eq!(table.resident_tokens(), 100);
     }

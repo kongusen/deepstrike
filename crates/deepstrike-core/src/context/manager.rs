@@ -1,6 +1,9 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
-use super::item::{ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, OriginTally};
+use super::item::{
+    Authority, HISTORY_ITEM_DETAIL_CAP, HistoryItemRecord, ItemEnd, ItemId, ItemOrigin,
+    ItemRecord, ItemTag, LeaseEvent, OriginTally,
+};
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
@@ -89,6 +92,11 @@ pub struct LifecycleMetrics {
     pub items: Vec<ItemRecord>,
     /// History items by origin: admitted, still in history, read back.
     pub history: Vec<OriginTally>,
+    /// The latest history items one by one (at most [`HISTORY_ITEM_DETAIL_CAP`]): the retired
+    /// ones in the order they left, then the ones still in history.
+    pub history_items: Vec<HistoryItemRecord>,
+    /// History items too old to be listed in `history_items`.
+    pub history_items_omitted: u32,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -179,6 +187,10 @@ pub struct ContextManager {
     pub(crate) last_item_id: ItemId,
     /// History items admitted and read back, by origin (plan task 4.1).
     pub(crate) history_tally: std::collections::BTreeMap<ItemOrigin, OriginTally>,
+    /// History items that left, latest [`HISTORY_ITEM_DETAIL_CAP`] kept, in the order they left.
+    pub(crate) retired_history: std::collections::VecDeque<HistoryItemRecord>,
+    /// Retired history items dropped from `retired_history` by the cap.
+    pub(crate) retired_history_omitted: u32,
 }
 
 impl ContextManager {
@@ -231,6 +243,8 @@ impl ContextManager {
             cache_invalidated_tokens: 0,
             last_item_id: 0,
             history_tally: std::collections::BTreeMap::new(),
+            retired_history: std::collections::VecDeque::new(),
+            retired_history_omitted: 0,
         }
     }
 
@@ -335,10 +349,13 @@ impl ContextManager {
     /// payload: pruning one does not free the body, it only makes the body permanently unreachable
     /// — and page-in is exactly the operation that outlives the preview's stay in working context.
     pub fn prune_orphaned_handles(&mut self) {
+        let live_items: std::collections::HashSet<ItemId> =
+            self.partitions.history.tags().iter().map(|tag| tag.id).collect();
+        // A handle restored from a checkpoint without item ids is matched by its call_id.
         let live: std::collections::HashSet<CompactString> = self
             .partitions
             .history
-            .messages
+            .messages()
             .iter()
             .flat_map(|m| match &m.content {
                 Content::Parts(parts) => parts
@@ -353,8 +370,54 @@ impl ContextManager {
             .collect();
         self.handles.retain(|h| {
             h.residency.payload_ref().is_some()
-                || h.source.as_ref().is_none_or(|s| live.contains(s))
+                || if h.item != 0 {
+                    live_items.contains(&h.item)
+                } else {
+                    h.source.as_ref().is_none_or(|s| live.contains(s))
+                }
         });
+    }
+
+    /// Give every handle restored without an item id the id of the history item holding its body.
+    pub(crate) fn backfill_handle_items(&mut self) {
+        let missing: Vec<(HandleId, CompactString)> = self
+            .handles
+            .all()
+            .iter()
+            .filter(|h| h.item == 0)
+            .filter_map(|h| Some((h.id, h.source.clone()?)))
+            .collect();
+        for (id, source) in missing {
+            if let Some(item) = self.history_item_holding(&source) {
+                if let Some(handle) = self.handles.get_mut(id) {
+                    handle.item = item;
+                }
+            }
+        }
+    }
+
+    /// The id of the history item holding the tool result `call_id`, if one does.
+    fn history_item_holding(&self, call_id: &str) -> Option<ItemId> {
+        let history = &self.partitions.history;
+        history.messages().iter().position(|message| match &message.content {
+            Content::Parts(parts) => parts.iter().any(|part| {
+                matches!(part, ContentPart::ToolResult { call_id: id, .. } if id.as_str() == call_id)
+            }),
+            _ => false,
+        })
+        .map(|index| history.tag(index).id)
+        .filter(|id| *id != 0)
+    }
+
+    /// What history item `index` renders: a handle while one of its bodies is collapsed or paged
+    /// out, otherwise its stored form (full, or the excerpt compaction left).
+    pub fn history_fidelity(&self, index: usize) -> crate::context::item::Fidelity {
+        let tag = self.partitions.history.tag(index);
+        if tag.id != 0 && self.handles.projected_items().contains(&tag.id) {
+            crate::context::item::Fidelity::Handle
+        } else {
+            tag.fidelity
+        }
     }
 
     /// §7.10 / §25.9 · move the payload residency of the handle addressed by `source`, minting the
@@ -389,12 +452,14 @@ impl ContextManager {
             return Some(previous);
         }
         let id = self.alloc_handle_id();
+        let item = self.history_item_holding(source).unwrap_or(0);
         self.handles.insert(Handle {
             id,
             kind,
             residency,
             tokens,
             source: Some(source.into()),
+            item,
         });
         None
     }
@@ -495,14 +560,24 @@ impl ContextManager {
         target_tokens: u32,
         now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
-        let result = self.compression.compress(
+        let (saved, summary, archived, cache_at) = self.compression.compress(
             &mut self.partitions,
             action,
             self.max_tokens,
             target_tokens,
             &self.engine,
         );
-        if result.0 > 0 || !result.2.is_empty() {
+        for row in &archived {
+            let record = HistoryItemRecord::of(
+                row.tag,
+                row.measurement.tokens,
+                row.tag.fidelity,
+                Some(ItemEnd::Compacted),
+            );
+            self.retire_history_item(record);
+        }
+        let archived: Vec<CoreMessage> = archived.into_iter().map(|row| row.message).collect();
+        if saved > 0 || !archived.is_empty() {
             // The measurement describes the request before this rewrite, not the new context.
             self.last_observed_prompt_tokens = None;
         }
@@ -510,7 +585,7 @@ impl ContextManager {
             self.last_compact_ms = Some(ts);
         }
         // Archived messages have left history — drop their now-orphaned handles (bounds the table).
-        if !result.2.is_empty() {
+        if !archived.is_empty() {
             self.prune_orphaned_handles();
             // Compaction rewrote the history prefix — start a fresh collapse generation so
             // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
@@ -525,10 +600,10 @@ impl ContextManager {
         // leaves `[0..frozen]` byte-stable, so the deep cache survives the compaction and the boundary
         // holds — strictly more precise than the old `archived`-keyed reset, which missed an early
         // in-place Snip and needlessly re-anchored after a prefix-safe pass.
-        if result.3.is_some() {
-            self.frozen_history_len = self.partitions.history.messages.len();
+        if cache_at.is_some() {
+            self.frozen_history_len = self.partitions.history.len();
         }
-        result
+        (saved, summary, archived, cache_at)
     }
 
     /// W1-1 收口: the truthful compaction parameters the planner stamps into the [`EvictionPlan`],
@@ -549,9 +624,25 @@ impl ContextManager {
     }
 
     pub fn renew(&mut self) {
-        self.partitions = self
+        let renewed = self
             .renewal
             .renew(&self.partitions, self.max_tokens, &self.engine);
+        let carried: std::collections::HashSet<ItemId> =
+            renewed.history.tags().iter().map(|tag| tag.id).collect();
+        for index in 0..self.partitions.history.len() {
+            let tag = self.partitions.history.tag(index);
+            if !carried.contains(&tag.id) {
+                let tokens = self.partitions.history.measured_tokens(index, &self.engine);
+                let fidelity = self.history_fidelity(index);
+                self.retire_history_item(HistoryItemRecord::of(
+                    tag,
+                    tokens,
+                    fidelity,
+                    Some(ItemEnd::Renewed),
+                ));
+            }
+        }
+        self.partitions = renewed;
         self.sprint += 1;
         self.last_observed_prompt_tokens = None;
         // The renewed history dropped earlier recalls with the rest; recall again for the new sprint.
@@ -563,7 +654,7 @@ impl ContextManager {
         // K1: renewal is a boundary — apply deferred knowledge upserts/removals now.
         self.sweep_knowledge_at_boundary();
         // P1-E: the renewed history is the new frozen base.
-        self.frozen_history_len = self.partitions.history.messages.len();
+        self.frozen_history_len = self.partitions.history.len();
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
@@ -596,9 +687,11 @@ impl ContextManager {
         self.partitions
             .knowledge
             .observe_references(&msg, self.knowledge_reference_step);
-        // P3 (3a): index each tool result entering working context as a handle, anchored to its
-        // call_id. Pure bookkeeping — render/compression still read `partitions` until 3b. The
-        // handle's residency later drives read-time projection without mutating the message.
+        self.last_item_id += 1;
+        let item = self.last_item_id;
+        // P3 (3a): index each tool result entering working context as a handle on its item,
+        // anchored to its call_id. The handle's residency is the item's: a collapsed or paged-out
+        // body makes the item render as a handle, without mutating the stored message.
         if let Content::Parts(parts) = &msg.content {
             for part in parts {
                 if let ContentPart::ToolResult {
@@ -607,25 +700,46 @@ impl ContextManager {
                 {
                     let id = self.alloc_handle_id();
                     let tok = self.engine.count(output).max(1);
-                    self.handles.insert(Handle::resident_for(
-                        id,
-                        HandleKind::ToolResult,
-                        tok,
-                        call_id.clone(),
-                    ));
+                    self.handles.insert(Handle {
+                        item,
+                        ..Handle::resident_for(id, HandleKind::ToolResult, tok, call_id.clone())
+                    });
                 }
             }
         }
-        self.last_item_id += 1;
-        let tag = ItemTag {
-            id: self.last_item_id,
-            origin: ItemOrigin::of_message(&msg),
-            injected_turn: self.partitions.knowledge.turn,
-        };
+        let tag = ItemTag::new(
+            item,
+            ItemOrigin::of_message(&msg),
+            self.partitions.knowledge.turn,
+        );
         let tally = self.tally(tag.origin);
         tally.items += 1;
         tally.tokens += u64::from(tokens);
         self.partitions.history.push_tagged(msg, tokens, tag);
+    }
+
+    /// Drop history from `len` on (a rolled-back turn); its items leave as removed.
+    pub fn truncate_history(&mut self, len: usize) {
+        for index in len..self.partitions.history.len() {
+            let tag = self.partitions.history.tag(index);
+            let tokens = self.partitions.history.measured_tokens(index, &self.engine);
+            let fidelity = self.history_fidelity(index);
+            self.retire_history_item(HistoryItemRecord::of(
+                tag,
+                tokens,
+                fidelity,
+                Some(ItemEnd::Removed),
+            ));
+        }
+        self.partitions.history.truncate(len);
+    }
+
+    fn retire_history_item(&mut self, record: HistoryItemRecord) {
+        self.retired_history.push_back(record);
+        if self.retired_history.len() > HISTORY_ITEM_DETAIL_CAP {
+            self.retired_history.pop_front();
+            self.retired_history_omitted += 1;
+        }
     }
 
     fn tally(&mut self, origin: ItemOrigin) -> &mut OriginTally {
@@ -774,7 +888,7 @@ impl ContextManager {
         });
         let mut history = self.history_tally.clone();
         let partition = &self.partitions.history;
-        for index in 0..partition.messages.len() {
+        for index in 0..partition.len() {
             let tag = partition.tag(index);
             if let Some(tally) = history.get_mut(&tag.origin) {
                 tally.resident_items += 1;
@@ -797,7 +911,22 @@ impl ContextManager {
                 .map(|body| u64::from(self.engine.count(body)))
                 .sum();
         }
+        let history_len = self.partitions.history.len();
+        let resident = (0..history_len).map(|index| {
+            HistoryItemRecord::of(
+                self.partitions.history.tag(index),
+                self.partitions.history.measured_tokens(index, &self.engine),
+                self.history_fidelity(index),
+                None,
+            )
+        });
+        let mut history_items: Vec<HistoryItemRecord> =
+            self.retired_history.iter().copied().chain(resident).collect();
+        let overflow = history_items.len().saturating_sub(HISTORY_ITEM_DETAIL_CAP);
+        history_items.drain(..overflow);
         LifecycleMetrics {
+            history_items,
+            history_items_omitted: self.retired_history_omitted + overflow as u32,
             history: history.into_values().collect(),
             knowledge_entries: knowledge.entries.len() as u32,
             knowledge_referenced: referenced,
@@ -827,7 +956,7 @@ impl ContextManager {
         if let Some(entry) = knowledge.entries.last_mut() {
             entry.staged = true;
         }
-        let history = self.partitions.history.token_count;
+        let history = self.partitions.history.token_count();
         if self.partitions.knowledge.staged_tokens().saturating_mul(4) >= history {
             self.partitions.knowledge.promote_staged();
             self.cache_invalidated_tokens += u64::from(history);
@@ -836,7 +965,7 @@ impl ContextManager {
     }
 
     pub fn restore_frozen_history_len(&mut self, len: usize) -> bool {
-        if len > self.partitions.history.messages.len() {
+        if len > self.partitions.history.len() {
             return false;
         }
         self.frozen_history_len = len;
@@ -882,6 +1011,87 @@ impl ContextManager {
 
     /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
     /// Errs-open: unknown key is a no-op (returns false).
+    /// Plan task 1.1 · scope: the parent's knowledge a child spawned with `inheritance` starts with,
+    /// as `(key, content, tokens, pinned)`. Besides what the scope allows, a child never inherits
+    /// an item whose life is tied to the parent's own state: one leased until a parent event (an
+    /// active skill's body) or one the kernel derived for the parent (the child's kernel derives
+    /// its own).
+    pub fn inheritable_knowledge(
+        &self,
+        inheritance: crate::types::agent::ContextInheritance,
+    ) -> Vec<(Option<String>, String, u32, bool)> {
+        self.partitions
+            .knowledge
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_leaving())
+            .filter(|entry| entry.defaults().scope.inherited_by(inheritance))
+            .filter(|entry| !matches!(entry.lease, crate::context::item::Lease::Until(_)))
+            .filter(|entry| entry.defaults().authority != Authority::Kernel)
+            .filter_map(|entry| {
+                let text = entry.message.content.as_text()?.to_string();
+                Some((entry.key.as_ref().map(ToString::to_string), text, entry.tokens, entry.pinned))
+            })
+            .collect()
+    }
+
+    /// Plan task 1.1 · authority: whether the host may upsert `upserts` and remove `removals`. A host
+    /// command may not touch an item the kernel or the provider wrote, and may not remove a skill
+    /// body while the model's activation holds it (deactivating the skill removes it). Returns the
+    /// first refused key and why.
+    pub fn check_host_knowledge_write<'a>(
+        &self,
+        upserts: impl IntoIterator<Item = &'a str>,
+        removals: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), String> {
+        let live = |key: &str| {
+            self.partitions
+                .knowledge
+                .entries
+                .iter()
+                .find(|entry| !entry.is_leaving() && entry.key.as_deref() == Some(key))
+        };
+        for key in upserts {
+            if let Some(entry) = live(key) {
+                let authority = entry.defaults().authority;
+                if matches!(authority, Authority::Kernel | Authority::Provider) {
+                    return Err(format!(
+                        "knowledge {key:?} is a {} item written by the {}; a host may not \
+                         overwrite it",
+                        entry.origin.label(),
+                        authority.label()
+                    ));
+                }
+            }
+        }
+        for key in removals {
+            let Some(entry) = live(key) else { continue };
+            match entry.defaults().authority {
+                Authority::Kernel | Authority::Provider => {
+                    return Err(format!(
+                        "knowledge {key:?} is a {} item written by the {}; a host may not remove \
+                         it",
+                        entry.origin.label(),
+                        entry.defaults().authority.label()
+                    ));
+                }
+                Authority::Model
+                    if entry.origin == ItemOrigin::Skill
+                        && key
+                            .strip_prefix("skill:")
+                            .is_some_and(|name| self.active_skills.contains_key(name)) =>
+                {
+                    return Err(format!(
+                        "knowledge {key:?} is the body of an active skill; deactivate the skill \
+                         instead of removing its body"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove_knowledge(&mut self, key: &str) -> bool {
         let removed = self.partitions.knowledge.remove(key);
         if removed {
@@ -1088,7 +1298,11 @@ impl ContextManager {
         if self.active_skills.remove(name).is_none() {
             return false;
         }
-        self.partitions.knowledge.remove(&format!("skill:{name}"));
+        let key = format!("skill:{name}");
+        // A skill body restored from an older checkpoint may hold a permanent lease.
+        if !self.partitions.knowledge.end_lease(LeaseEvent::SkillDeactivated, &key) {
+            self.partitions.knowledge.remove(&key);
+        }
         true
     }
 
@@ -1457,6 +1671,90 @@ mod tests {
     }
 
     #[test]
+    fn a_skill_body_leaves_when_its_skill_is_deactivated_even_if_pinned() {
+        use crate::context::item::{Lease, LeaseEvent};
+        let mut mgr = ContextManager::new(100_000);
+        mgr.activate_skill("debug");
+        mgr.push_knowledge_entry(
+            Some("skill:debug".into()),
+            CoreMessage::system("debug skill body"),
+            10,
+            true,
+        );
+        let skill = &mgr.partitions.knowledge.entries[0];
+        assert_eq!(skill.lease, Lease::Until(LeaseEvent::SkillDeactivated));
+        mgr.sweep_expired_item_leases(1_000);
+        assert!(!mgr.partitions.knowledge.entries[0].is_leaving(), "no turn limit");
+
+        assert!(mgr.deactivate_skill("debug"));
+        assert_eq!(mgr.partitions.knowledge.entries[0].leaving, Some(ItemEnd::Expired));
+        mgr.sweep_knowledge_at_boundary();
+        assert!(mgr.partitions.knowledge.is_empty());
+        assert_eq!(mgr.lifecycle_metrics().items[0].end, Some(ItemEnd::Expired));
+    }
+
+    #[test]
+    fn a_full_child_inherits_the_parents_knowledge_but_not_its_own_state() {
+        use crate::types::agent::ContextInheritance as I;
+        let mut mgr = ContextManager::new(100_000);
+        mgr.push_knowledge_entry(Some("style".into()), CoreMessage::system("no bullets"), 3, true);
+        mgr.push_recalled(vec![("r1".into(), "[MEMORY record_id=r1] orchid".into())]);
+        mgr.activate_skill("debug");
+        mgr.push_knowledge_entry(Some("skill:debug".into()), CoreMessage::system("body"), 3, true);
+        mgr.push_knowledge_item(
+            ItemOrigin::System,
+            Some("governance:denied-tools".into()),
+            CoreMessage::system("denied"),
+            2,
+            true,
+        );
+        mgr.push_knowledge_entry(Some("gone".into()), CoreMessage::system("leaving"), 2, false);
+        mgr.remove_knowledge("gone");
+
+        let keys = |inheritance| -> Vec<Option<String>> {
+            mgr.inheritable_knowledge(inheritance).into_iter().map(|entry| entry.0).collect()
+        };
+        assert_eq!(keys(I::Full), vec![Some("style".to_string()), Some("memory:r1".to_string())]);
+        assert!(keys(I::SystemOnly).is_empty());
+        assert!(keys(I::None).is_empty());
+        assert!(mgr.inheritable_knowledge(I::Full)[0].3, "a pin is inherited");
+    }
+
+    #[test]
+    fn the_report_lists_history_items_and_why_each_left() {
+        use crate::context::item::HISTORY_ITEM_DETAIL_CAP;
+        let mut mgr = ContextManager::new(10_000);
+        for i in 0..6 {
+            mgr.push_history(CoreMessage::user(format!("message {i} ").repeat(80)), 400);
+        }
+        let (_, _, archived, _) = mgr.force_compress();
+        assert!(!archived.is_empty());
+        mgr.truncate_history(mgr.partitions.history.len() - 1);
+        mgr.push_history(CoreMessage::user("after rollback"), 5);
+        mgr.renew();
+
+        let metrics = mgr.lifecycle_metrics();
+        let ends: Vec<_> = metrics.history_items.iter().map(|item| item.end).collect();
+        assert!(ends.contains(&Some(ItemEnd::Compacted)), "{ends:?}");
+        assert!(ends.contains(&Some(ItemEnd::Removed)), "{ends:?}");
+        let mut ids: Vec<_> = metrics.history_items.iter().map(|item| item.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), metrics.history_items.len(), "each item is listed once");
+        assert_eq!(metrics.history_items_omitted, 0);
+
+        // Past the cap only the latest items are listed; the rest are counted.
+        let mut long = ContextManager::new(1_000_000);
+        for i in 0..HISTORY_ITEM_DETAIL_CAP + 10 {
+            long.push_history(CoreMessage::user(format!("m{i}")), 1);
+        }
+        let metrics = long.lifecycle_metrics();
+        assert_eq!(metrics.history_items.len(), HISTORY_ITEM_DETAIL_CAP);
+        assert_eq!(metrics.history_items_omitted, 10);
+        assert_eq!(metrics.history_items.last().unwrap().id, (HISTORY_ITEM_DETAIL_CAP + 10) as u64);
+    }
+
+    #[test]
     fn history_messages_are_items_whose_identity_survives_renewal() {
         let mut mgr = ContextManager::new(100_000);
         mgr.init_task("goal".to_string(), vec![]);
@@ -1487,12 +1785,12 @@ mod tests {
         mgr.note_read_back("dep:wf-node0");
 
         mgr.renew();
-        let carried: Vec<_> = (0..mgr.partitions.history.messages.len())
+        let carried: Vec<_> = (0..mgr.partitions.history.len())
             .map(|i| mgr.partitions.history.tag(i).id)
             .collect();
         assert!(carried.iter().all(|id| *id > 0), "renewal carries identity: {carried:?}");
         mgr.push_history(CoreMessage::user("next"), 3);
-        let last = mgr.partitions.history.messages.len() - 1;
+        let last = mgr.partitions.history.len() - 1;
         assert_eq!(mgr.partitions.history.tag(last).id, 4, "ids are never reused");
 
         let history = mgr.lifecycle_metrics().history;
@@ -1671,10 +1969,10 @@ mod tests {
             mgr.push_history(CoreMessage::user("history msg"), 50);
         }
         let knowledge_before = mgr.partitions.knowledge.token_count;
-        let history_before = mgr.partitions.history.token_count;
+        let history_before = mgr.partitions.history.token_count();
         mgr.compress(PressureAction::AutoCompact);
         assert_eq!(mgr.partitions.knowledge.token_count, knowledge_before);
-        assert!(mgr.partitions.history.token_count < history_before);
+        assert!(mgr.partitions.history.token_count() < history_before);
     }
 
     #[test]
@@ -1966,6 +2264,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_collapsed_tool_result_is_an_item_rendered_as_its_handle() {
+        use crate::context::item::Fidelity;
+        let mut mgr = ContextManager::new(1_000);
+        for i in 0..10 {
+            mgr.push_history(tool_result_msg(&format!("c{i}"), &"x".repeat(40)), 40);
+        }
+        let first = mgr.partitions.history.tag(0).id;
+        assert_eq!(mgr.handles.all()[0].item, first, "a handle addresses its item");
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Full);
+
+        mgr.set_observed_prompt_tokens(950);
+        mgr.recompute_handle_residency();
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Handle);
+        assert_eq!(mgr.history_fidelity(9), Fidelity::Full);
+        let turns = mgr.render().turns;
+        let stored = mgr.partitions.history.messages();
+        let json = |message: &CoreMessage| serde_json::to_string(message).unwrap();
+        let rendered = |call: &str| {
+            turns.iter().map(json).find(|turn| turn.contains(&format!("\"call_id\":\"{call}\"")))
+        };
+        assert_ne!(rendered("c0"), Some(json(&stored[0])), "a collapsed item renders as its handle");
+        assert_eq!(rendered("c9"), Some(json(&stored[9])), "a full item renders as stored");
+
+        // The handle stays the item's residency when the table is restored without item ids.
+        for handle in mgr.handles.all_mut() {
+            handle.item = 0;
+        }
+        mgr.backfill_handle_items();
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Handle);
+
+        mgr.reset_collapse_generation();
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Full);
+    }
+
     fn delegating(clearing: bool, compaction: bool) -> ContextManager {
         ContextManager::with_config(
             1_000,
@@ -2158,7 +2491,7 @@ mod tests {
         assert_eq!(mgr.handles.all().len(), 2);
 
         // Simulate compaction archiving the oldest tool-result message out of history.
-        mgr.partitions.history.messages.remove(0);
+        mgr.partitions.history.remove(0);
         mgr.prune_orphaned_handles();
 
         // The handle for the evicted message is gone; the live one is retained.
@@ -2187,7 +2520,7 @@ mod tests {
         let live_tool_results = mgr
             .partitions
             .history
-            .messages
+            .messages()
             .iter()
             .filter(|m| {
                 matches!(&m.content, Content::Parts(p)

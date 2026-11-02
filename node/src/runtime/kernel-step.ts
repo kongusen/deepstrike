@@ -9,8 +9,8 @@ import type {
   MediaSource,
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
-import type { ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
-import type { WorkflowBudget, WorkflowSpawnInfo } from "../types/agent.js"
+import type { ContextHistoryItemRecord, ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
+import type { InheritedKnowledge, WorkflowBudget, WorkflowSpawnInfo } from "../types/agent.js"
 import { validateSkillKernelProjection } from "./validators/skill-kernel-projection.js"
 import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
 
@@ -102,6 +102,7 @@ export interface KernelWorkflowSpawnNode {
   input_agent_ids?: string[]
   dependency_outputs?: Record<string, string>
   dependency_brief?: string
+  inherited_knowledge?: InheritedKnowledge[]
   token_budget?: number
   max_turns?: number
   max_wall_ms?: number
@@ -138,6 +139,7 @@ export function workflowSpawnNodeFromKernel(node: KernelWorkflowSpawnNode): Work
     ...(node.input_agent_ids !== undefined ? { input_agent_ids: node.input_agent_ids } : {}),
     ...(node.dependency_outputs !== undefined ? { dependency_outputs: node.dependency_outputs } : {}),
     ...(node.dependency_brief ? { dependency_brief: node.dependency_brief } : {}),
+    ...(node.inherited_knowledge?.length ? { inherited_knowledge: node.inherited_knowledge } : {}),
     ...(node.token_budget !== undefined ? { token_budget: node.token_budget } : {}),
     ...(node.max_turns !== undefined ? { max_turns: node.max_turns } : {}),
     ...(node.max_wall_ms !== undefined ? { max_wall_ms: node.max_wall_ms } : {}),
@@ -245,6 +247,8 @@ export interface KernelObservation {
   recall_expanded?: number
   items?: ContextItemRecord[]
   history?: ContextOriginTally[]
+  history_items?: ContextHistoryItemRecord[]
+  history_items_omitted?: number
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string

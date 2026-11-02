@@ -66,6 +66,12 @@ pub enum KernelObservation {
         /// `read_result`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         history: Vec<crate::context::item::OriginTally>,
+        /// The latest history items one by one (capped); older ones are counted in
+        /// `history_items_omitted`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        history_items: Vec<crate::context::item::HistoryItemRecord>,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        history_items_omitted: u32,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in

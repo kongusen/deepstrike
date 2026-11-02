@@ -369,7 +369,16 @@ class ContextItemRecord(TypedDict, total=False):
     origin: str
     tokens: int
     value: dict[str, Any]
-    end: Literal["evicted", "expired", "removed"]
+    end: Literal["evicted", "expired", "removed", "compacted", "renewed"]
+
+
+class ContextHistoryItemRecord(TypedDict, total=False):
+    id: int
+    origin: str
+    tokens: int
+    injected_turn: int
+    fidelity: Literal["structured", "excerpt", "handle"]
+    end: Literal["removed", "compacted", "renewed"]
 
 
 class ContextOriginTally(TypedDict, total=False):
@@ -384,6 +393,8 @@ class ContextOriginTally(TypedDict, total=False):
 class _ContextLifecycleItems(TypedDict, total=False):
     items: list[ContextItemRecord]
     history: list[ContextOriginTally]
+    history_items: list[ContextHistoryItemRecord]
+    history_items_omitted: int
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

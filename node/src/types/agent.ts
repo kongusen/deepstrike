@@ -463,6 +463,14 @@ export function workflowNodeOutcomeFromKernel(raw: KernelWorkflowNodeOutcome): W
   }
 }
 
+/** Plan task 1.1 · one parent knowledge item a child run starts with (kernel-chosen by scope). */
+export interface InheritedKnowledge {
+  content: string
+  key?: string
+  tokens?: number
+  pinned?: boolean
+}
+
 /** Per-node spawn descriptor carried in the `workflow_batch_spawned` observation. */
 export interface WorkflowSpawnInfo {
   agent_id: string
@@ -484,6 +492,8 @@ export interface WorkflowSpawnInfo {
   dependency_outputs?: Record<string, string>
   /** The kernel-composed dependency section that follows the node's goal. */
   dependency_brief?: string
+  /** Plan task 1.1 · the parent knowledge the kernel lets this node inherit (by item scope). */
+  inherited_knowledge?: InheritedKnowledge[]
   /** M4/G5: the node's per-node cumulative token cap, if set — the runner caps the child run here. */
   token_budget?: number
   /** O3: per-node turn cap → the child run's `maxTurns`. */

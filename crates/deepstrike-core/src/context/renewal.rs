@@ -42,16 +42,21 @@ impl RenewalPolicy {
         let mut renewed = ContextPartitions::new(&config);
 
         // Identity and Knowledge slots carry over unchanged.
-        for (index, msg) in partitions.system.messages.iter().enumerate() {
-            renewed.system.push(
+        for (index, msg) in partitions.system.messages().iter().enumerate() {
+            renewed.system.push_tagged(
                 msg.clone(),
                 partitions.system.measured_tokens(index, engine),
+                partitions.system.tag(index),
             );
         }
         // Cloned wholesale (not re-pushed message-by-message) so entry identity — keys, pins,
         // pending upserts, boundary-eviction marks — survives renewal; the caller sweeps right
         // after (renewal IS a boundary).
         renewed.knowledge = partitions.knowledge.clone();
+        renewed
+            .knowledge
+            .entries
+            .retain(|entry| entry.defaults().scope.survives_renewal());
 
         // State: carry task_state (goal/plan/progress), clear scratchpad.
         renewed.task_state = partitions.task_state.clone();
@@ -61,7 +66,7 @@ impl RenewalPolicy {
         // History: carry recent turns up to carryover budget.
         let carryover_budget = config.carryover_tokens(max_tokens);
         let mut remaining = carryover_budget;
-        let messages = &partitions.history.messages;
+        let messages = partitions.history.messages();
         let mut start = messages.len();
         // Carry whole conversational transactions, so a budget boundary cannot strand a result
         // without its assistant call (or omit one result of a parallel call batch).
@@ -139,7 +144,7 @@ mod tests {
         }
         let engine = ContextTokenEngine::fallback_estimator();
         let renewed = make_policy(0.05).renew(&ctx, 1_000, &engine);
-        assert!(renewed.history.token_count <= 100);
+        assert!(renewed.history.token_count() <= 100);
     }
 
     #[test]
@@ -165,7 +170,7 @@ mod tests {
         );
         let renewed = make_policy(0.1).renew(&ctx, 1_000, &ContextTokenEngine::char_approx());
         assert!(crate::context::units::strict_tool_pairing_is_valid(
-            &renewed.history.messages
+            renewed.history.messages()
         ));
     }
 

@@ -1,6 +1,6 @@
 {
   "id": "signal.host-to-kernel",
-  "version": "0.2.78",
+  "version": "0.2.79",
   "protocol": {
     "family": "host-to-kernel",
     "direction": "project",

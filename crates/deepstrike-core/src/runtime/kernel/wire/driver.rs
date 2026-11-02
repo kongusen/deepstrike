@@ -1196,13 +1196,22 @@ fn restore_context_vm(
     state: &ContextVmState,
 ) -> Result<(), KernelFault> {
     let ctx = &mut engine.ctx;
+    let (mut system, mut history) = (Vec::new(), Vec::new());
     for entry in &state.messages {
         let message = restore_message(&entry.role, &entry.body, &entry.tool_calls)?;
         match entry.partition {
-            MessagePartition::System => ctx.partitions.system.push(message, entry.tokens),
-            MessagePartition::History => ctx.partitions.history.push(message, entry.tokens),
+            MessagePartition::System => system.push((message, entry.tokens)),
+            MessagePartition::History => history.push((message, entry.tokens)),
         }
     }
+    ctx.partitions
+        .system
+        .restore(system, state.system_measurements.clone(), Vec::new());
+    ctx.partitions.history.restore(
+        history,
+        state.history_measurements.clone(),
+        state.history_items.clone(),
+    );
     for slot in &state.knowledge {
         let message = restore_message(&slot.role, &slot.body, &slot.tool_calls)?;
         let origin = slot.origin.unwrap_or_else(|| match slot.key.as_deref() {
@@ -1246,8 +1255,6 @@ fn restore_context_vm(
                 .transpose()?;
         }
     }
-    ctx.partitions.system.measurements = state.system_measurements.clone();
-    ctx.partitions.history.measurements = state.history_measurements.clone();
     ctx.restore_knowledge_checkpoint_state(
         state.knowledge_reference_step,
         state.knowledge_budget_warned,
@@ -1258,10 +1265,9 @@ fn restore_context_vm(
     ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;
     ctx.partitions.knowledge.retired = state.retired_items.clone();
     ctx.partitions.knowledge.turn = state.item_turn;
-    if state.history_items.len() == ctx.partitions.history.messages.len() {
-        ctx.partitions.history.items = state.history_items.clone();
-    }
     ctx.last_item_id = state.last_item_id;
+    ctx.retired_history = state.retired_history.iter().copied().collect();
+    ctx.retired_history_omitted = state.retired_history_omitted;
     ctx.history_tally = state
         .history_tally
         .iter()
@@ -1287,14 +1293,16 @@ fn restore_context_vm(
             residency: restore_residency(handle)?,
             tokens: handle.tokens,
             source: handle.source.as_deref().map(Into::into),
+            item: handle.item,
         });
     }
     ctx.restore_next_handle_id(state.next_handle_id);
+    ctx.backfill_handle_items();
     if !ctx.restore_frozen_history_len(state.frozen_history_len as usize) {
         return Err(incompatible(format!(
             "the checkpoint freezes {} history messages but restores only {}",
             state.frozen_history_len,
-            ctx.partitions.history.messages.len()
+            ctx.partitions.history.len()
         )));
     }
     Ok(())

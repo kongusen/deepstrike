@@ -145,10 +145,13 @@ fn project(obs: &Value, turn: u32, opts: &ProjectionOptions) -> Option<Value> {
                 "recalled": or(obs, "recalled", 0.into()),
                 "recall_expanded": or(obs, "recall_expanded", 0.into()),
             });
-            for field in ["items", "history"] {
+            for field in ["items", "history", "history_items"] {
                 if let Some(rows) = obs.get(field).filter(|rows| rows.as_array().is_some_and(|a| !a.is_empty())) {
                     event[field] = rows.clone();
                 }
+            }
+            if let Some(omitted) = obs.get("history_items_omitted").filter(|n| n.as_u64().is_some_and(|n| n > 0)) {
+                event["history_items_omitted"] = omitted.clone();
             }
             event
         }

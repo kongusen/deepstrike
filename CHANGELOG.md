@@ -6,6 +6,36 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.79] - 2026-11-02
+
+### Added
+
+- Item leases can wait for an event: a skill body's lease is `until(skill_deactivated)`, so it
+  leaves with its skill even when pinned.
+- A child run spawned with `full` context inheritance starts with the parent knowledge its scope
+  allows (`inherited_knowledge` on the spawn; `inheritedKnowledge` / `inherited_knowledge` runner
+  option). Edge-scoped data, active skill bodies and kernel-written items are not inherited.
+- `context_lifecycle_reported` lists the latest 128 history items one by one (`history_items`:
+  id, origin, tokens, fidelity, and `compacted` / `renewed` / `removed` when they left) and counts
+  older ones (`history_items_omitted`).
+
+### Changed
+
+- Host knowledge commands are checked against item authority: overwriting or removing a
+  kernel-written item, or removing an active skill's body, is refused with `InvalidAuthority`.
+- A tool-result handle carries the id of its history item, and a history item renders by its
+  fidelity: as its handle preview while a body is collapsed or paged out.
+
+- History and system[0] are held as an item table: every row is one item with its id, origin,
+  rendered message and measurement, and is only written whole. Compaction acts on items: an item a
+  snip or micro rewrites in place keeps its id and is marked `excerpt` (checkpoint `history_items`
+  carry `fidelity` only when it is not `full`); archived items leave with their ids.
+
+### Fixed
+
+- A rollback truncated only the history messages, leaving their measurements, item ids and the
+  history token count misaligned; it now drops whole rows.
+
 ## [0.2.78] - 2026-11-02
 
 ### Added

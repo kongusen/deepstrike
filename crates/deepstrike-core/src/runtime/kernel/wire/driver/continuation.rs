@@ -416,6 +416,37 @@ impl CanonicalOperationDriver {
                 serde_json::Value::Number(max_wall_ms.into()),
             );
         }
+        // Plan task 1.1 · scope: the parent knowledge this child's inheritance mode carries over.
+        let inheritance = super::parse_wire_context_inheritance(&info.context_inheritance)
+            .map(super::core_context_inheritance)
+            .unwrap_or_default();
+        let inherited = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.ctx.inheritable_knowledge(inheritance))
+            .unwrap_or_default();
+        if !inherited.is_empty() {
+            metadata.insert(
+                "inherited_knowledge".to_string(),
+                serde_json::Value::Array(
+                    inherited
+                        .into_iter()
+                        .map(|(key, content, tokens, pinned)| {
+                            let mut entry = serde_json::Map::new();
+                            entry.insert("content".into(), content.into());
+                            if let Some(key) = key {
+                                entry.insert("key".into(), key.into());
+                            }
+                            entry.insert("tokens".into(), tokens.into());
+                            if pinned {
+                                entry.insert("pinned".into(), true.into());
+                            }
+                            serde_json::Value::Object(entry)
+                        })
+                        .collect(),
+                ),
+            );
+        }
         if !info.input_agent_ids.is_empty() {
             metadata.insert(
                 "input_agent_ids".to_string(),

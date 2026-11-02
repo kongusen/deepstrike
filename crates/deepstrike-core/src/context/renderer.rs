@@ -142,7 +142,7 @@ impl InternalRenderedContext {
 fn build_system_stable(partitions: &ContextPartitions) -> String {
     partitions
         .system
-        .messages
+        .messages()
         .iter()
         .filter_map(|m| m.content.as_text())
         .collect::<Vec<_>>()
@@ -449,19 +449,28 @@ pub fn render_projected(
         max_tokens: budget,
     });
 
-    let units = unit_boundaries(&partitions.history.messages);
+    let units = unit_boundaries(partitions.history.messages());
     let protected_from = units.len().saturating_sub(preserve_recent_units);
-    let mut kept_messages_rev = Vec::with_capacity(partitions.history.messages.len());
+    let mut kept_messages_rev = Vec::with_capacity(partitions.history.len());
     let mut kept_unit_ranges = Vec::with_capacity(units.len());
-    let mut selected_indices_rev = Vec::with_capacity(partitions.history.messages.len());
+    let mut selected_indices_rev = Vec::with_capacity(partitions.history.len());
 
+    // Plan task 1.1 · an item renders by its fidelity: one whose body a handle has taken out of
+    // the view renders as that handle's preview. Items without an id (an older checkpoint) are
+    // checked part by part.
+    let handle_items = handles.projected_items();
     for (unit_index, unit) in units.iter().enumerate().rev() {
         let is_protected = unit_index >= protected_from;
         let unit_start = kept_messages_rev.len();
         let mut tokens = 0u32;
         for message_index in unit.clone() {
-            let msg = &partitions.history.messages[message_index];
-            let projected = project_message(msg, handles).or_else(|| {
+            let msg = &partitions.history.messages()[message_index];
+            let item = partitions.history.tag(message_index).id;
+            let as_handle = item == 0 || handle_items.contains(&item);
+            let projected = as_handle
+                .then(|| project_message(msg, handles))
+                .flatten()
+                .or_else(|| {
                 if is_protected {
                     None
                 } else {
@@ -511,7 +520,7 @@ pub fn render_projected(
     normalize_turn_prefix(&mut turns);
     let anchor_count = turns.len() - before_anchor;
     debug_assert!(
-        !strict_tool_pairing_is_valid(&partitions.history.messages)
+        !strict_tool_pairing_is_valid(partitions.history.messages())
             || strict_tool_pairing_is_valid(&turns),
         "renderer split a valid tool transaction"
     );
@@ -753,7 +762,7 @@ mod tests {
         assert!(rendered.contains("read_result"));
         assert!(rendered.contains("\"c1\""));
         assert!(rendered.len() < long.len());
-        let stored = match &c.history.messages[0].content {
+        let stored = match &c.history.messages()[0].content {
             Content::Parts(parts) => match &parts[0] {
                 ContentPart::ToolResult { output, .. } => output.clone(),
                 _ => unreachable!(),
@@ -1060,7 +1069,7 @@ mod tests {
         c.history.push(CoreMessage::user("turn A"), 5);
         let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
-        c.system.messages.clear();
+        c.system.clear();
         c.system.push(CoreMessage::system("updated rules"), 5);
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
@@ -1161,7 +1170,7 @@ mod tests {
         }));
         // Original history is untouched (non-destructive projection).
         assert!(
-            c.history.messages[0]
+            c.history.messages()[0]
                 .content
                 .as_text()
                 .unwrap()

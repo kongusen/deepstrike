@@ -765,6 +765,13 @@ impl CanonicalOperationDriver {
         mutation: &ApplyKnowledgeMutationCommand,
     ) -> Result<PlannedStep, KernelFault> {
         let engine = self.engine_mut()?;
+        engine
+            .ctx
+            .check_host_knowledge_write(
+                mutation.mutation.upsert.iter().filter_map(|entry| entry.key.as_deref()),
+                mutation.mutation.remove.iter().map(String::as_str),
+            )
+            .map_err(|reason| KernelFault::new(KernelFaultCode::InvalidAuthority, reason))?;
         seed_knowledge(engine, &mutation.mutation.upsert);
         for key in &mutation.mutation.remove {
             engine.ctx.remove_knowledge(key);
@@ -780,6 +787,13 @@ impl CanonicalOperationDriver {
         seed: &SeedKnowledgeCommand,
     ) -> Result<PlannedStep, KernelFault> {
         let engine = self.engine_mut()?;
+        engine
+            .ctx
+            .check_host_knowledge_write(
+                seed.entries.iter().filter_map(|entry| entry.key.as_deref()),
+                std::iter::empty(),
+            )
+            .map_err(|reason| KernelFault::new(KernelFaultCode::InvalidAuthority, reason))?;
         seed_knowledge(engine, &seed.entries);
         Ok(self.quiet_step())
     }

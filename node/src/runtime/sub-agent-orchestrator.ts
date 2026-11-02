@@ -2,7 +2,7 @@ import type { DoneEvent, StreamEvent, TextDelta, WorkflowNodesSubmittedEvent } f
 import { randomUUID } from "node:crypto"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, LoopResult, SubAgentResult, TerminationReason,
-  KernelAgentRole, WorkflowNodeSpec,
+  InheritedKnowledge, KernelAgentRole, WorkflowNodeSpec,
 } from "../types/agent.js"
 import type { RuntimeOptions } from "./runner.js"
 import type { SessionEvent, SessionLog } from "./session-log.js"
@@ -42,6 +42,8 @@ export interface SubAgentRunContext {
   contextInput?: string
   /** Plan task 3.1 · the outputs of the workflow nodes this child depends on, by agent id. */
   dependencyOutputs?: Record<string, string>
+  /** Plan task 1.1 · the parent knowledge the kernel lets this child inherit. */
+  inheritedKnowledge?: InheritedKnowledge[]
 }
 
 function terminationFromStatus(status: string): TerminationReason | string {
@@ -190,6 +192,8 @@ export class SubAgentOrchestrator {
       runSpec: ctx.spec,
       // A child reads only its own dependencies, never ones inherited from the parent's options.
       dependencyOutputs: ctx.dependencyOutputs,
+      // Likewise only the knowledge the kernel chose for this child, never the parent's own.
+      inheritedKnowledge: ctx.inheritedKnowledge,
     })
     // #2-B-ii: when the parent preempts this node (kernel `AgentPreempted`), interrupt the child —
     // cancelling its in-flight LLM call. Handle an already-aborted signal too (creation race).

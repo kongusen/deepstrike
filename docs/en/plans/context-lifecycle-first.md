@@ -4,8 +4,8 @@
 > no plugin, compatibility layer or same-name template; migration notes go into per-version files
 > such as `MIGRATION-0.2.77-to-0.2.78.md`.
 >
-> Revised 2026-11-02: no jump to 0.3.0. The plan ships in four releases, 0.2.78–0.2.81; see
-> "Release plan".
+> Revised 2026-11-02: no jump to 0.3.0. The plan ships in three releases, 0.2.78–0.2.80; see
+> "Release plan". The originally planned 0.2.81 is folded into 0.2.80, making it a larger release.
 
 ## Overview
 
@@ -150,10 +150,36 @@ all follow this rule.
   PagedOut = handle). `read_result` on an earlier tool result or a `dep:` dependency output counts
   as a read-back. The lifecycle report's `history` tallies by origin: items and tokens that entered
   history, those still there at the end, and read-backs.
-  - Not done (finished in 0.2.79): `ContextPartitions` as a render view over the item table. The
-    compression pipeline still operates on `Partition` by position and the item tags only travel
-    alongside; history items are reported as a per-origin tally, not item by item (listing every
-    item would make the report of a long run too large).
+  - 0.2.79 first item (2026-11-02): the system[0] and history `Partition` is an item table. Each
+    row is one item (its `ItemTag`, rendered message and host measurement), stored by column with
+    private fields and written only row by row; the renderer and the compression planners read the
+    message column as a read-only slice. Compaction acts on items: an item snip or micro rewrites in
+    place keeps its id and records the new `excerpt` fidelity (the checkpoint's `history_items`
+    writes the field only when it is not full); collapse and auto take whole rows out, and the
+    archived result carries the item tags. Fixed along the way: rollback used to truncate only the
+    message column, leaving measurements, tags and the token count misaligned; it now truncates
+    whole rows.
+  - Remaining 0.2.79 items (2026-11-02; task 1.1 complete):
+    - `until(event)` lease: a new `LeaseEvent`; a skill body's lease is `until(skill_deactivated)`,
+      so it leaves when its skill is deactivated (at the next boundary). A pin extends only
+      time-limited leases (turns, boundary, single use), never an event lease.
+    - Authority: a host `seed_knowledge` / `apply_knowledge_mutation` may not overwrite or remove
+      an item the kernel or the provider wrote, nor remove the body of an active skill; such a
+      command is refused whole with `InvalidAuthority`.
+    - Scope: `ItemScope::inherited_by` decides which parent knowledge a child run starts with
+      (`full` inherits operation / task / session / agent items, `system_only` only agent items,
+      edge items never); items on an event lease and kernel-written items are not inherited. The
+      kernel sends them as `inherited_knowledge` in the spawn metadata, and Node / Python / WASM
+      pass them to the child run. A renewal keeps every scope but edge (`survives_renewal`).
+    - Handles in the item table: a handle carries the id of its history item (checkpoint
+      `HandleState.item`, backfilled by call_id for older checkpoints) and is pruned by item id.
+      Fidelity decides rendering: an item whose body is collapsed or paged out renders as its
+      handle preview (`ContextManager::history_fidelity`).
+    - Per-item history detail: the lifecycle report's `history_items` lists the latest 128
+      history items (id, origin, tokens, the fidelity they rendered, and why they left:
+      `compacted` / `renewed` / `removed`), older ones count in `history_items_omitted`; retired
+      records are checkpointed (`retired_history`).
+    - Migration notes: `MIGRATION-0.2.78-to-0.2.79.md`.
 - ~~Original task 1.1: introduce `ContextItem`, the item table and the origin table in the kernel~~
   - Acceptance: `ContextPartitions` becomes a render view over the item table; `KnowledgeEntry`,
     history messages and handles all map to items and the old types are deleted. One table defines
@@ -395,7 +421,8 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next: see "Release plan" below. 0.2.78 merges once CI passes; 0.2.79 follows.
+Next: see "Release plan" below. 0.2.78 is merged into main; 0.2.79 is complete on branch
+`feat/context-items-0.2.79`, awaiting the version bump and PR.
 
 Setting up on another machine:
 
@@ -419,10 +446,26 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 
 | Release | Content | Status |
 |---------|---------|--------|
-| 0.2.78 | Current branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Awaiting merge |
-| 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Not started |
-| 0.2.80 | 4.3 lab tool (`deepstrike-lab`); 4.2 graded reference evidence and `RelevanceJudge`, compared with the lexical-only version in the lab | Not started |
-| 0.2.81 | 1.1c: stable item ids in the message ABI, provider replay keyed by id (replacing content keys, Anthropic native blocks included); 5.1 absorbing provider rewrites (sharing one ABI extension with 1.1c); 6.2 blackboard; 6.3 Python and WASM host program APIs | Not started |
+| 0.2.78 | Merged into main (PR #4), from branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Merged into main |
+| 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Done on branch `feat/context-items-0.2.79`, awaiting release |
+| 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence and `RelevanceJudge`; 6.2 blackboard; 6.3 Python and WASM host program APIs. One `MIGRATION-0.2.79-to-0.2.80.md` | Not started |
+
+Order inside 0.2.80 (the lab comes before the changes it measures; otherwise a metric change cannot be
+attributed):
+
+1. 4.3 lab tool (`crates/deepstrike-lab`), with a baseline run on the 0.2.79 code first: regret,
+   waste, cache_loss, success rate, cost.
+2. 1.1c + 5.1: stable item ids in the message ABI, provider replay keyed by id (replacing content
+   keys, Anthropic native blocks included); provider compaction and `clear_tool_uses` absorbed as
+   facts (the two share one ABI extension). Use the lab to confirm the kernel's token estimate is
+   within 10% of measured usage.
+3. 4.2 graded reference evidence and `RelevanceJudge`, compared with the lexical-only version in the
+   lab: regret and waste no higher, success rate no lower.
+4. 6.2 blackboard, 6.3 Python / WASM host program APIs: independent of the first three, can be
+   interleaved.
+
+The PR is large, so the steps above land as staged PRs into one release branch, with the version
+bumped once at the end.
 
 Remaining 0.2.78 steps:
 
