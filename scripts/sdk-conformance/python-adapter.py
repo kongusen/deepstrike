@@ -25,7 +25,6 @@ FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
 
 try:
   from deepstrike import (
-    create_native_context_preparation_adapter,
     InMemorySessionLog,
     decode_canonical_content_parts,
     decode_durable_content,
@@ -39,13 +38,11 @@ try:
   )
   from deepstrike.runtime.execution_evidence import provider_attempt_to_record
   from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event
-  from deepstrike.runtime.shared_evidence import read_session_evidence
   from deepstrike.runtime.session_log import FileSessionLog, _session_event_union_fields
 except ModuleNotFoundError as error:
   if error.name != "deepstrike":
     raise
   from deepstrike import (
-    create_native_context_preparation_adapter,
     InMemorySessionLog,
     decode_canonical_content_parts,
     decode_durable_content,
@@ -59,7 +56,6 @@ except ModuleNotFoundError as error:
   )
   from deepstrike.runtime.execution_evidence import provider_attempt_to_record
   from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event
-  from deepstrike.runtime.shared_evidence import read_session_evidence
   from deepstrike.runtime.session_log import FileSessionLog, _session_event_union_fields
 
 
@@ -148,108 +144,9 @@ def project_attempt_record(record: dict[str, Any]) -> dict[str, Any]:
   return projected
 
 
-class _FixtureJournalEntry:
-  def __init__(self, entry: dict[str, Any]):
-    self.step_seq = entry["step_seq"]
-    self.record_digest = entry["record_digest"]
-    self.record_bytes = bytes(entry["record_bytes"])
-
-
-class _FixtureCheckpoint:
-  def __init__(self, checkpoint: dict[str, Any]):
-    self.checkpoint_id = checkpoint["checkpoint_id"]
-    self.ordinal = checkpoint["ordinal"]
-    self.through_step_seq = checkpoint["through_step_seq"]
-    self.state_digest = checkpoint["state_digest"]
-    self.checkpoint_bytes = bytes(checkpoint["checkpoint_bytes"])
-
-
-class _FixtureJournal:
-  """Read-only journal stub: the snapshot reader only calls these two methods."""
-
-  def __init__(self, journal: dict[str, Any]):
-    self._journal = journal
-
-  async def read_from(self, operation_id: str, from_step_seq: int = 0) -> list[_FixtureJournalEntry]:
-    return [_FixtureJournalEntry(entry) for entry in self._journal["entries"]]
-
-  async def latest_checkpoint(self, operation_id: str) -> _FixtureCheckpoint | None:
-    checkpoint = self._journal.get("checkpoint")
-    return None if checkpoint is None else _FixtureCheckpoint(checkpoint)
-
-
-class _FixtureSidecar:
-  def __init__(self, sidecar: dict[str, Any]):
-    self._sidecar = sidecar
-
-  def knowledge_provenance(self, entry_id: str, content_digest: str) -> str | None:
-    return (self._sidecar.get("knowledge_provenance") or {}).get(entry_id)
-
-  def memory_candidate_receipt(self, agent_id: str, candidate_id: str) -> dict[str, Any] | None:
-    return (self._sidecar.get("memory_candidate_receipts") or {}).get(candidate_id)
-
-
-async def read_fixture_evidence(item: dict[str, Any]) -> Any:
-  session_log = InMemorySessionLog()
-  for event in item["events"]:
-    await session_log.append(item["session_id"], event)
-  journal = item.get("journal")
-  sidecar = item.get("sidecar")
-  return await read_session_evidence(
-    operation_id=item["operation_id"],
-    session_id=item["session_id"],
-    scope=item.get("scope") or {},
-    session_log=session_log,
-    kernel_journal=None if journal is None else _FixtureJournal(journal),
-    sidecar=None if sidecar is None else _FixtureSidecar(sidecar),
-  )
-
-
-def project_evidence_snapshot(snapshot: Any) -> dict[str, Any]:
-  """The SDK-neutral projection pinned by shared_evidence_snapshot (messages stay out)."""
-  def defined(**fields: Any) -> dict[str, Any]:
-    return {key: value for key, value in fields.items() if value is not None}
-
-  as_of = snapshot.as_of
-  refs = []
-  for ref in snapshot.refs:
-    retention = ref.retention
-    refs.append(defined(
-      domain=ref.domain, ref_id=ref.ref_id, authority=ref.authority, availability=ref.availability,
-      content_digest=ref.content_digest, payload_ref=ref.payload_ref, size_bytes=ref.size_bytes,
-      version=ref.version, provenance=ref.provenance, settlement=ref.settlement,
-      evidence_refs=None if ref.evidence_refs is None else list(ref.evidence_refs),
-      links=None if ref.links is None else [
-        {"relation": link.relation, "domain": link.domain, "ref_id": link.ref_id} for link in ref.links],
-      retention=None if retention is None else defined(
-        pinned=retention.pinned, observed_ttl_days=retention.observed_ttl_days, prunable=retention.prunable),
-    ))
-  return {
-    "as_of": {} if as_of is None else defined(
-      session_log_seq=as_of.session_log_seq, journal_step_seq=as_of.journal_step_seq,
-      checkpoint_ordinal=as_of.checkpoint_ordinal),
-    "completeness": snapshot.completeness,
-    "diagnostics": [defined(code=item.code, domain=item.domain, ref_id=item.ref_id) for item in snapshot.diagnostics],
-    "refs": refs,
-    "verification": {
-      "journal": len(snapshot.verification.journal),
-      "session_logs": [len(stream) for stream in snapshot.verification.session_logs],
-      "checkpoints": len(snapshot.verification.checkpoints),
-    },
-  }
-
-
 def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
   input_value = fixture.get("input", {})
   domain = fixture["domain"]
-  if domain == "context_execution":
-    adapter = create_native_context_preparation_adapter()
-    prepared = adapter.prepare(input_value["request"])
-    return {
-      "input_digest": prepared["execution_input"]["input_digest"],
-      "plan_digest": prepared["plan"]["plan_id"],
-      "verified": adapter.verify(input_value["request"]["effect"], prepared),
-    }
   if domain == "provider_request_plan":
     source = json.loads(fixture_path_for(input_value.get("fixture")).read_text(encoding="utf-8"))
     source = source["input"]
@@ -332,12 +229,6 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
     return {"kinds": {
       kind: {"required": list(entry["required"]), "optional": list(entry["optional"])}
       for kind, entry in sorted(_session_event_union_fields().items())
-    }}
-
-  if domain == "shared_evidence_snapshot":
-    return {"snapshots": {
-      item["name"]: project_evidence_snapshot(asyncio.run(read_fixture_evidence(item)))
-      for item in input_value.get("cases", [])
     }}
 
   if domain == "kernel_observation_projection":

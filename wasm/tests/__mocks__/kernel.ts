@@ -47,7 +47,6 @@ export class CanonicalKernel {
   private effect(kind: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
     return { effect_id: `mock-effect-${this.nextEffect++}`, effect: {
       kind, ...payload,
-      ...(kind === "call_provider" ? { context_candidate: { mock: true } } : {}),
     } }
   }
 
@@ -699,27 +698,6 @@ export function verdictOutputSchema(extractSkillOnPass: boolean) {
   }
   if (extractSkillOnPass) properties.skill = { type: "object" }
   return JSON.stringify({ type: "object", required: ["passed", "overall_score", "feedback"], properties })
-}
-
-/** Boundary stand-in only; Rust/WASM binding tests validate real candidate digests. */
-export function contextPrepareJson(raw: string): string {
-  const request = JSON.parse(raw)
-  if (!request.effect?.context_candidate || request.prompt_measurement?.requestFingerprint !== request.request_fingerprint) {
-    throw new Error("invalid mock context preparation")
-  }
-  return JSON.stringify({
-    state: {}, plan: { runtime_inputs: "mock-runtime-inputs" }, execution_input: { input_digest: "mock-context-input" },
-    binding: { digest: "mock-context-binding" },
-    provider_route: request.provider_route, prompt_measurement: request.prompt_measurement,
-  })
-}
-
-export function contextVerifyJson(raw: string): string {
-  const request = JSON.parse(raw)
-  if (!request.effect?.context_candidate || request.preparation?.execution_input?.input_digest !== "mock-context-input") {
-    throw new Error("invalid mock context verification")
-  }
-  return "true"
 }
 
 /** Boundary stand-in only; the canonical-binding node tests exercise the real kernel authority. */

@@ -115,66 +115,9 @@ impl CanonicalOperationDriver {
                 context: rendered,
                 tools,
             } => {
-                let context_fault = |error: String| {
-                    KernelFault::new(
-                        KernelFaultCode::InvalidLifecycle,
-                        format!("provider context preparation failed: {error}"),
-                    )
-                };
-                let policy_bytes =
-                    super::super::record::canonical_bytes(&context.config.context_policy)
-                        .map_err(|error| context_fault(error.to_string()))?;
-                let policy_digest =
-                    crate::evolution::ContentDigest::from_bytes(policy_bytes.as_slice());
-                let engine = self
-                    .engine()
-                    .ok_or_else(|| context_fault("missing engine".into()))?;
-                let (mut context_candidate, prepared) = engine
-                    .ctx
-                    .prepare_candidate(
-                        operation_id.to_string(),
-                        format!("{operation_id}:step:{step_seq}"),
-                        step_seq.get(),
-                        policy_digest,
-                    )
-                    .map_err(|error| context_fault(error.to_string()))?;
-                let prepared_bytes = super::super::record::canonical_bytes(&prepared)
-                    .map_err(|error| context_fault(error.to_string()))?;
-                let actual_bytes = super::super::record::canonical_bytes(&rendered)
-                    .map_err(|error| context_fault(error.to_string()))?;
-                if prepared_bytes != actual_bytes {
-                    return Err(context_fault(
-                        "rendered projection changed after selection".into(),
-                    ));
-                }
                 let wire_context = rendered_context(&rendered);
                 let wire_tools = tools.iter().map(tool_schema).collect::<Vec<_>>();
-                context_candidate.cache_prefix = wire_context
-                    .frozen_prefix_len
-                    .map(|entries| {
-                        let prefix =
-                            wire_context.turns.get(..entries as usize).ok_or_else(|| {
-                                context_fault("cache prefix exceeds rendered projection".into())
-                            })?;
-                        let bytes = super::super::record::canonical_bytes(&(
-                            &wire_context.system_stable,
-                            &wire_context.system_knowledge,
-                            prefix,
-                        ))
-                        .map_err(|error| context_fault(error.to_string()))?;
-                        Ok(crate::context::execution::CachePrefixBoundary {
-                            digest: crate::evolution::ContentDigest::from_bytes(bytes.as_slice()),
-                            entries,
-                        })
-                    })
-                    .transpose()?;
-                let projection_bytes =
-                    super::super::record::canonical_bytes(&(&wire_context, &wire_tools))
-                        .map_err(|error| context_fault(error.to_string()))?;
-                context_candidate.rendered_snapshot =
-                    crate::evolution::ContentDigest::from_bytes(projection_bytes.as_slice());
                 EffectKind::CallProvider(CallProviderEffect {
-                    context_candidate: Box::new(context_candidate),
                     context: wire_context,
                     tools: wire_tools,
                 })
@@ -239,10 +182,48 @@ impl CanonicalOperationDriver {
                 &archived,
                 *effect_index,
             )?),
-            // Memory effects are minted directly by the P1 syscall path (see
-            // `plan_memory_write` / `plan_memory_query`), so reaching these semantic actions is an
-            // invalid lifecycle transition.
-            action @ (LoopAction::PersistMemory { .. } | LoopAction::QueryMemory { .. }) => {
+            // Plan task 2.1 · the only semantic memory query is the kernel's own recall, owed at
+            // run start and after a renewal. Model queries are minted by `plan_memory_query`.
+            LoopAction::QueryMemory { query, requested_k } => {
+                let Some(binding) = context
+                    .config
+                    .memory_access
+                    .clone()
+                    .filter(|binding| binding.capabilities.read)
+                else {
+                    return Err(KernelFault::new(
+                        KernelFaultCode::InvalidLifecycle,
+                        "the kernel owed a memory recall to an operation that cannot read memory"
+                            .to_string(),
+                    ));
+                };
+                let sprint = self.engine().map_or(0, |engine| engine.ctx.sprint);
+                let requested_k = u32::try_from(requested_k).unwrap_or(u32::MAX);
+                self.recall_query = Some(AuthoredMemoryQuery {
+                    binding_id: binding.binding_id.clone(),
+                    text: query.query.clone(),
+                    requested_k,
+                    record_id: None,
+                    recall: true,
+                });
+                EffectKind::QueryMemory(QueryMemoryEffect {
+                    binding,
+                    query: CanonicalMemoryQuery {
+                        text: query.query,
+                        kinds: Vec::new(),
+                        record_id: None,
+                        accepted_at_ms: context.input.observed_at_ms,
+                        causation: SyscallCausation::KernelRecall(super::super::syscall::KernelRecallCausation {
+                            task_id: self.turn_task_id(),
+                            sprint,
+                        }),
+                    },
+                    requested_k,
+                })
+            }
+            // Memory writes are minted directly by the P1 syscall path (`plan_memory_write`), so
+            // reaching this semantic action is an invalid lifecycle transition.
+            action @ LoopAction::PersistMemory { .. } => {
                 return Err(KernelFault::new(
                     KernelFaultCode::InvalidLifecycle,
                     format!(
@@ -270,6 +251,11 @@ impl CanonicalOperationDriver {
                         exposed_tools: call.tools.iter().map(|tool| tool.name.clone()).collect(),
                     },
                 );
+            }
+            EffectKind::QueryMemory(_) => {
+                if let Some(recall) = self.recall_query.take() {
+                    self.pending_memory_queries.insert(effect_id.clone(), recall);
+                }
             }
             // §10.4 · the launch is published, so every task it names leaves `PendingLaunch`. Only
             // the host's acknowledgement moves them on to `Running`.
@@ -441,7 +427,7 @@ impl CanonicalOperationDriver {
                         .collect(),
                 ),
             );
-            let dependency_outputs = info
+            let produced: Vec<(String, String)> = info
                 .input_agent_ids
                 .iter()
                 .filter_map(|agent_id| {
@@ -459,12 +445,24 @@ impl CanonicalOperationDriver {
                         .as_ref()
                         .and_then(message_body_parts)?
                         .0;
-                    Some((agent_id.clone(), serde_json::Value::String(output)))
+                    Some((agent_id.clone(), output))
                 })
                 .collect();
+            let brief = info.dependency_context.brief(&produced);
+            if !brief.is_empty() {
+                metadata.insert(
+                    "dependency_brief".to_string(),
+                    serde_json::Value::String(brief),
+                );
+            }
             metadata.insert(
                 "dependency_outputs".to_string(),
-                serde_json::Value::Object(dependency_outputs),
+                serde_json::Value::Object(
+                    produced
+                        .into_iter()
+                        .map(|(id, output)| (id, serde_json::Value::String(output)))
+                        .collect(),
+                ),
             );
         }
         Ok(TaskLaunch {

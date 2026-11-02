@@ -15,6 +15,7 @@ _KERNEL_KINDS = frozenset({
     "page_in",
     "capability_changed",
     "context_renewed",
+    "context_lifecycle_reported",
     "suspended",
     "resumed",
     "tool_gated",

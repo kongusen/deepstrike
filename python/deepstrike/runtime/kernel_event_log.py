@@ -15,6 +15,8 @@ def category_for_kind(kind: str) -> KernelEventCategory:
         "page_in_requested",
         "renewed",
         "context_renewed",
+        "lifecycle_report",
+        "context_lifecycle_reported",
         "memory_written",
         "memory_queried",
         "memory_validation_failed",
@@ -119,6 +121,16 @@ def _project_kernel_observation(
             "turn": t,
             "sprint": _get(obs, "sprint", 0),
             "handoff_ref": "",
+        }
+    if kind == "lifecycle_report":
+        return {
+            "kind": "context_lifecycle_reported",
+            "turn": t,
+            "knowledge_entries": _get(obs, "knowledge_entries", 0),
+            "knowledge_referenced": _get(obs, "knowledge_referenced", 0),
+            "regret": _get(obs, "regret", 0),
+            "waste_tokens": _get(obs, "waste_tokens", 0),
+            "cache_loss_tokens": _get(obs, "cache_loss_tokens", 0),
         }
     if kind == "rollbacked":
         return {

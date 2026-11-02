@@ -20,7 +20,7 @@ use crate::knowledge::KnowledgeSource;
 use crate::memory::{
     MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
     MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy, MemoryWriter,
-    memory_candidate_id, memory_fetch_recall, memory_recall_turn,
+    memory_candidate_id, memory_fetch_recall,
 };
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
@@ -120,8 +120,6 @@ pub struct RunLimits {
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
-    /// Host-owned artifact set identity captured in operation genesis.
-    pub artifact_set_digest: Option<String>,
     pub execution_plane: Option<Box<dyn ExecutionPlane>>,
     /// Defaults to an in-memory log. Supply a durable log for cross-process evidence retention.
     pub session_log: Option<Arc<dyn SessionLog>>,
@@ -147,6 +145,9 @@ pub struct RuntimeOptions {
     pub pre_query_memory: Option<std::sync::Arc<dyn Fn(&str) -> Vec<MemoryQuery> + Send + Sync>>,
     pub system_prompt: Option<String>,
     pub initial_memory: Vec<String>,
+    /// Plan task 3.1 · outputs of the workflow nodes this run depends on, by agent id. The kernel
+    /// holds them; the model reads one with `read_result(call_id="dep:<agent_id>")`.
+    pub dependency_outputs: std::collections::BTreeMap<String, String>,
     pub skill_dir: Option<std::path::PathBuf>,
     pub memory_store: Option<Box<dyn MemoryStore>>,
     pub knowledge_source: Option<Box<dyn KnowledgeSource>>,
@@ -694,80 +695,40 @@ impl RuntimeRunner {
         Ok(hits)
     }
 
+    /// The kernel's own recall for the run goal (plan task 2.1). `pre_query_memory` may rewrite
+    /// it into several scoped queries; their hits are merged, one per record. A failing store
+    /// search is skipped: recall is best-effort.
+    async fn kernel_recall_hits(
+        &self,
+        store: &dyn MemoryStore,
+        agent_id: &str,
+        query: &MemoryQuery,
+    ) -> Vec<MemoryRecall> {
+        let queries = match &self.opts.pre_query_memory {
+            Some(pre) => pre(&query.query),
+            None => vec![query.clone()],
+        };
+        let mut accepted: Vec<MemoryRecall> = Vec::new();
+        for mut each in queries {
+            if each.query.trim().is_empty() {
+                continue;
+            }
+            each.top_k = each.top_k.min(query.top_k).max(1);
+            let Ok(hits) = store.search(agent_id, &each).await else {
+                continue;
+            };
+            for hit in hits.into_iter().take(each.top_k) {
+                if accepted.iter().all(|seen| seen.record.record_id != hit.record.record_id) {
+                    accepted.push(hit);
+                }
+            }
+        }
+        accepted
+    }
+
     /// M3 · a host-initiated recall. The store reports the counts it holds; the kernel derives the
     /// next counts (the same derivation a model `query_memory` resolution journals as
     /// `memory_recalled`) and the store only mirrors them.
-    /// I4 + K4 · M5: fetch long-term memory hits for `goal` and put each one in context as the
-    /// canonical recall index line (`memory_recall_turn`), as a keyed `memory:<record_id>`
-    /// knowledge entry. Runs before turn 1 and again after each sprint renewal; both land in
-    /// knowledge, because a running operation accepts history only through effects or external
-    /// events and one placement lets the key dedupe a record across phases. One prefetch is one
-    /// dedupe horizon and one `memory_retrieval_result`. A failing store or hook
-    /// skips the prefetch; only a kernel refusal of the seed command is an error.
-    async fn prefetch_memory(
-        &self,
-        kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
-        pending_observations: &mut Vec<KernelObservation>,
-        goal: &str,
-        session_id: &str,
-    ) -> Result<()> {
-        if !self.memory_retrieval_enabled() {
-            return Ok(());
-        }
-        let (Some(pre), Some(store), Some(agent_id)) = (
-            self.opts.pre_query_memory.clone(),
-            self.opts.memory_store.as_ref(),
-            self.opts.agent_id.as_deref(),
-        ) else {
-            return Ok(());
-        };
-        let policy_top_k = self
-            .opts
-            .memory_policy
-            .as_ref()
-            .and_then(|policy| policy.retrieval_top_k);
-        let mut accepted: Vec<MemoryRecall> = Vec::new();
-        for mut query in pre(goal) {
-            if query.query.trim().is_empty() {
-                continue;
-            }
-            if let Some(top_k) = policy_top_k {
-                query.top_k = query.top_k.min(top_k as usize);
-            }
-            if query.top_k == 0 {
-                continue;
-            }
-            let Ok(hits) = store.search(agent_id, &query).await else {
-                continue;
-            };
-            for hit in hits.into_iter().take(query.top_k) {
-                if accepted
-                    .iter()
-                    .any(|seen| seen.record.record_id == hit.record.record_id)
-                {
-                    continue;
-                }
-                let content = memory_recall_turn(&hit.record);
-                let command = serde_json::json!({
-                    "kind": "add_knowledge_message",
-                    "key": format!("memory:{}", hit.record.record_id),
-                    "tokens": ((content.len() / 4) as u32).max(1),
-                    "content": content,
-                });
-                kernel_apply(kernel, pending_observations, command).await?;
-                accepted.push(hit);
-            }
-        }
-        if accepted.is_empty() {
-            return Ok(());
-        }
-        // M3 · the prefetch is a recall too; its counts are the kernel's to derive.
-        let _ = Box::pin(self.record_host_memory_recall(&accepted, agent_id)).await;
-        self.log_memory_retrieval_result(Some(session_id), accepted)
-            .await;
-        Ok(())
-    }
-
     async fn record_host_memory_recall(&self, hits: &[MemoryRecall], agent_id: &str) -> Result<()> {
         let Some(store) = &self.opts.memory_store else {
             return Ok(());
@@ -894,7 +855,6 @@ impl RuntimeRunner {
                 max_turns: Some(effective_max_turns),
                 max_total_tokens: limits.and_then(|limits| limits.max_total_tokens),
                 max_wall_ms: effective_timeout,
-                artifact_set_digest: self.opts.artifact_set_digest.clone(),
                 memory_binding_id: self
                     .opts
                     .agent_id
@@ -1280,6 +1240,9 @@ impl RuntimeRunner {
                             // Proposals must land in review, never straight in the store.
                             "propose_memory": self.opts.memory_candidate_sink.is_some()
                                 && self.memory_write_to_candidate_sink(MemoryCandidateSource::ModelProposal),
+                            // The kernel recalls for the goal before the first call and after
+                            // each renewal.
+                            "recall": self.opts.pre_query_memory.is_some() || self.opts.memory_scope.is_some(),
                         }),
                     ).await?;
                 }
@@ -1300,6 +1263,17 @@ impl RuntimeRunner {
                             "kind": "add_system_message",
                             "content": sp,
                             "tokens": tokens,
+                        }),
+                    ).await?;
+                }
+                for (agent_id, content) in &self.opts.dependency_outputs {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "add_dependency_output",
+                            "agent_id": agent_id,
+                            "content": content,
                         }),
                     ).await?;
                 }
@@ -1447,18 +1421,7 @@ impl RuntimeRunner {
                     ).await?;
                 }
 
-                // I4 · M5: pre-fetch memory into knowledge before the first LLM turn; the prefetch
-                // re-fires after each sprint renewal (`append_observations`).
                 *self.current_goal.lock().unwrap() = Some(goal.clone());
-                if !resume_mid_run {
-                    self.prefetch_memory(
-                        &kernel,
-                        &mut pending_observations,
-                        &goal,
-                        &session_id,
-                    )
-                    .await?;
-                }
             }
 
             let mut action = if resume_mid_run {
@@ -1627,7 +1590,7 @@ impl RuntimeRunner {
                 }
 
                 match &action.effect {
-                    HostEffect::CallProvider { context, tools, context_effect } => {
+                    HostEffect::CallProvider { context, tools } => {
                         let provider_effect_id = action.effect_id.clone();
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
@@ -1646,8 +1609,6 @@ impl RuntimeRunner {
                         // reassigned before the metrics emit below.
                         let tools_exposed = provider_tools.len();
 
-                        // Freeze host-owned route and preflight evidence against the committed
-                        // candidate before any provider I/O. Core owns all digest/plan validation.
                         let mut route = self.opts.provider.context_route();
                         let prepared_request = self.opts.provider.prepare_context_request(
                             provider_context, provider_tools, ext.as_ref(), provider_state.as_ref(),
@@ -1662,33 +1623,15 @@ impl RuntimeRunner {
                         });
                         let material_bytes = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(&material)
                             .map_err(|error| Error::Other(error.to_string()))?;
-                        let fingerprint = deepstrike_core::evolution::ContentDigest::from_bytes(material_bytes.as_slice());
+                        let fingerprint = {
+                            use sha2::{Digest as _, Sha256};
+                            let hex: String = Sha256::digest(material_bytes.as_slice()).iter().map(|b| format!("{b:02x}")).collect();
+                            format!("sha256:{hex}")
+                        };
                         // The same fingerprint and protocol identify the request in llm_completed's
                         // wire evidence.
                         let wire_protocol = route.get("protocol").and_then(|p| p.as_str()).unwrap_or_default().to_string();
-                        let wire_fingerprint = fingerprint.as_str().to_string();
-                        // Advisory estimate only; native provider usage settles the execution later.
-                        let counted_material = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(
-                            prepared_request.get("body").unwrap_or(&prepared_request),
-                        ).map_err(|error| Error::Other(error.to_string()))?;
-                        let estimated = counted_material.as_slice().len().div_ceil(4) as u64;
-                        let preparation = deepstrike_core::context::execution::prepare_context_dispatch(
-                            &deepstrike_core::context::execution::ContextDispatchRequest {
-                                effect: context_effect.clone(), request_fingerprint: fingerprint.clone(),
-                                provider_route: route,
-                                prompt_measurement: deepstrike_core::context::execution::ContextPromptMeasurement {
-                                    request_fingerprint: fingerprint, input_tokens: estimated,
-                                    source: deepstrike_core::context::measurement::MeasurementSource::Heuristic,
-                                    confidence: deepstrike_core::context::measurement::MeasurementConfidence::LowConfidence,
-                                },
-                            },
-                        ).map_err(|error| Error::Other(error.to_string()))?;
-                        if let Some(log) = &self.opts.session_log {
-                            log.append(&session_id, SessionEvent::ContextPrepared {
-                                turn: kernel.lock().await.turn(),
-                                effect_id: provider_effect_id.clone(), preparation: Box::new(preparation),
-                            }).await.map_err(Error::Io)?;
-                        }
+                        let wire_fingerprint = fingerprint;
 
                         let mut provider_stream = match self
                             .opts
@@ -2066,6 +2009,7 @@ impl RuntimeRunner {
                         query,
                         requested_k,
                         record_id,
+                        recall_sprint,
                     } => {
                         let effect_id = action.effect_id.clone();
                         let (hits, error) = match (
@@ -2083,6 +2027,9 @@ impl RuntimeRunner {
                                 // `memory(record_id)` is a point read under the same gate as a
                                 // search: that record, or nothing.
                                 let result = match record_id.as_deref() {
+                                    _ if recall_sprint.is_some() => {
+                                        Ok(self.kernel_recall_hits(store.as_ref(), agent_id, &query).await)
+                                    }
                                     Some(record_id) => {
                                         let now_ms = std::time::SystemTime::now()
                                             .duration_since(std::time::UNIX_EPOCH)
@@ -2653,20 +2600,6 @@ impl RuntimeRunner {
                         next_archive_start = compressed_seq + 1;
                     }
                     continue;
-                }
-                // K4 · a sprint renewal dropped the old history, earlier memory hits included, so
-                // the new sprint gets a fresh recall pass (live drain path only).
-                KernelObservation::Renewed { .. } => {
-                    let goal = self.current_goal.lock().unwrap().clone();
-                    if let Some(goal) = goal {
-                        let _ = Box::pin(self.prefetch_memory(
-                            kernel_mutex,
-                            observations,
-                            &goal,
-                            session_id,
-                        ))
-                        .await;
-                    }
                 }
                 // M3 · mirror the recall counts the kernel derived; the store never computes them.
                 KernelObservation::MemoryRecalled { recalls, .. } => {

@@ -28,7 +28,7 @@ DeepStrike can compress older turns, keep stable prefixes cache-friendly, and pa
 |------|----------|----------------|
 | `system_stable` | Identity / system prompt | Long-lived cache |
 | `system_knowledge` | Skill body, `initial_memory`, host-pinned durable refs (see Level 5) | Medium-term cache |
-| `turns` | Conversation history (incl. runtime memory/knowledge retrieval hits & prefetch) | Frozen prefix, growing tail |
+| `turns` | Conversation history (incl. runtime memory/knowledge retrieval hits) | Frozen prefix, growing tail |
 | `state_turn` | task_state + signals | Rebuilt each turn, not cached |
 
 `state_turn` is separated from history so the history prefix stays **byte-stable** — a requirement for Anthropic prompt cache.
@@ -121,7 +121,7 @@ breakpoint) — but durable ≠ immortal. Content routes by lifecycle:
 | ------ | ------ | ------ |
 | Skill body (method content, reused all run) | `knowledge`, key `skill:<name>` | Resident until deactivated / lease expiry |
 | `memory` / `knowledge` tool retrieval hits (facts, use-once) | `history` as an ordinary turn | Decays with the compression pyramid |
-| `pre_query_memory` prefetch | `history` as an ordinary turn | Same; auto re-queried after renewal |
+| Kernel recall (`pre_query_memory` rewrites the query) | `knowledge`, one `memory:<record_id>` index line per hit | Re-queried by the kernel after each renewal |
 | Host-pinned reference material | `knowledge` (`push_knowledge(key=..., pinned=True)`) | Pinned — exempt from budget eviction |
 
 **Keyed entries (K1):** `push_knowledge(content, key="ref")` upserts on a repeated key;
@@ -140,9 +140,14 @@ unload) re-widens the toolset at the next provider call and unpins the knowledge
 next boundary; `skill_lease_turns=N` walks the same path automatically after N turns. Long
 multi-phase runs no longer monotonically accumulate early-phase skills.
 
-**Renewal memory re-query (K4):** a sprint renewal rebuilds history wholesale — dropping earlier
-memory hits with it — so the `pre_query_memory` hook re-fires with `phase="renewal"`, giving the
-new sprint a fresh recall pass (the turn-1 fetch passes `phase="initial"`).
+**Memory recall (plan task 2.1):** the kernel owns recall. With a memory store, `agentId` and
+`memoryScope` configured, the SDK turns on `memory_policy.recall`. Before the first provider call
+and after every sprint renewal, the kernel issues a `query_memory` effect for the current goal
+(causation `kernel_recall`). The host only runs the search. The `pre_query_memory` hook may
+rewrite it into several scoped queries (`phase` is `"initial"` or `"renewal"`); hits are merged per
+record. The kernel lands each hit in knowledge as the index line
+`[MEMORY record_id=… kind=… trust=…] <description>` under the key `memory:<record_id>`, and skips
+a record already there. The model reads a record in full with `memory(record_id=…)`.
 
 ```python
 RuntimeOptions(

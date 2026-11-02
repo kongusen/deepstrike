@@ -133,6 +133,15 @@ fn project(obs: &Value, turn: u32, opts: &ProjectionOptions) -> Option<Value> {
             "sprint": or(obs, "sprint", 0.into()),
             "handoff_ref": "",
         }),
+        "lifecycle_report" => json!({
+            "kind": "context_lifecycle_reported",
+            "turn": t,
+            "knowledge_entries": or(obs, "knowledge_entries", 0.into()),
+            "knowledge_referenced": or(obs, "knowledge_referenced", 0.into()),
+            "regret": or(obs, "regret", 0.into()),
+            "waste_tokens": or(obs, "waste_tokens", 0.into()),
+            "cache_loss_tokens": or(obs, "cache_loss_tokens", 0.into()),
+        }),
         "rollbacked" => json!({
             "kind": "rollbacked",
             "turn": t,

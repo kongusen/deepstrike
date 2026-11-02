@@ -11,7 +11,7 @@ These guides explain how to give an Agent more useful capabilities. Start with t
 | load specialized instructions | [Skills](./skills) → [Memory](./memory) |
 | work safely | [Governance & Limits](./governance) → [Tools & Integrations](./execution-plane-and-tools) |
 | delegate work | [Sub-Agents & Handoffs](./sub-agents-and-collaboration) → [Workflows](./workflow) |
-| run specialists in parallel | [Workflows](./workflow) → [Structured Output & Reducers](./structured-output-and-reducers) |
+| run specialists in parallel | [Workflows](./workflow) → [Structured Output](./structured-output-and-reducers) |
 | react to changing input | [Signals & Reactive Agents](./signals-and-reactive) |
 | keep working over time | [Long-Running Sessions](./session-replay-and-recovery) → [Evaluation & Milestones](./milestones) |
 | inspect usage and decisions | [Runtime Observability](./os-profile-and-snapshots) |
@@ -28,7 +28,7 @@ These guides explain how to give an Agent more useful capabilities. Start with t
 | [Governance & Limits](./governance) | Permissions, approvals, parameter rules, quotas, budgets, and cancellation |
 | [Sub-Agents & Handoffs](./sub-agents-and-collaboration) | Roles, isolated context, delegation, contracts, and handoff artifacts |
 | [Workflows](./workflow) | Parallel tasks, dependencies, loops, branches, tournaments, and dynamic growth |
-| [Structured Output & Reducers](./structured-output-and-reducers) | Schemas, retries, deterministic merging, and verification |
+| [Structured Output](./structured-output-and-reducers) | Schemas, retries, and verification |
 | [Signals & Reactive Agents](./signals-and-reactive) | Webhooks, schedules, host notes, peer reactions, and attention choices |
 | [Long-Running Sessions](./session-replay-and-recovery) | Persistence, pause, wake, resume, replay, and recovery evidence |
 | [Evaluation & Milestones](./harness-and-eval) | Quality checks, feedback, retries, milestones, and acceptance gates |

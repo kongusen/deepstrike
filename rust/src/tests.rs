@@ -555,7 +555,6 @@ mod tests {
         ));
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(provider),
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -571,6 +570,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -669,7 +669,6 @@ mod tests {
         }
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(MetricsProvider),
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -685,6 +684,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -796,7 +796,6 @@ mod tests {
         }
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(GatingProvider {
                 calls: Arc::new(AtomicUsize::new(0)),
             }),
@@ -814,6 +813,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: Some(dir.clone()),
             memory_store: None,
             knowledge_source: None,
@@ -856,222 +856,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    struct ContextOrderingLog {
-        inner: crate::runtime::InMemorySessionLog,
-        fail_preparation: bool,
-        persisted: std::sync::atomic::AtomicBool,
-        encoding_revision: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::runtime::SessionLog for ContextOrderingLog {
-        async fn append(
-            &self,
-            session_id: &str,
-            event: deepstrike_core::runtime::session::SessionEvent,
-        ) -> std::io::Result<u64> {
-            let prepared = matches!(
-                &event,
-                deepstrike_core::runtime::session::SessionEvent::ContextPrepared { .. }
-            );
-            if prepared && self.fail_preparation {
-                return Err(std::io::Error::other("context evidence write failed"));
-            }
-            let seq = self.inner.append(session_id, event).await?;
-            if prepared {
-                self.persisted
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                // A provider cache can change while the log append awaits storage.
-                self.encoding_revision
-                    .store(2, std::sync::atomic::Ordering::SeqCst);
-            }
-            Ok(seq)
-        }
-        async fn read(
-            &self,
-            session_id: &str,
-            from_seq: u64,
-            primitive_filter: Option<deepstrike_core::runtime::event_log::Primitive>,
-        ) -> std::io::Result<Vec<crate::runtime::session_log::SessionEntry>> {
-            self.inner
-                .read(session_id, from_seq, primitive_filter)
-                .await
-        }
-        async fn latest_seq(&self, session_id: &str) -> std::io::Result<i64> {
-            self.inner.latest_seq(session_id).await
-        }
-    }
-
-    struct FrozenContextTestProvider {
-        log: std::sync::Arc<ContextOrderingLog>,
-        dispatched: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::providers::LLMProvider for FrozenContextTestProvider {
-        fn prepare_context_request(
-            &self,
-            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
-            _tools: &[deepstrike_core::types::message::ToolSchema],
-            _extensions: Option<&serde_json::Value>,
-            _state: Option<&crate::providers::ProviderRunState>,
-        ) -> crate::Result<serde_json::Value> {
-            Ok(serde_json::json!({ "scope": "encoded_body", "body": {
-                "revision": self.log.encoding_revision.load(std::sync::atomic::Ordering::SeqCst)
-            }}))
-        }
-        async fn stream(
-            &self,
-            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
-            _tools: &[deepstrike_core::types::message::ToolSchema],
-            _extensions: Option<&serde_json::Value>,
-            _state: Option<&crate::providers::ProviderRunState>,
-        ) -> crate::Result<
-            Box<
-                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
-                    + Send
-                    + Unpin,
-            >,
-        > {
-            panic!("runner must dispatch the frozen request through stream_prepared")
-        }
-        async fn stream_prepared(
-            &self,
-            prepared: &serde_json::Value,
-            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
-            _tools: &[deepstrike_core::types::message::ToolSchema],
-            _extensions: Option<&serde_json::Value>,
-            _state: Option<&crate::providers::ProviderRunState>,
-        ) -> crate::Result<
-            Box<
-                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
-                    + Send
-                    + Unpin,
-            >,
-        > {
-            assert!(
-                self.log.persisted.load(std::sync::atomic::Ordering::SeqCst),
-                "ContextPrepared must be stored before any provider execution"
-            );
-            assert_eq!(
-                self.log
-                    .encoding_revision
-                    .load(std::sync::atomic::Ordering::SeqCst),
-                2
-            );
-            assert_eq!(
-                prepared["body"]["revision"],
-                serde_json::json!(1),
-                "dispatch must use the request frozen before the asynchronous log write"
-            );
-            self.dispatched
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(Box::new(futures::stream::iter(vec![Ok(
-                crate::providers::StreamEvent::TextDelta {
-                    delta: "done".into(),
-                },
-            )])))
-        }
-    }
-
-    #[tokio::test]
-    async fn context_evidence_write_precedes_frozen_dispatch_and_failure_prevents_io() {
-        use crate::runtime::{RuntimeOptions, RuntimeRunner};
-        use futures::StreamExt;
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        };
-        for fail_preparation in [false, true] {
-            let log = Arc::new(ContextOrderingLog {
-                inner: crate::runtime::InMemorySessionLog::new(),
-                fail_preparation,
-                persisted: AtomicBool::new(false),
-                encoding_revision: Arc::new(AtomicUsize::new(1)),
-            });
-            let dispatched = Arc::new(AtomicUsize::new(0));
-            let provider = FrozenContextTestProvider {
-                log: log.clone(),
-                dispatched: dispatched.clone(),
-            };
-            let runner = RuntimeRunner::new(RuntimeOptions {
-                artifact_set_digest: None,
-                provider: Box::new(provider),
-                execution_plane: None,
-                session_log: Some(log.clone()),
-                compression_store: None,
-                payload_store: None,
-                kernel_reliability: None,
-                session_id: None,
-                max_tokens: 1_000,
-                max_turns: Some(4),
-                timeout_ms: None,
-                extensions: None,
-                agent_id: None,
-                memory_scope: None,
-                system_prompt: None,
-                initial_memory: vec![],
-                skill_dir: None,
-                memory_store: None,
-                knowledge_source: None,
-                signal_source: None,
-                governance: None,
-                os_profile: None,
-                governance_policy: None,
-                signal_policy: None,
-                scheduler_policy: None,
-                resource_quota: None,
-                memory_policy: None,
-                tokenizer: None,
-                enable_plan_tool: None,
-                on_tool_suspend: None,
-                on_permission_request: None,
-                milestone_policy: crate::runtime::MilestonePolicy::Terminate,
-                milestone_contract: None,
-                run_spec: None,
-                allowed_tool_ids: None,
-                baseline_tool_ids: None,
-                on_turn_metrics: None,
-                stable_core_tool_ids: vec![],
-                pre_query_memory: None,
-                on_milestone_evaluate: None,
-                memory_runtime_policy: None,
-                memory_candidate_sink: None,
-            });
-            let mut stream = runner
-                .run_streaming("finish the task", &[], None, Some("context-order"))
-                .await
-                .unwrap();
-            let mut failure = None;
-            while let Some(event) = stream.next().await {
-                if let Err(error) = event {
-                    failure = Some(error.to_string());
-                    break;
-                }
-            }
-            if fail_preparation {
-                assert!(
-                    failure
-                        .as_deref()
-                        .is_some_and(|error| error.contains("context evidence write failed"))
-                );
-                assert_eq!(dispatched.load(Ordering::SeqCst), 0);
-            } else {
-                assert!(failure.is_none(), "{failure:?}");
-                assert_eq!(dispatched.load(Ordering::SeqCst), 1);
-            }
-        }
-    }
-
     struct TooLongThenOkProvider {
         call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        /// Rendered history bytes the provider received on each call.
+        sent_history: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
     }
 
     #[async_trait::async_trait]
     impl crate::providers::LLMProvider for TooLongThenOkProvider {
         async fn stream(
             &self,
-            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
+            context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
             _state: Option<&crate::providers::ProviderRunState>,
@@ -1082,6 +877,13 @@ mod tests {
                     + Unpin,
             >,
         > {
+            self.sent_history.lock().unwrap().push(
+                context
+                    .turns
+                    .iter()
+                    .map(|turn| turn.content.as_text().map_or(0, str::len))
+                    .sum(),
+            );
             let n = self
                 .call_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -1119,11 +921,12 @@ mod tests {
         use std::sync::Arc;
 
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sent_history = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(TooLongThenOkProvider {
                 call_count: call_count.clone(),
+                sent_history: sent_history.clone(),
             }),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -1139,6 +942,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1258,60 +1062,21 @@ mod tests {
         }
 
         let entries = session_log.read(session_id, 0, None).await.unwrap();
-        let first_preparation = entries
-            .iter()
-            .position(|entry| {
-                matches!(
-                    entry.event,
-                    deepstrike_core::runtime::session::SessionEvent::ContextPrepared { .. }
-                )
-            })
-            .unwrap();
         assert!(
-            entries[..first_preparation].iter().any(|entry| matches!(
+            entries.iter().any(|entry| matches!(
                 entry.event,
                 deepstrike_core::runtime::session::SessionEvent::Compressed { .. }
             )),
             "inherited history must compact before the first provider request"
         );
-        let preparations: Vec<_> = entries
-            .iter()
-            .filter_map(|entry| match &entry.event {
-                deepstrike_core::runtime::session::SessionEvent::ContextPrepared {
-                    preparation,
-                    ..
-                } => Some(preparation),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(preparations.len(), expected_calls);
+        let sent_history = sent_history.lock().unwrap();
+        assert_eq!(sent_history.len(), expected_calls);
         if expect_recovery {
-            assert_ne!(
-                preparations[0].execution_input.input_digest,
-                preparations[1].execution_input.input_digest
-            );
             assert!(
-                preparations[1].plan.projected_tokens < preparations[0].plan.projected_tokens,
-                "the retry must actually reduce the rejected prompt"
+                sent_history[1] < sent_history[0],
+                "the retry must actually reduce the rejected prompt: {sent_history:?}"
             );
         }
-        for preparation in &preparations {
-            preparation
-                .execution_input
-                .verify(&preparation.plan)
-                .unwrap();
-        }
-
-        let reactive_compactions = entries[first_preparation + 1..]
-            .iter()
-            .filter(|entry| {
-                matches!(
-                    entry.event,
-                    deepstrike_core::runtime::session::SessionEvent::Compressed { .. }
-                )
-            })
-            .count();
-        assert_eq!(reactive_compactions, usize::from(expect_recovery));
     }
 
     #[tokio::test]
@@ -1401,7 +1166,6 @@ mod tests {
         let call_count = Arc::new(AtomicU32::new(0));
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(FakeProvider {
                 call_count: call_count.clone(),
             }),
@@ -1419,6 +1183,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1515,7 +1280,6 @@ mod tests {
         let contract =
             MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1531,6 +1295,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1608,7 +1373,6 @@ mod tests {
         let contract =
             MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1624,6 +1388,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1718,7 +1483,6 @@ mod tests {
         });
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1734,6 +1498,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1910,7 +1675,6 @@ mod tests {
         };
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1926,6 +1690,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: Some(Box::new(store)),
             knowledge_source: None,
@@ -1975,7 +1740,6 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
-                    artifact_set_digest: None,
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },
@@ -2061,7 +1825,6 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -2077,6 +1840,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: Some(Box::new(Store {
                 memories: memories.clone(),
@@ -2183,7 +1947,6 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -2199,6 +1962,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: Some(Box::new(Store {
                 commits: commits.clone(),
@@ -2359,7 +2123,6 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -2375,6 +2138,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: Some(Box::new(Store { memories, sessions })),
             knowledge_source: None,
@@ -2474,7 +2238,6 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -2490,6 +2253,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: Some(Box::new(Store)),
             knowledge_source: None,
@@ -2543,34 +2307,6 @@ mod tests {
     }
 
     #[test]
-    fn tournament_and_loop_are_node_kinds_via_sdk_reexport() {
-        // A#1: the standalone Tournament / LoopUntilDone SDK primitives were removed; tournaments
-        // and loop-until-done are now `NodeKind` variants built through the workflow SDK surface.
-        use crate::{WorkflowNode, WorkflowSpec};
-        use deepstrike_core::types::agent::AgentRole;
-        use deepstrike_core::types::task::RuntimeTask;
-
-        let spec = WorkflowSpec::new(vec![
-            WorkflowNode::new(RuntimeTask::new("pick the best"), AgentRole::Plan).with_tournament(
-                vec![
-                    RuntimeTask::new("a"),
-                    RuntimeTask::new("b"),
-                    RuntimeTask::new("c"),
-                ],
-            ),
-            WorkflowNode::new(RuntimeTask::new("refine until done"), AgentRole::Implement)
-                .with_loop(5),
-        ]);
-        spec.validate()
-            .expect("tournament + loop nodes form a valid dag");
-        // The tournament controller is ready up front; only it (not its entrants yet) is runnable.
-        assert_eq!(
-            spec.to_task_graph().expect("graph").ready_tasks(),
-            vec![0, 1]
-        );
-    }
-
-    #[test]
     fn workflow_spec_reexport_builds_and_validates() {
         use crate::{WorkflowSpec, fanout_synthesize};
         use deepstrike_core::types::task::RuntimeTask;
@@ -2607,7 +2343,6 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
-                    artifact_set_digest: None,
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },
@@ -2687,7 +2422,6 @@ mod tests {
         }
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: None,
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -2707,6 +2441,7 @@ mod tests {
             // Far over `max_input_bytes` ⇒ the kernel rejects this `add_system_message`.
             system_prompt: Some("s".repeat(32_768)),
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -2799,7 +2534,6 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(MidStreamFailProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(session_log.clone()),
@@ -2815,6 +2549,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -2923,7 +2658,6 @@ mod tests {
             MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
-            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(session_log.clone()),
@@ -2939,6 +2673,7 @@ mod tests {
             memory_scope: None,
             system_prompt: None,
             initial_memory: vec![],
+            dependency_outputs: Default::default(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -3113,7 +2848,6 @@ mod tests {
             tools: &[&str],
         ) -> RuntimeOptions {
             RuntimeOptions {
-                artifact_set_digest: None,
                 provider: Box::new(provider),
                 execution_plane: Some(Box::new(plane)),
                 session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -3129,6 +2863,7 @@ mod tests {
                 memory_scope: None,
                 system_prompt: None,
                 initial_memory: vec![],
+                dependency_outputs: Default::default(),
                 skill_dir: None,
                 memory_store: None,
                 knowledge_source: None,
@@ -3315,7 +3050,12 @@ mod tests {
             }));
             let runner = RuntimeRunner::new(opts);
             drain(&runner, "p1-15-query").await;
-            assert_eq!(*recalls.lock().unwrap(), vec![("crossing".to_string(), 3)]);
+            // The kernel's start-of-run recall, then the model's query: each mirrors the count
+            // the kernel derived from the stored one.
+            assert_eq!(
+                *recalls.lock().unwrap(),
+                vec![("crossing".to_string(), 3), ("crossing".to_string(), 3)]
+            );
         }
 
         /// M5 · `memory(record_id)` reads one record in full; a record outside this agent's memory
@@ -3376,6 +3116,38 @@ mod tests {
                 contexts[2]
             );
             assert!(!contexts[2].contains("elsewhere body"));
+        }
+
+        /// Plan task 3.1 · a run holding a dependency output reads it in full with `read_result`.
+        #[tokio::test]
+        async fn a_dependency_output_is_read_through_read_result() {
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![vec![StreamEvent::ToolCall {
+                    id: "r1".into(),
+                    name: "read_result".into(),
+                    arguments: serde_json::json!({ "call_id": "dep:wf-node0" }),
+                }]],
+                contexts: contexts.clone(),
+            };
+            let mut opts = options(
+                provider,
+                crate::runtime::execution_plane::LocalExecutionPlane::new(),
+                &[],
+            );
+            opts.dependency_outputs
+                .insert("wf-node0".into(), "FULL_SURVEY_BODY with every finding".into());
+            let runner = RuntimeRunner::new(opts);
+            let events = drain(&runner, "dep-read").await;
+            assert!(!events.iter().any(|e| matches!(e, RunEvent::Error(_))), "{events:?}");
+            let contexts = contexts.lock().unwrap();
+            assert!(contexts.len() >= 2, "{contexts:?}");
+            assert!(
+                contexts[1].contains("[PAYLOAD handle_id=dep:wf-node0]")
+                    && contexts[1].contains("FULL_SURVEY_BODY with every finding"),
+                "{}",
+                contexts[1]
+            );
         }
 
         /// P1-15 · a host recall is counted by the kernel's derivation, once per record.

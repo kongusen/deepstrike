@@ -34,7 +34,6 @@ impl AgentWorkflow {
     }
 
     pub fn ready_batch(&mut self) -> Vec<usize> {
-        self.run.expand_ready_controllers();
         self.run.ready_batch()
     }
 
@@ -94,7 +93,6 @@ pub struct AgentRunResult {
     pub iterations: u32,
     pub total_tokens: u64,
     pub usage: Option<AgentUsage>,
-    pub evidence: Option<AgentEvidence>,
     pub output_validation: Option<OutputValidation>,
 }
 
@@ -149,13 +147,6 @@ fn validate_output(text: &str, schema: &serde_json::Value) -> OutputValidation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentUsage {
     pub total_tokens: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AgentEvidence {
-    pub context_binding: Option<serde_json::Value>,
-    pub route: Option<serde_json::Value>,
-    pub measurement: Option<serde_json::Value>,
 }
 
 /// A single typed snapshot of the durable session replay surface.
@@ -319,7 +310,6 @@ impl AgentSession {
         result.usage = Some(AgentUsage {
             total_tokens: result.total_tokens,
         });
-        result.evidence = self.latest_evidence().await?;
         if let Some(schema) = &options.output_schema {
             result.output_validation = Some(validate_output(&result.output, schema));
         }
@@ -482,29 +472,6 @@ impl AgentSession {
             } else {
                 None
             }
-        }))
-    }
-
-    async fn latest_evidence(&self) -> Result<Option<AgentEvidence>> {
-        let entry = self.history().await?.into_iter().rev().find(|entry| {
-            matches!(
-                entry.event,
-                deepstrike_core::runtime::session::SessionEvent::ContextPrepared { .. }
-            )
-        });
-        let Some(entry) = entry else {
-            return Ok(None);
-        };
-        let deepstrike_core::runtime::session::SessionEvent::ContextPrepared {
-            preparation, ..
-        } = entry.event
-        else {
-            unreachable!();
-        };
-        Ok(Some(AgentEvidence {
-            context_binding: serde_json::to_value(preparation.binding).ok(),
-            route: Some(preparation.provider_route),
-            measurement: serde_json::to_value(preparation.prompt_measurement).ok(),
         }))
     }
 }

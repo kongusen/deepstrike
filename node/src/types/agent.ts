@@ -105,18 +105,8 @@ export interface LoopResult {
   finalMessage?: ModelMessage
   turnsUsed: number
   totalTokensUsed: number
-  /** loop-control loop stop signal: a loop iteration sets `false` to end the loop before `max_iters`.
-   *  `undefined` (every non-loop result) ⇒ no opinion → run to the cap. Sent only when set. */
-  loopContinue?: boolean
-  /** A#2 classify routing: a classifier node reports the chosen branch label here; the kernel runs
-   *  that branch and prunes the rest. Sent only when set. */
-  classifyBranch?: string
-  /** A#2 tournament verdict: a judge reports the winning entrant's agent id here. Sent only when set. */
-  tournamentWinner?: string
   /** ③ loop-agent pacing: the kernel-adjudicated after-round decision, surfaced by the orchestrator
-   *  from the child's done event. For a loop-node iteration this is the only continuation
-   *  vocabulary (stop → loopContinue=false).
-   *  SDK-internal — stripped by `subAgentResultToKernel`. */
+   *  from the child's done event. SDK-internal — stripped by `subAgentResultToKernel`. */
   paceDecision?: import("../runtime/kernel-step.js").PaceDecision
   /** Two-axis AttemptLoop result. Serialized alongside `termination` so hosts can observe judge
    *  failure independently from run health. */
@@ -255,11 +245,6 @@ export function subAgentResultToKernel(result: SubAgentResult): Record<string, u
         : null,
       turns_used: result.result.turnsUsed,
       total_tokens_used: result.result.totalTokensUsed,
-      // A#2: control-flow signals — additive, omitted on the wire when unset so a plain spawn's
-      // result is byte-identical to before. The kernel reads each only for the matching node kind.
-      ...(result.result.loopContinue !== undefined ? { loop_continue: result.result.loopContinue } : {}),
-      ...(result.result.classifyBranch !== undefined ? { classify_branch: result.result.classifyBranch } : {}),
-      ...(result.result.tournamentWinner !== undefined ? { tournament_winner: result.result.tournamentWinner } : {}),
       ...(attempt
         ? {
             attempt: {
@@ -318,11 +303,14 @@ export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: strin
 /** W3 trust level for a workflow node. */
 export type NodeTrust = "trusted" | "quarantined"
 export type WorkflowDependencyPolicy = "all_success" | "accept_partial" | "all_terminal" | "optional"
-export type WorkflowContextInclude = "dependency_outputs" | "memory" | "knowledge"
-export type WorkflowDependencyMode = "full" | "summary" | "reference"
+/** How a node's dependency outputs reach its brief: each output clipped to `maxTokens` (`full`), a
+ *  600-character preview (`handle`), only the dependency ids (`reference`), or nothing (`none`).
+ *  The kernel composes the brief; a clipped or previewed output is read in full with
+ *  `read_result(call_id="dep:<agent_id>")`. */
+export type WorkflowDependencyMode = "full" | "handle" | "reference" | "none"
 export interface WorkflowContextPolicy {
-  include?: WorkflowContextInclude[]
   dependencyMode?: WorkflowDependencyMode
+  /** Per-dependency cap in tokens. Default 2,000. */
   maxTokens?: number
 }
 export type WorkflowNodeStatus = "completed" | "completed_partial" | "failed" | "skipped_upstream_failed"
@@ -350,7 +338,7 @@ export interface WorkflowNodeSpec {
   role: KernelAgentRole
   /** Public workflow binding retained by the host while lowering the node to a kernel agent run. */
   agent?: string
-  /** Host context contract; dependency data is narrowed before entering the child goal. */
+  /** How dependency outputs enter this node's brief (composed by the kernel). */
   context?: WorkflowContextPolicy
   isolation?: AgentIsolation
   contextInheritance?: ContextInheritance
@@ -362,18 +350,6 @@ export interface WorkflowNodeSpec {
   /** G3: JSON Schema the node's output must conform to. The kernel carries it to the spawn
    *  descriptor; the runner instructs the agent and validates + retries once on mismatch. */
   outputSchema?: Record<string, unknown>
-  /** G2: make this a deterministic *reduce* node — it runs no LLM agent. The runner routes it to the
-   *  registered reducer of this name, over its `dependsOn` nodes' outputs (dedupe / filter / merge). */
-  reducer?: string
-  /** loop-control: make this a *loop* node — re-run its agent up to `maxIters` times. An iteration may end
-   *  the loop early by reporting `loopContinue: false` (the runner solicits this from the agent). */
-  loop?: { maxIters: number }
-  /** A#2: make this a *classify* node — its agent picks exactly one branch `label`; that branch's
-   *  nodes run and the others are pruned. Each branch node must list this node's index in `dependsOn`. */
-  classify?: { branches: Array<{ label: string; nodes: number[] }> }
-  /** A#2: make this a *tournament controller* — generate each `entrants` candidate in parallel, then
-   *  pairwise-judge them to one winner (this node's `task.goal` is the judging criterion). ≥2 entrants. */
-  tournament?: { entrants: WorkflowTaskSpec[] }
   /** M4/G5: cap this node's child run at `tokenBudget` cumulative tokens (the per-node "use N tokens"). */
   tokenBudget?: number
   /** O3: cap this node's child run at `maxTurns` provider turns (falls back to the parent's). */
@@ -411,11 +387,11 @@ export interface KernelWorkflowNode {
   model_hint?: string
   trust?: NodeTrust
   output_schema?: Record<string, unknown>
-  kind?: Record<string, unknown>
   token_budget?: number
   max_turns?: number
   max_wall_ms?: number
   scheduling_factors?: KernelSchedulingFactors
+  dependency_context?: { mode?: WorkflowDependencyMode; max_tokens?: number }
   depends_on?: number[]
   dep_policy: WorkflowDependencyPolicy
 }
@@ -501,22 +477,13 @@ export interface WorkflowSpawnInfo {
   trust?: string
   /** G3: JSON Schema the node's output must conform to (carried verbatim from the spec). */
   output_schema?: Record<string, unknown>
-  /** G2: for a reduce node, the name of the registered host function to run (no LLM). */
-  reducer?: string
-  /** The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data). A reduce
-   *  node's registered function consumes them; every other node gets its deps' outputs in context. */
+  /** The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data): the node
+   *  gets its deps' outputs in context. */
   input_agent_ids?: string[]
   /** Dependency outputs projected by canonical core so a post-crash launch keeps its data edges. */
   dependency_outputs?: Record<string, string>
-  /** A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose produced
-   *  outputs this judge compares. The runner looks them up and reports the winner as `tournamentWinner`. */
-  judge_match?: { left: string; right: string }
-  /** loop-control: present only for a *loop* iteration spawn — the loop's `max_iters`. Marks the spawn as a
-   *  loop iteration so the runner solicits + reports a `loopContinue` stop signal. */
-  loop_max_iters?: number
-  /** A#2: present only for a *classify* spawn — the branch labels the classifier must choose among.
-   *  Non-empty marks the spawn as a classifier so the runner instructs the agent + reports `classifyBranch`. */
-  classify_labels?: string[]
+  /** The kernel-composed dependency section that follows the node's goal. */
+  dependency_brief?: string
   /** M4/G5: the node's per-node cumulative token cap, if set — the runner caps the child run here. */
   token_budget?: number
   /** O3: per-node turn cap → the child run's `maxTurns`. */
@@ -589,27 +556,9 @@ function workflowTaskToKernel(t: WorkflowTaskSpec): KernelWorkflowTask {
   }
 }
 
-/** Lower a node's control-flow kind to the kernel's serde-tagged `NodeKind` JSON, or `undefined` for
- *  a plain spawn. `reducer` / `loop` / `classify` / `tournament` are mutually exclusive — declaring
- *  more than one is a spec error (a node has exactly one kind). */
-function nodeKindToKernel(n: WorkflowNodeSpec): Record<string, unknown> | undefined {
-  const declared = [n.reducer != null, n.loop != null, n.classify != null, n.tournament != null].filter(Boolean).length
-  if (declared > 1) {
-    throw new Error("a workflow node may declare at most one of: reducer, loop, classify, tournament")
-  }
-  if (n.reducer != null) return { type: "reduce", reducer: n.reducer }
-  if (n.loop != null) return { type: "loop", max_iters: n.loop.maxIters }
-  if (n.classify != null) {
-    return { type: "classify", branches: n.classify.branches.map(b => ({ label: b.label, nodes: b.nodes })) }
-  }
-  if (n.tournament != null) return { type: "tournament", entrants: n.tournament.entrants.map(workflowTaskToKernel) }
-  return undefined
-}
-
 /** Map one host `WorkflowNodeSpec` to its snake_case canonical JSON. Shared by the workflow root (the
  *  whole spec) and `submit_workflow_nodes` (R3-1 runtime append) so the two encodings never drift. */
 export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): KernelWorkflowNode {
-  const kind = nodeKindToKernel(n)
   const schedulingFactors = schedulingFactorsToKernel(n.schedulingFactors)
   return {
     ...(n.nodeId ? { node_id: n.nodeId } : {}),
@@ -621,16 +570,27 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): KernelWorkflowNod
     ...(n.modelHint ? { model_hint: n.modelHint } : {}),
     ...(n.trust && n.trust !== "trusted" ? { trust: n.trust } : {}),
     ...(n.outputSchema ? { output_schema: n.outputSchema } : {}),
-    // A#2/G2: loop / classify / tournament / reduce lower to a serde-tagged `NodeKind`; spawn omits it.
-    ...(kind ? { kind } : {}),
     // M4/G5: per-node token cap (additive; omitted when unset).
     ...(n.tokenBudget != null ? { token_budget: n.tokenBudget } : {}),
     // O3: per-node turn / wall-clock caps (additive; omitted when unset).
     ...(n.maxTurns != null ? { max_turns: n.maxTurns } : {}),
     ...(n.maxWallMs != null ? { max_wall_ms: n.maxWallMs } : {}),
     ...(schedulingFactors ? { scheduling_factors: schedulingFactors } : {}),
+    ...(n.context ? { dependency_context: dependencyContextToKernel(n.context) } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
     dep_policy: n.depPolicy ?? "all_success",
+  }
+}
+
+function dependencyContextToKernel(policy: WorkflowContextPolicy): { mode?: WorkflowDependencyMode; max_tokens?: number } {
+  const unknown = Object.keys(policy).filter(key => key !== "dependencyMode" && key !== "maxTokens")
+  if (unknown.length > 0) throw new TypeError(`unknown workflow context field(s): ${unknown.join(", ")}`)
+  if (policy.maxTokens !== undefined && (!Number.isSafeInteger(policy.maxTokens) || policy.maxTokens <= 0)) {
+    throw new RangeError("context.maxTokens must be a positive integer")
+  }
+  return {
+    ...(policy.dependencyMode !== undefined ? { mode: policy.dependencyMode } : {}),
+    ...(policy.maxTokens !== undefined ? { max_tokens: policy.maxTokens } : {}),
   }
 }
 
@@ -728,7 +688,7 @@ export const submitWorkflowNodesTool: ToolSchema = {
 }
 
 /** workflow authoring: the tool an agent calls to **author a sub-workflow** — a cohesive DAG of nodes
- *  (incl. loop/classify/tournament/reduce) composed onto the running workflow. Mechanically it lowers
+ *  composed onto the running workflow. Mechanically it lowers
  *  to the same append path as `submit_workflow_nodes` (a `WorkflowSpec` is a node batch), but reads as
  *  "write a harness" rather than "append nodes". Top-level bootstrap uses (the `LoadWorkflow`
  *  kernel syscall) so a plain run can start a workflow from scratch. */
@@ -754,15 +714,10 @@ export const startWorkflowTool: ToolSchema = {
 
 /** Build a sub-agent run spec for a kernel-generated workflow node. */
 export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: string): AgentRunSpec {
-  // W-N6 transcript-as-carry: a loop node's iterations share ONE stable session id (the `-i{k}`
-  // suffix names the spawn, not the session), so iteration k replays the transcript of 0..k-1 —
-  // "do the next increment" actually sees the previous increments. The agent_id keeps the
-  // per-iteration suffix (kernel completion routing).
-  const sessionNodeId = node.loop_max_iters != null ? node.agent_id.replace(/-i\d+$/, "") : node.agent_id
   return {
     identity: {
       agentId: node.agent_id,
-      sessionId: `${parentSessionId}-${sessionNodeId}`,
+      sessionId: `${parentSessionId}-${node.agent_id}`,
       isSubAgent: true,
       parentSessionId,
     },
@@ -776,11 +731,6 @@ export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: str
     // O3: carry the node's turn / wall-clock caps (the orchestrator already honors these).
     ...(node.max_turns != null ? { maxTurns: node.max_turns } : {}),
     ...(node.max_wall_ms != null ? { maxWallMs: node.max_wall_ms } : {}),
-    // DW-3 one continuation vocabulary: a loop ITERATION runs with the pacing trap armed, so the
-    // agent signals continue/stop through the kernel-adjudicated `pace` meta-tool instead of a
-    // text-sniffed JSON blob. One iteration = one round; the DAG (not max_rounds) caps iterations,
-    // and default stop means "ended without pacing" = done — the CC silence-is-completion contract.
-    ...(node.loop_max_iters != null ? { loopRound: { defaultAction: "stop" as const } } : {}),
   }
 }
 
@@ -819,7 +769,7 @@ export function fanoutSynthesize(workers: WorkflowTaskSpec[], synthesize: Workfl
     task: asTask(synthesize),
     role: "plan",
     isolation: "shared",
-    contextInheritance: "full",
+    contextInheritance: "system_only",
     dependsOn: workers.map((_, i) => i),
   })
   return { nodes }
@@ -831,7 +781,7 @@ export function generateAndFilter(generators: WorkflowTaskSpec[], filter: Workfl
     task: asTask(t),
     role: "implement",
     isolation: "worktree",
-    contextInheritance: "full",
+    contextInheritance: "system_only",
   }))
   nodes.push({
     task: asTask(filter),
@@ -844,15 +794,13 @@ export function generateAndFilter(generators: WorkflowTaskSpec[], filter: Workfl
 }
 
 /**
- * Generate→evaluate quality gate (the EvalPipeline successor, #6): a `loop` worker node (re-run up
- * to `maxIters`, stopping early on a `loop_continue=false` self-signal) + a bias-resistant `verify`
- * eval node gated on it, carrying the kernel's verdict `outputSchema`. Mirrors the kernel `gen_eval`
- * template. For the iterative retry-with-feedback variant, drive it with `AttemptLoop`.
+ * Generate→evaluate quality gate (the EvalPipeline successor, #6): a worker node + a bias-resistant
+ * `verify` eval node gated on it, carrying the kernel's verdict `outputSchema`. Mirrors the kernel
+ * `gen_eval` template. For retry-with-feedback, drive it with `AttemptLoop`.
  */
 export function genEval(
   worker: WorkflowTaskSpec,
   evaluate: WorkflowTaskSpec,
-  maxIters = 3,
   extractSkillOnPass = true,
 ): WorkflowSpec {
   const schema = JSON.parse(getKernel().verdictOutputSchema(extractSkillOnPass)) as Record<string, unknown>
@@ -862,8 +810,7 @@ export function genEval(
         task: asTask(worker),
         role: "implement",
         isolation: "worktree",
-        contextInheritance: "full",
-        loop: { maxIters: Math.max(1, maxIters) },
+        contextInheritance: "system_only",
       },
       {
         task: asTask(evaluate),

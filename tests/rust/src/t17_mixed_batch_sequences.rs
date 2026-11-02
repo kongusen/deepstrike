@@ -286,6 +286,8 @@ fn resolved(
 fn memory_queried(recall_content: &str) -> EffectSuccess {
     EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
         recalls: vec![MemoryRecall {
+            description: String::new(),
+            trust: String::new(),
             record_ref: MemoryRecordRef::new("rec-1").unwrap(),
             name: "brief-style".to_string(),
             kind: SyscallMemoryKind::Project,

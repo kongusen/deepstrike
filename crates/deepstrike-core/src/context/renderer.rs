@@ -1,4 +1,3 @@
-use super::execution::ContextPlanAction;
 #[cfg(test)]
 use super::fault::stable_hash;
 use super::partitions::ContextPartitions;
@@ -153,7 +152,7 @@ fn build_system_stable(partitions: &ContextPartitions) -> String {
 fn build_system_knowledge(partitions: &ContextPartitions) -> String {
     partitions
         .knowledge
-        .messages()
+        .resident_messages()
         .filter_map(|m| m.content.as_text())
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -233,10 +232,19 @@ fn salience_footer(ts: &TaskState) -> Option<String> {
 /// directive land in the prompt's highest-attention position (P1-F).
 fn build_state_turn(partitions: &ContextPartitions) -> Option<CoreMessage> {
     let task = partitions.task_state.format_compact();
-    if task.is_empty() && partitions.signals.is_empty() {
+    let staged = partitions
+        .knowledge
+        .staged_messages()
+        .filter_map(|m| m.content.as_text())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if task.is_empty() && partitions.signals.is_empty() && staged.is_empty() {
         return None;
     }
     let mut parts: Vec<String> = Vec::new();
+    if !staged.is_empty() {
+        parts.push(staged);
+    }
     if !task.is_empty() {
         parts.push(task);
     }
@@ -402,42 +410,6 @@ pub fn render_projected(
     frozen_history_len: usize,
     collapse_narration: bool,
 ) -> InternalRenderedContext {
-    render_projected_with_trace(
-        partitions,
-        budget,
-        engine,
-        preserve_recent_units,
-        handles,
-        frozen_history_len,
-        collapse_narration,
-    )
-    .0
-}
-
-/// Internal provenance emitted at selection time; never serialized as provider content.
-#[derive(Debug, Clone)]
-pub(crate) struct HistorySelectionTrace {
-    pub action: ContextPlanAction,
-    pub reason: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct RenderTrace {
-    /// One decision for each source history index, including omitted entries.
-    pub history: Vec<HistorySelectionTrace>,
-    /// Count of the actual projection, including synthetic anchors and the state turn.
-    pub projected_tokens: u32,
-}
-
-pub(crate) fn render_projected_with_trace(
-    partitions: &ContextPartitions,
-    budget: u32,
-    engine: &ContextTokenEngine,
-    preserve_recent_units: usize,
-    handles: &HandleTable,
-    frozen_history_len: usize,
-    collapse_narration: bool,
-) -> (InternalRenderedContext, RenderTrace) {
     let system_stable = build_system_stable(partitions);
     let system_knowledge = build_system_knowledge(partitions);
     let system_text = [system_stable.as_str(), system_knowledge.as_str()]
@@ -467,20 +439,12 @@ pub(crate) fn render_projected_with_trace(
     let protected_from = units.len().saturating_sub(preserve_recent_units);
     let mut kept_messages_rev = Vec::with_capacity(partitions.history.messages.len());
     let mut kept_unit_ranges = Vec::with_capacity(units.len());
-    let mut history_trace = vec![
-        HistorySelectionTrace {
-            action: ContextPlanAction::Omit,
-            reason: "history_budget_selection",
-        };
-        partitions.history.messages.len()
-    ];
     let mut selected_indices_rev = Vec::with_capacity(partitions.history.messages.len());
 
     for (unit_index, unit) in units.iter().enumerate().rev() {
         let is_protected = unit_index >= protected_from;
         let unit_start = kept_messages_rev.len();
         let mut tokens = 0u32;
-        let mut unit_trace = Vec::with_capacity(unit.len());
         for message_index in unit.clone() {
             let msg = &partitions.history.messages[message_index];
             let projected = project_message(msg, handles).or_else(|| {
@@ -491,26 +455,6 @@ pub(crate) fn render_projected_with_trace(
                 }
             });
             let effective = projected.clone().unwrap_or_else(|| msg.clone());
-            let paged_out = matches!(&msg.content, Content::Parts(parts) if parts.iter().any(|part| {
-                matches!(part, ContentPart::ToolResult { call_id, .. }
-                    if matches!(handles.residency_for_source(call_id), Some(Residency::PagedOut { .. })))
-            }));
-            unit_trace.push(HistorySelectionTrace {
-                action: if projected.is_none() {
-                    ContextPlanAction::Include
-                } else if paged_out {
-                    ContextPlanAction::PageOut
-                } else {
-                    ContextPlanAction::Collapse
-                },
-                reason: if projected.is_none() {
-                    "history_rendered"
-                } else if paged_out {
-                    "history_payload_paged_out"
-                } else {
-                    "history_projected_compaction"
-                },
-            });
             tokens += projected
                 .as_ref()
                 .map(|_| engine.count_message(&effective))
@@ -518,18 +462,12 @@ pub(crate) fn render_projected_with_trace(
             kept_messages_rev.push(effective);
         }
         if tokens == 0 {
-            for message_index in unit.clone() {
-                history_trace[message_index].reason = "history_zero_measurement";
-            }
             kept_messages_rev.truncate(unit_start);
             continue;
         }
 
         if is_protected || tokens <= remaining {
-            for (message_index, selection) in unit.clone().zip(unit_trace) {
-                history_trace[message_index] = selection;
-                selected_indices_rev.push(message_index);
-            }
+            selected_indices_rev.extend(unit.clone());
             kept_unit_ranges.push(unit_start..kept_messages_rev.len());
             remaining = remaining.saturating_sub(tokens);
             used_tokens = used_tokens.saturating_add(tokens);
@@ -604,21 +542,15 @@ pub(crate) fn render_projected_with_trace(
         }
     }
 
-    (
-        InternalRenderedContext {
-            system_text,
-            system_stable,
-            system_knowledge,
-            turns,
-            state_turn,
-            frozen_prefix_len,
-            budget_overflow,
-        },
-        RenderTrace {
-            history: history_trace,
-            projected_tokens,
-        },
-    )
+    InternalRenderedContext {
+        system_text,
+        system_stable,
+        system_knowledge,
+        turns,
+        state_turn,
+        frozen_prefix_len,
+        budget_overflow,
+    }
 }
 
 #[cfg(test)]
@@ -638,59 +570,12 @@ mod tests {
     }
 
     #[test]
-    fn selection_trace_distinguishes_omitted_duplicate_and_same_role_entries() {
-        let mut c = ctx();
-        c.history.push(CoreMessage::user("duplicate"), 10);
-        c.history
-            .push(CoreMessage::user("different but same role"), 10);
-        c.history.push(CoreMessage::user("duplicate"), 10);
-        let (rendered, trace) =
-            render_projected_with_trace(&c, 10, &engine(), 1, &HandleTable::new(), 0, false);
-        assert_eq!(rendered.turns.len(), 1);
-        assert_eq!(
-            trace
-                .history
-                .iter()
-                .map(|decision| decision.action)
-                .collect::<Vec<_>>(),
-            vec![
-                ContextPlanAction::Omit,
-                ContextPlanAction::Omit,
-                ContextPlanAction::Include
-            ]
-        );
-    }
-
-    #[test]
-    fn projected_token_trace_counts_rendered_content_and_synthetic_anchor() {
-        let mut c = ctx();
-        c.system.push(CoreMessage::system("rules"), 500);
-        c.signals.push("current signal".to_string());
-        c.history.push(CoreMessage::assistant("excluded"), 50_000);
-        c.history.push(CoreMessage::assistant("included"), 5);
-        let (rendered, trace) =
-            render_projected_with_trace(&c, 100, &engine(), 1, &HandleTable::new(), 0, false);
-        assert_eq!(rendered.turns.len(), 2);
-        assert_eq!(
-            rendered.turns[0].content.as_text(),
-            Some("[context resumed]")
-        );
-        let expected = engine().count(&rendered.system_text)
-            + engine().count_message(rendered.state_turn.as_ref().unwrap())
-            + engine().count_message(&rendered.turns[0])
-            + 5; // The accepted, fingerprint-bound host count for the included message.
-        assert_eq!(trace.projected_tokens, expected);
-        assert!(trace.projected_tokens < c.total_tokens(&engine()));
-    }
-
-    #[test]
     fn frozen_prefix_uses_selected_source_indices_after_zero_token_omission() {
         let mut c = ctx();
         c.history.push(CoreMessage::user("frozen"), 1);
         c.history.push(CoreMessage::user("zero"), 0);
         c.history.push(CoreMessage::user("hot"), 1);
-        let (rendered, _) =
-            render_projected_with_trace(&c, 100, &engine(), 1, &HandleTable::new(), 1, false);
+        let rendered = render_projected(&c, 100, &engine(), 1, &HandleTable::new(), 1, false);
         assert_eq!(rendered.turns.len(), 2);
         assert_eq!(rendered.frozen_prefix_len, Some(1));
     }
@@ -1441,8 +1326,7 @@ mod tests {
     fn synthetic_anchor_overflow_is_reported_at_the_exact_budget_boundary() {
         let mut c = ctx();
         c.history.push(CoreMessage::assistant("reply"), 5);
-        let (rendered, trace) =
-            render_projected_with_trace(&c, 5, &engine(), 1, &HandleTable::new(), 0, false);
+        let rendered = render_projected(&c, 5, &engine(), 1, &HandleTable::new(), 0, false);
         assert_eq!(
             rendered.turns[0].content.as_text(),
             Some("[context resumed]")
@@ -1451,15 +1335,23 @@ mod tests {
             .budget_overflow
             .expect("the required anchor exceeds the budget");
         assert_eq!(overflow.kind, ContextBudgetOverflowKind::ProtectedTail);
-        assert_eq!(overflow.required_tokens, trace.projected_tokens);
+        // Fixed context + the synthetic anchor + the accepted host count for the reply.
+        let projected_tokens = engine().count(&rendered.system_text)
+            + rendered
+                .state_turn
+                .as_ref()
+                .map_or(0, |turn| engine().count_message(turn))
+            + engine().count_message(&rendered.turns[0])
+            + 5;
+        assert_eq!(overflow.required_tokens, projected_tokens);
         assert_eq!(overflow.max_tokens, 5);
         assert!(overflow.required_tokens > 5);
 
-        let within_budget = render(&c, trace.projected_tokens, &engine(), 1);
+        let within_budget = render(&c, projected_tokens, &engine(), 1);
         assert!(within_budget.budget_overflow.is_none());
         let already_over = render(&c, 1, &engine(), 1).budget_overflow.unwrap();
         assert_eq!(
-            already_over.required_tokens, trace.projected_tokens,
+            already_over.required_tokens, projected_tokens,
             "existing tail-overflow diagnostics must include the anchor too"
         );
     }

@@ -3,7 +3,7 @@ import { dynamicWorkflowPlanToKernel, dynamicWorkflowReplayFactToKernel } from "
 import { workflowBudgetFromKernel, workflowSpawnNodeFromKernel } from "../src/runtime/kernel-step.js"
 
 describe("workflow host-to-kernel boundary", () => {
-  it("projects node fields and control-flow kind into the kernel shape", () => {
+  it("projects node fields into the kernel shape", () => {
     expect(workflowNodeSpecToKernel({
       nodeId: "step-1",
       agent: "worker",
@@ -15,7 +15,6 @@ describe("workflow host-to-kernel boundary", () => {
       tokenBudget: 100,
       dependsOn: [0],
       depPolicy: "accept_partial",
-      loop: { maxIters: 2 },
     })).toEqual({
       // The caller's node id is the node's wire identity (it used to be dropped here).
       node_id: "step-1",
@@ -24,7 +23,6 @@ describe("workflow host-to-kernel boundary", () => {
       isolation: "read_only",
       context_inheritance: "system_only",
       model_hint: "fast",
-      kind: { type: "loop", max_iters: 2 },
       token_budget: 100,
       depends_on: [0],
       dep_policy: "accept_partial",
@@ -56,7 +54,6 @@ describe("workflow host-to-kernel boundary", () => {
       attempt_id: "attempt-0",
       launch_token: "opaque",
       node_id: "node-0",
-      reducer: "join",
       input_agent_ids: ["wf-node1"],
       token_budget: 100,
     })).toEqual({
@@ -66,7 +63,6 @@ describe("workflow host-to-kernel boundary", () => {
       role: "worker",
       isolation: "shared",
       context_inheritance: "none",
-      reducer: "join",
       input_agent_ids: ["wf-node1"],
       token_budget: 100,
     })

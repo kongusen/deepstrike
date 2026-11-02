@@ -18,7 +18,6 @@ from deepstrike import (
 from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.run_group import GroupMember
-from deepstrike.runtime.workflow_control_flow import dependency_outputs_note
 from deepstrike.tools import tool
 from deepstrike.types.agent import workflow_node_to_spec
 
@@ -42,19 +41,6 @@ def test_node_spec_to_kernel_emits_caps_and_node_to_spec_maps_them_back():
     assert spec.max_turns == 4
     assert spec.max_wall_ms == 30_000
     assert spec.token_budget == 5000
-
-
-def test_dependency_outputs_note_formats_clips_and_skips_empty():
-    outputs = {
-        "wf-node0": "alpha findings",
-        "wf-node1": "x" * 9000,
-    }
-    note = dependency_outputs_note(["wf-node0", "wf-node1", "wf-node-missing"], outputs, 100)
-    assert "[dependency wf-node0 output]\nalpha findings" in note
-    assert "…[truncated]" in note
-    assert "wf-node-missing" not in note
-    assert dependency_outputs_note([], outputs) == ""
-    assert dependency_outputs_note(None, outputs) == ""
 
 
 # ── W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny-all) ──────────────────
@@ -145,58 +131,6 @@ class _PacingLoopProvider:
             )
             return
         yield TextDelta(delta=f"iteration {iteration} report")
-
-
-@pytest.mark.asyncio
-async def test_pace_continue_then_stop_fails_closed_on_loop_kind():
-    session_log = InMemorySessionLog()
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=_PacingLoopProvider(["continue", "stop"]),
-        session_log=session_log,
-        execution_plane=LocalExecutionPlane(),
-        max_tokens=16_000,
-    ))
-    outcome = await runner.run_workflow(
-        WorkflowSpec(nodes=[
-            WorkflowNodeSpec(task="polish until done", role="implement", loop={"max_iters": 5}),
-        ]),
-        session_id="wfloop",
-    )
-    assert outcome.node_outcomes == []
-    assert outcome.rejection is not None
-    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
-    assert await session_log.read("wfloop-wf-node0") == []
-
-
-@pytest.mark.asyncio
-async def test_iteration_that_never_paces_also_fails_closed_on_loop_kind():
-    class _Silent:
-        async def complete(self, context, tools, extensions=None):
-            return ModelMessage(role="assistant", content="done")
-
-        async def stream(self, context, tools, extensions=None, state=None):
-            yield TextDelta(delta="all done in one pass")
-
-    session_log = InMemorySessionLog()
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=_Silent(),
-        session_log=session_log,
-        execution_plane=LocalExecutionPlane(),
-        max_tokens=16_000,
-    ))
-    outcome = await runner.run_workflow(
-        WorkflowSpec(nodes=[
-            WorkflowNodeSpec(task="one-shot polish", role="implement", loop={"max_iters": 4}),
-        ]),
-        session_id="wfsilent",
-    )
-    assert outcome.node_outcomes == []
-    assert outcome.rejection is not None
-    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
-    assert await session_log.read("wfsilent-wf-node0") == []
-
-
-# ── W-N5: ReactiveSession.resume rebuilds peers, not vehicles ────────────────────────────────────
 
 
 @pytest.mark.asyncio

@@ -7,19 +7,15 @@ export interface Dataset { name?: string; cases: DatasetCase[] }
 export interface Evaluator { name: string; evaluate(input: { testCase: DatasetCase; output: string }): Promise<number> | number }
 export interface EvalResult { caseId: string; output: string; scores: Record<string, number> }
 export interface ExecutionEvidence {
-  contextBinding?: unknown
   route?: unknown
   measurement?: unknown
-  artifactSet?: unknown
 }
 /** Optional execution evidence kept separate from the stable score/result contract. */
 export interface EvalTrace {
   caseId: string
   executedInput: string
-  contextBinding?: unknown
   route?: unknown
   measurement?: unknown
-  artifactSet?: unknown
 }
 export interface EvalRun { runId: string; results: EvalResult[]; completed: boolean; traces?: EvalTrace[] }
 
@@ -38,10 +34,8 @@ export async function evaluate(
       traces.push({
         caseId: testCase.id,
         executedInput: testCase.input,
-        ...(output.evidence?.contextBinding !== undefined ? { contextBinding: output.evidence.contextBinding } : {}),
         ...(output.evidence?.route !== undefined ? { route: output.evidence.route } : {}),
         ...(output.evidence?.measurement !== undefined ? { measurement: output.evidence.measurement } : {}),
-        ...(output.evidence?.artifactSet !== undefined ? { artifactSet: output.evidence.artifactSet } : {}),
       })
     }
   }

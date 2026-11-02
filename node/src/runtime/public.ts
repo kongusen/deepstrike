@@ -34,37 +34,5 @@ export type {
 } from "./kernel-journal.js"
 export { diagnoseKernelJournal } from "./kernel-doctor.js"
 export type { KernelJournalDiagnosis } from "./kernel-doctor.js"
-export type { ContextPrepared } from "./context.js"
-export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./context.js"
-export type { ContextPrepareJson, ContextVerifyJson, ContextProviderPreparationRequest } from "./context.js"
-export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./evolution.js"
-export type { EvolutionStore } from "./evolution.js"
 export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord } from "./execution-evidence.js"
 export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, ModelUsageSettlement } from "./execution-evidence.js"
-export {
-  SharedEvidenceBuilder,
-  SessionEvidenceReader,
-  createSharedEvidence,
-  readSessionEvidence,
-} from "./shared-evidence.js"
-export type {
-  EvidenceAuthority,
-  EvidenceAvailability,
-  EvidenceCompleteness,
-  EvidenceCursor,
-  EvidenceDiagnostic,
-  EvidenceDomain,
-  EvidenceLink,
-  EvidenceRef,
-  EvidenceRelation,
-  EvidenceRetentionObservation,
-  EvidenceScope,
-  EvidenceSidecar,
-  MemorySettlement,
-  SessionEvidenceSources,
-  SharedEvidence,
-  SharedEvidenceFacets,
-  SharedEvidenceIdentity,
-  SharedEvidenceInput,
-  SharedEvidenceSnapshot,
-} from "./shared-evidence.js"

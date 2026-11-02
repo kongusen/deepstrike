@@ -17,7 +17,7 @@ Main implementation entry points:
 ```text
 system_stable       identity / stable system prompt
 system_knowledge    skill definitions / initial_memory / host-pinned durable knowledge
-turns               history (incl. runtime memory-tool hits & prefetch); cacheable prefix
+turns               history (incl. runtime memory-tool hits); cacheable prefix
 state_turn          TASK STATE + signals + recency footer; volatile tail
 ```
 
@@ -32,6 +32,19 @@ Rendered shape:
 ```
 
 `system_text = system_stable + system_knowledge` exists for providers with one system slot. Anthropic can place cache breakpoints on separate system blocks and message history.
+
+## Knowledge that arrives mid-run
+
+`system_knowledge` renders before the history, so any change to it, an append included, invalidates
+the cache for the whole history behind it. The kernel places new entries as follows:
+
+- The current prefix has not been sent yet (before the first call, or right after a compaction or
+  renewal): the entry goes straight into `system_knowledge` at no cache cost.
+- It has been sent: the entry renders in `state_turn` (marked staged) until the next compaction or
+  renewal promotes it into `system_knowledge`.
+- Staged entries are billed uncached on every turn. Once staged tokens reach a quarter of the
+  history tokens, the kernel promotes all of them at once and adds the discarded history cache to
+  `cache_invalidated_tokens`.
 
 ## Why state_turn Is Outside turns
 

@@ -13,7 +13,6 @@ import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { MemoryStore, MemoryRecall, MemoryRecallLifecycle } from "../src/memory/protocols.js"
 import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
-import { memoryRecallTurn } from "../src/memory/recall-projection.js"
 import type { MemoryRecord } from "../src/memory/protocols.js"
 
 const scope = { tenant_id: "agent-lifecycle", namespace: "t5" }
@@ -128,11 +127,6 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
     const audited = (await sessionLog.read("t5-projection")).filter(entry => entry.event.kind === "memory_retrieval_result")
     expect(audited).toHaveLength(1)
     expect(audited[0]?.event).toMatchObject({ hits: [expect.objectContaining({ record: expect.objectContaining({ record_id: "record-t5" }) })] })
-  })
-
-  it("M5 · the recall turn matches the vector every SDK pins", () => {
-    expect(memoryRecallTurn(recallVectorRecord)).toBe(RECALL_TURN_VECTOR)
-    expect(memoryRecallTurn({ ...recallVectorRecord, description: " " })).toBe(RECALL_TURN_NAME_VECTOR)
   })
 
   it("two prefetch queries hitting the same record recall and inject it once", async () => {

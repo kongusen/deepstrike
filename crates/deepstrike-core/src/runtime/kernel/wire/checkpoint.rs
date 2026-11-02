@@ -335,6 +335,8 @@ pub struct AuthoredMemoryQueryState {
     pub requested_k: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall: bool,
 }
 
 /// §12.1 · the P2 plane: task control blocks and their attempts, budgets and waits, the workflow
@@ -537,9 +539,6 @@ pub struct WorkflowGraphState {
 }
 
 /// One workflow node as source state rather than a snapshot of `TaskGraph` internals.
-///
-/// `kind` is explicit even though the canonical ABI currently admits only `spawn`: a checkpoint
-/// must fail closed if a future producer writes a control-flow kind this revision cannot rebuild.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowNodeState {
@@ -549,13 +548,10 @@ pub struct WorkflowNodeState {
     pub depends_on: Vec<NodeId>,
     #[serde(default)]
     pub run_spec: Option<LogicalAgentSpec>,
-    pub kind: String,
     pub status: String,
     /// The deterministic child identity while this node is running.
     #[serde(default)]
     pub active_agent_id: Option<String>,
-    #[serde(default)]
-    pub iterations_completed: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -618,9 +614,6 @@ pub struct MilestoneState {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextVmState {
-    /// Monotonic ContextState generation used to invalidate an admitted ContextPlan after restore.
-    #[serde(default)]
-    pub state_generation: u64,
     /// Optimization evidence must survive restore without changing source/confidence/fingerprint.
     #[serde(default)]
     pub system_measurements: Vec<crate::context::measurement::TokenMeasurement>,
@@ -630,6 +623,27 @@ pub struct ContextVmState {
     pub knowledge_reference_step: u64,
     #[serde(default)]
     pub knowledge_budget_warned: bool,
+    /// The current system[1] has been sent to a provider since the last boundary.
+    #[serde(default)]
+    pub prefix_sent: bool,
+    /// History tokens whose cache mid-run system[1] promotions discarded.
+    #[serde(default)]
+    pub cache_invalidated_tokens: u64,
+    /// Knowledge keys a boundary sweep removed, for regret counting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evicted_knowledge_keys: Vec<String>,
+    #[serde(default)]
+    pub knowledge_regret: u32,
+    #[serde(default)]
+    pub knowledge_wasted_tokens: u64,
+    /// Kernel memory recall width; absent when the operation cannot read memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall_top_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall_due: bool,
+    /// Dependency outputs this run can read with `read_result(call_id="dep:<agent_id>")`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub dependency_bodies: std::collections::BTreeMap<String, String>,
     /// **The** home of P3 handle identity and residency.
     #[serde(default)]
     pub handles: Vec<HandleState>,
@@ -888,6 +902,9 @@ pub struct KnowledgeSlotState {
     pub use_count: u64,
     #[serde(default)]
     pub last_used_step: Option<u64>,
+    /// Rendered in the state turn until the next boundary promotes it into system[1].
+    #[serde(default)]
+    pub staged: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

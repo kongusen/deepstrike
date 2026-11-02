@@ -1,5 +1,7 @@
 # ADR-012：可验证 Context 系统
 
+> **历史设计（2026-11-01 已删除）。** 本文描述的上下文证据层（`ContextCandidate`、`ContextExecutionInput`、`context_prepared`、shared evidence、Evolution Runtime 与 artifact set 绑定）已从内核和四个 SDK 中删除。崩溃恢复只依赖 journal + checkpoint。原因与后续计划见 [上下文优先实施计划](../plans/context-lifecycle-first.md)。
+
 ## 状态
 
 已批准并实施。本轮实现验收已通过，结果见关联规格；发布流程另行执行。

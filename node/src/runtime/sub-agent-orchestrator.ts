@@ -40,6 +40,8 @@ export interface SubAgentRunContext {
   abortSignal?: AbortSignal
   /** AttemptLoop carry material; injected through the child's journaled signal channel. */
   contextInput?: string
+  /** Plan task 3.1 · the outputs of the workflow nodes this child depends on, by agent id. */
+  dependencyOutputs?: Record<string, string>
 }
 
 function terminationFromStatus(status: string): TerminationReason | string {
@@ -186,6 +188,8 @@ export class SubAgentOrchestrator {
       // The child always runs under its own canonical spec, never the parent's. This preserves its
       // capability ceiling, exposure baseline, identity, and optional loop pacing in one shape.
       runSpec: ctx.spec,
+      // A child reads only its own dependencies, never ones inherited from the parent's options.
+      dependencyOutputs: ctx.dependencyOutputs,
     })
     // #2-B-ii: when the parent preempts this node (kernel `AgentPreempted`), interrupt the child —
     // cancelling its in-flight LLM call. Handle an already-aborted signal too (creation race).

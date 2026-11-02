@@ -81,31 +81,6 @@ You choose the tools and the review criteria. The framework manages the task flo
 
 You can begin with one assistant and a few tools, then add the mechanisms your application needs. Model and integration availability varies by SDK.
 
-## Make improvements with evidence
-
-When you change an assistant's instructions, knowledge, tools, or rules, you need a way to judge the change. DeepStrike's **Evaluation Runtime** approach connects evaluation to the work that actually ran.
-
-![Evaluation binding connects context state, policy, plan, rendered snapshot, prompt measurement, and provider route to the executed input and evaluation evidence](./docs/public/readme/evaluation.svg)
-
-The binding identifies which executed input an evaluation refers to. Artifact-set lineage is bound separately at operation genesis; binding validation does not automatically replay every provider attempt.
-
-| Question | What the 0.2.71 update provides |
-| --- | --- |
-| **What did this answer depend on?** | Links between a task and the information, instructions, and model configuration selected for it. |
-| **Can we inspect an interrupted task?** | Records needed to recover and reconstruct task decisions, alongside records of tool and model activity. |
-| **Did a new configuration help?** | Links between your test cases, scoring method, comparison results, and the old and new configurations. |
-| **Which change was approved for use?** | A checked connection between the proposed change, review results, approval decision, and configuration selected for a new task. |
-
-Your application runs the evaluations and supplies the success criteria. DeepStrike validates the recorded relationships and required checks. Human review, test suites, and model-based reviewers can provide evaluation evidence; the framework does not independently guarantee that an answer is correct.
-
-The developer API for validating these change records is called `EvolutionRuntime`. See [evaluation inputs](./docs/en/architecture/evaluation-context.md) and [controlled evolution](./docs/en/architecture/evolution-runtime.md) for the implementation details.
-
-### How a change reaches the next operation
-
-![Governed evolution: proposal, evaluation evidence, promotion decision, activation binding, next operation genesis, and execution](./docs/public/readme/evolution.svg)
-
-Your application proposes a candidate configuration and supplies evaluation evidence. `EvolutionRuntime` checks lineage, evidence, and gates before returning an activation binding. The new configuration takes effect at the next operation boundary; a running operation keeps its existing artifact set.
-
 ## Get started
 
 Choose an SDK: [Node.js](./node/README.md) · [Python](./python/README.md) · [Rust](./rust/README.md) · [WASM](./wasm/README.md).
@@ -173,8 +148,8 @@ The task scheduler runs locally. Connecting remote tools does not provide a dist
 | Connect tools and services | [Tools and execution](./docs/en/guides/execution-plane-and-tools.md) |
 | Add reusable expertise and project memory | [Skills](./docs/en/guides/skills.md) · [Memory](./docs/en/guides/memory.md) |
 | Control what assistants may do | [Governance](./docs/en/guides/governance.md) |
-| Recover and inspect work | [Session and recovery](./docs/en/guides/session-replay-and-recovery.md) · [Verification](./docs/en/architecture/verifiable-runtime.md) |
-| Understand the architecture and its vocabulary | [Runtime Language](./docs/en/architecture/runtime-language.md) · [Context](./docs/en/architecture/evaluation-context.md) · [Evolution Runtime](./docs/en/architecture/evolution-runtime.md) |
+| Recover and inspect work | [Session and recovery](./docs/en/guides/session-replay-and-recovery.md) |
+| Understand the architecture and its vocabulary | [Runtime Language](./docs/en/architecture/runtime-language.md) |
 | Contribute to the project | [Contributing](./CONTRIBUTING.md) · [API reference](./docs/en/reference/index.md) · [Security](./SECURITY.md) |
 
 ## License

@@ -90,7 +90,7 @@ async def test_retrieval_gate_precedes_initial_and_renewal_hooks(enabled):
 
     runner = runner_with(memory_runtime_policy=replace(OFF, retrieval="host" if enabled else "disabled"), pre_query_memory=hook)
     await collect_text(runner.run(session_id="session", goal="facts"))
-    await runner._memory_prefetch_queries("renewal")
+    await runner._memory_prefetch_queries("renewal", "facts")
     assert phases == (["initial", "renewal"] if enabled else [])
     assert bool(runner._opts.memory_store.searches) is enabled
     assert runner._opts.provider.saw_recall is enabled

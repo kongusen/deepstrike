@@ -55,8 +55,6 @@ pub(crate) struct CanonicalRunnerOptions {
     pub max_turns: Option<u32>,
     pub max_total_tokens: Option<u64>,
     pub max_wall_ms: Option<u64>,
-    /// Host-owned artifact set identity captured in the operation genesis.
-    pub artifact_set_digest: Option<String>,
     pub memory_binding_id: String,
     pub persist_payload: Option<PersistPayloadFn>,
 }
@@ -85,6 +83,7 @@ struct InitialContext {
     messages: Vec<Value>,
     knowledge: Vec<Value>,
     capabilities: Vec<Value>,
+    dependencies: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -120,12 +119,6 @@ impl CanonicalRunnerRuntime {
         }
 
         let mut config = Map::new();
-        if let Some(artifact_set_digest) = options.artifact_set_digest {
-            config.insert(
-                "artifact_set_binding".into(),
-                json!({"artifact_set_digest": artifact_set_digest}),
-            );
-        }
         config.insert("execution_policy".into(), Value::Object(execution_policy));
         config.insert(
             "host_effect_support".into(),
@@ -670,6 +663,17 @@ impl CanonicalRunnerRuntime {
                                 "kind": record.get("kind").and_then(|v| v.as_str()).unwrap_or("reference"),
                                 "content": string_field(&record, "content"),
                             });
+                            let description = string_field(&record, "description");
+                            if !description.trim().is_empty() {
+                                recall.as_object_mut().unwrap().insert("description".into(), json!(description));
+                            }
+                            if let Some(trust) = record
+                                .get("provenance")
+                                .and_then(|p| p.get("trust"))
+                                .and_then(|t| t.as_str())
+                            {
+                                recall.as_object_mut().unwrap().insert("trust".into(), json!(trust));
+                            }
                             if let Some(score) = hit.get("score").filter(|v| v.is_number()) {
                                 recall
                                     .as_object_mut()
@@ -1151,11 +1155,15 @@ impl CanonicalRunnerRuntime {
     }
 
     fn initial_context_json(&self) -> Value {
-        json!({
+        let mut context = json!({
             "messages": self.initial_context.messages,
             "knowledge": self.initial_context.knowledge,
             "capabilities": self.initial_context.capabilities,
-        })
+        });
+        if !self.initial_context.dependencies.is_empty() {
+            context["dependencies"] = json!(self.initial_context.dependencies);
+        }
+        context
     }
 
     fn feature_policy(&mut self) -> &mut Map<String, Value> {
@@ -1220,6 +1228,13 @@ impl CanonicalRunnerRuntime {
                         .insert("tokens".into(), tokens.clone());
                 }
                 self.initial_context.messages.push(message);
+                true
+            }
+            "add_dependency_output" => {
+                self.initial_context.dependencies.push(json!({
+                    "agent_id": string_value(event, "agent_id"),
+                    "content": string_value(event, "content"),
+                }));
                 true
             }
             "add_knowledge_message" => {
@@ -1352,6 +1367,16 @@ impl CanonicalRunnerRuntime {
                 } else {
                     self.feature_policy().remove("propose_memory_enabled");
                 }
+                if enabled && event.get("recall").and_then(Value::as_bool) == Some(true) {
+                    let mut policy = self
+                        .config
+                        .get("memory_policy")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    policy.insert("recall".into(), json!(true));
+                    self.config.insert("memory_policy".into(), Value::Object(policy));
+                }
                 if enabled {
                     // The binding is the kernel-enforced gate: memory syscalls whose capability
                     // bit is off are refused in the kernel. Absent bits default to granted.
@@ -1446,6 +1471,15 @@ impl CanonicalRunnerRuntime {
             }
             "set_memory_policy" => {
                 let mut policy = Map::new();
+                if self
+                    .config
+                    .get("memory_policy")
+                    .and_then(|policy| policy.get("recall"))
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    policy.insert("recall".into(), json!(true));
+                }
                 for key in [
                     "stale_warning_days",
                     "retrieval_top_k",
@@ -1845,7 +1879,6 @@ fn protocol_action_from_wire(
                 unreachable!("call_provider effect must project to provider action");
             };
             HostEffect::CallProvider {
-                context_effect: call.clone(),
                 context: rendered_context_from_wire(&call.context)?,
                 tools: call
                     .tools
@@ -1928,20 +1961,30 @@ fn protocol_action_from_wire(
                             .and_then(|isolation| serde_json::to_value(isolation).ok())
                             .and_then(|v| v.as_str().map(|s| s.to_string()))
                             .unwrap_or_else(|| "shared".into());
+                        // The kernel composes the dependency section of the brief.
+                        let goal = match task
+                            .spec
+                            .metadata
+                            .get()
+                            .get("dependency_brief")
+                            .and_then(|brief| brief.as_str())
+                        {
+                            Some(brief) if !brief.is_empty() => {
+                                format!("{}\n\n{brief}", task.spec.goal)
+                            }
+                            _ => task.spec.goal.clone(),
+                        };
                         deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
                             agent_id: task.task_id.as_str().to_string(),
-                            goal: task.spec.goal.clone(),
+                            goal,
                             role,
                             isolation,
                             context_inheritance: "none".into(),
                             model_hint: None,
                             trust: "trusted".into(),
                             output_schema: None,
-                            reducer: None,
                             input_agent_ids: Vec::new(),
-                            judge_match: None,
-                            loop_max_iters: None,
-                            classify_labels: Vec::new(),
+                            dependency_context: Default::default(),
                             token_budget: None,
                             max_turns: None,
                             max_wall_ms: None,
@@ -2013,6 +2056,12 @@ fn protocol_action_from_wire(
                     .record_id
                     .as_ref()
                     .map(|record_id| record_id.as_str().to_string()),
+                recall_sprint: match &query.query.causation {
+                    deepstrike_core::runtime::kernel::wire::syscall::SyscallCausation::KernelRecall(
+                        recall,
+                    ) => Some(recall.sprint),
+                    _ => None,
+                },
             }
         }
         EffectKind::ArchivePageOut(_) => {
@@ -2102,8 +2151,6 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
                     .transpose()?,
                 turns_used: result.turns_used,
                 total_tokens_used: usage_tokens(&agent.usage),
-                loop_continue: None,
-                classify_branch: None,
                 pace_decision: result.pace_decision.as_ref().map(|pace| PaceDecision {
                     action: match pace.action {
                         deepstrike_core::runtime::kernel::wire::PaceAction::Continue => {
@@ -2120,7 +2167,6 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
                     reason: pace.reason.clone(),
                     coerced_from: pace.coerced_from.clone(),
                 }),
-                tournament_winner: None,
             })
         }
         KernelTerminal::Workflow(workflow) => Ok(LoopResult {
@@ -2138,20 +2184,14 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
             final_message: None,
             turns_used: workflow.usage.turns,
             total_tokens_used: usage_tokens(&workflow.usage),
-            loop_continue: None,
-            classify_branch: None,
             pace_decision: None,
-            tournament_winner: None,
         }),
         KernelTerminal::Cancelled(cancelled) => Ok(LoopResult {
             termination: TerminationReason::UserAbort,
             final_message: None,
             turns_used: cancelled.usage.turns,
             total_tokens_used: usage_tokens(&cancelled.usage),
-            loop_continue: None,
-            classify_branch: None,
             pace_decision: None,
-            tournament_winner: None,
         }),
         KernelTerminal::Failed(failed) => {
             let termination = if failed.failure.code
@@ -2166,10 +2206,7 @@ fn loop_result_from_terminal(terminal: &KernelTerminal) -> Result<LoopResult> {
                 final_message: None,
                 turns_used: failed.usage.turns,
                 total_tokens_used: usage_tokens(&failed.usage),
-                loop_continue: None,
-                classify_branch: None,
                 pace_decision: None,
-                tournament_winner: None,
             })
         }
     }
@@ -2774,7 +2811,6 @@ mod tests {
             max_turns: None,
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest: None,
             memory_binding_id: "test-binding".into(),
             persist_payload: None,
         }
@@ -3606,7 +3642,6 @@ mod tests {
             max_turns: Some(8),
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest: None,
             memory_binding_id: "restart-memory".into(),
             persist_payload: None,
         }
@@ -3631,7 +3666,6 @@ mod tests {
             std::sync::Arc::new(FileKernelJournal::new(dir.join("kernel-journal")));
         RuntimeRunner::new_with_kernel_journal(
             RuntimeOptions {
-                artifact_set_digest: None,
                 provider: Box::new(PingThenFinishProvider),
                 execution_plane: Some(Box::new(plane)),
                 session_log: Some(session_log),
@@ -3647,6 +3681,7 @@ mod tests {
                 memory_scope: None,
                 system_prompt: None,
                 initial_memory: vec![],
+                dependency_outputs: Default::default(),
                 skill_dir: None,
                 memory_store: None,
                 knowledge_source: None,

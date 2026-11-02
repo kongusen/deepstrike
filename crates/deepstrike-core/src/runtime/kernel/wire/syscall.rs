@@ -176,6 +176,16 @@ pub enum SyscallCausation {
     ProviderTool(ProviderToolCausation),
     /// A request a child attached to its completion fact.
     ChildAttempt(ChildAttemptCausation),
+    /// The kernel's own long-term memory recall, owed at run start and after a renewal.
+    KernelRecall(KernelRecallCausation),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelRecallCausation {
+    pub task_id: TaskId,
+    /// The sprint the recall serves: 0 at run start, then one per renewal.
+    pub sprint: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

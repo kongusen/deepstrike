@@ -517,9 +517,6 @@ mod tests {
                 final_message: None,
                 turns_used: 1,
                 total_tokens_used: 0,
-                loop_continue: None,
-                classify_branch: None,
-                tournament_winner: None,
                 pace_decision: None,
             },
         );
@@ -534,9 +531,6 @@ mod tests {
             final_message: None,
             turns_used: 1,
             total_tokens_used: 0,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         };
         // b gates on BOTH a and c; a duplicate completion of `a` must not stand in for `c`.

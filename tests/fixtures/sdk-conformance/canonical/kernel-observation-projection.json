@@ -63,6 +63,19 @@
         }
       },
       {
+        "name": "lifecycle_report",
+        "turn": 7,
+        "observation": {
+          "kind": "lifecycle_report",
+          "turn": 7,
+          "knowledge_entries": 4,
+          "knowledge_referenced": 3,
+          "regret": 1,
+          "waste_tokens": 120,
+          "cache_loss_tokens": 0
+        }
+      },
+      {
         "name": "rollbacked_turn_zero",
         "turn": 5,
         "observation": {
@@ -441,6 +454,15 @@
           "turn": 6,
           "sprint": 2,
           "handoff_ref": ""
+        },
+        "lifecycle_report": {
+          "kind": "context_lifecycle_reported",
+          "turn": 7,
+          "knowledge_entries": 4,
+          "knowledge_referenced": 3,
+          "regret": 1,
+          "waste_tokens": 120,
+          "cache_loss_tokens": 0
         },
         "rollbacked_turn_zero": {
           "kind": "rollbacked",

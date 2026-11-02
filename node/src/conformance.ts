@@ -4,5 +4,4 @@ export { decodeDurableContent, decodeDurableToolResult } from "./runtime/durable
 export { decodeCanonicalContentParts, encodeCanonicalContentParts } from "./runtime/kernel-step.js"
 export { SESSION_EVENT_KINDS, SESSION_EVENT_REGISTRY } from "./runtime/session-log.js"
 export { kernelObservationToSessionEvent } from "./runtime/kernel-event-log.js"
-export { readSessionEvidence } from "./runtime/shared-evidence.js"
 export { providerAttemptToRecord } from "./runtime/execution-evidence.js"

@@ -43,6 +43,18 @@ pub enum KernelObservation {
         required_tokens: u32,
         max_tokens: u32,
     },
+    /// Context lifecycle metrics for the finished run (plan task 4.1), emitted once at termination.
+    /// `regret`: evicted knowledge keys that were pushed again. `waste_tokens`: knowledge tokens
+    /// never referenced (evicted or still resident). `cache_loss_tokens`: history tokens whose
+    /// cache a mid-run system[1] promotion discarded.
+    LifecycleReport {
+        turn: u32,
+        knowledge_entries: u32,
+        knowledge_referenced: u32,
+        regret: u32,
+        waste_tokens: u64,
+        cache_loss_tokens: u64,
+    },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in
     /// `tokens_freed`); an upsert-only sweep has empty `removed_keys`.

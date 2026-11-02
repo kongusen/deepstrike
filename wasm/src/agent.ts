@@ -52,7 +52,7 @@ export interface AgentRunResult {
   status: "completed" | "partial" | "failed" | "cancelled"
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
   outputValidation?: { ok: boolean; errors: string[] }
-  evidence?: { route?: unknown; measurement?: unknown; contextBinding?: unknown }
+  evidence?: { route?: unknown; measurement?: unknown }
 }
 export interface MemoryInput { name: string; content: string; description?: string; kind?: MemoryKind; confidence?: number; pinned?: boolean; ttlDays?: number }
 export interface RecallOptions { topK?: number; kinds?: MemoryKind[]; minScore?: number }
@@ -241,12 +241,10 @@ export class Agent {
       result.usage = { inputTokens: attempt.usage.inputTokens, outputTokens: attempt.usage.outputTokens, totalTokens: attempt.usage.inputTokens + attempt.usage.outputTokens }
     }
     const measured = [...entries].reverse().find(e => e.event.kind === "prompt_measured")?.event
-    const prepared = [...entries].reverse().find(e => e.event.kind === "context_prepared")?.event
-    if ((started?.kind === "run_started" && started.route) || (attempt?.kind === "provider_attempt" && attempt.route) || measured || prepared) {
+    if ((started?.kind === "run_started" && started.route) || (attempt?.kind === "provider_attempt" && attempt.route) || measured) {
       result.evidence = {
         ...((attempt?.kind === "provider_attempt" ? attempt.route : started?.kind === "run_started" ? started.route : undefined) ? { route: attempt?.kind === "provider_attempt" ? attempt.route : (started as Extract<SessionEvent, { kind: "run_started" }>).route } : {}),
         ...(measured?.kind === "prompt_measured" ? { measurement: measured.measurement } : {}),
-        ...(prepared?.kind === "context_prepared" ? { contextBinding: prepared.preparation.binding } : {}),
       }
     }
     if (this.outputSchema) {

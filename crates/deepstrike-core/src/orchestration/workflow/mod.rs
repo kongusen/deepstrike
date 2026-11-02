@@ -6,13 +6,9 @@
 //! constructors below emit, and the shape a future "orchestration-as-syscall" round will
 //! lower into per-step [`crate::syscall::Syscall`]s.
 //!
-//! Three patterns are template constructors here. The dynamic control-flow patterns —
-//! loop-until-done, classify-and-act, and tournament — are now first-class [`NodeKind`] variants
-//! ([`NodeKind::Loop`] / [`NodeKind::Classify`] / [`NodeKind::Tournament`]) driven by the unified
-//! workflow executor; the former standalone `loop_until_done` / `tournament` SDK primitives were
-//! removed in their favor (A#1). The generate→evaluate→retry quality gate is the [`gen_eval`]
-//! template (a `Loop` worker + a `Verify` eval node carrying [`crate::harness::verdict_output_schema`]);
-//! its eval/verdict compute lives in [`crate::harness`].
+//! The template constructors below emit fixed DAGs of `Spawn` nodes. Loops, branching and
+//! tournaments are host control flow: a host program (or a model through runtime node submission)
+//! decides what to run next, and the kernel admits each spawn.
 //!
 //! Pure: no I/O, no clock, no spawning. Validation reuses [`TaskGraph::topological_sort`].
 
@@ -25,8 +21,8 @@ use crate::types::capability::Capability;
 use crate::types::error::{DeepStrikeError, Result};
 use crate::types::task::RuntimeTask;
 
-/// The kernel-resident execution state for an in-flight [`WorkflowSpec`] — the DAG run-queue,
-/// tournament bracket advancement, and per-node spawn descriptors. Was `scheduler/workflow_run.rs`;
+/// The kernel-resident execution state for an in-flight [`WorkflowSpec`] — the DAG run-queue and
+/// per-node spawn descriptors. Was `scheduler/workflow_run.rs`;
 /// folded under `workflow` so the declarative spec and its runtime live in one module.
 pub mod run;
 pub use run::*;
@@ -57,50 +53,79 @@ pub enum DependencyPolicy {
     Optional,
 }
 
-/// One branch of a [`NodeKind::Classify`] node: a label and the node indices to enable when the
-/// classifier's result selects that label. The other branches' nodes are pruned (failed) so they
-/// never run — this is how a classify node yields *conditional edges* in an otherwise static DAG.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClassifyBranch {
-    pub label: String,
-    pub nodes: Vec<usize>,
+/// How a node's dependency outputs reach its brief.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyMode {
+    /// Each dependency's output, clipped to the token cap; a clipped one names how to read the rest.
+    #[default]
+    Full,
+    /// A short preview of each output; the node reads one in full with
+    /// `read_result(call_id="dep:<agent_id>")` when it needs it.
+    Handle,
+    /// Only the ids of the dependencies that produced output.
+    Reference,
+    /// Nothing; the edge orders the nodes but carries no data.
+    None,
 }
 
-/// Control-flow kind of a workflow node. `Spawn` (the default) runs the node's agent once.
-/// `Loop` re-runs it until a stop condition; `Classify` routes to one branch by its result;
-/// `Tournament` generates entrants and pairwise-judges them — all dynamic control-flow types.
-/// Additive: existing specs omit `kind` → `Spawn`. (No `Eq`: a `Tournament`'s entrant tasks carry
-/// arbitrary JSON metadata, which is `PartialEq` but not `Eq`.)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case", tag = "type")]
-pub enum NodeKind {
-    /// Run the node's agent once (classic spawn node).
-    #[default]
-    Spawn,
-    /// Re-run the node's agent up to `max_iters` times; an iteration reporting
-    /// `loop_continue=Some(false)` stops early ("until done").
-    Loop { max_iters: usize },
-    /// Run the node's agent once as a classifier; its `classify_branch` result selects one branch
-    /// to run and prunes the others. Branch nodes must `depends_on` this classify node.
-    ///
-    /// NOTE (W-11): prefer expressing classify-and-act via *runtime submission* — run the
-    /// classifier as a plain node and have it `submit_workflow_nodes` only the chosen branch. That
-    /// form needs no branch pre-declaration, prune bookkeeping, or resume branch-replay, and is the
-    /// CC-parity model-driven shape. `Classify` stays for declaratively auditable topologies (the
-    /// full branch set is visible up front) but should not grow new capabilities.
-    Classify { branches: Vec<ClassifyBranch> },
-    /// A *controller* node (spawns no agent of its own): it generates `entrants` candidates in
-    /// parallel, then runs a single-elimination bracket of pairwise judges (reusing
-    /// [`super::tournament::Tournament`]) until one survivor remains. The winner's id lands in the
-    /// node's `tournament_winner` result; dependents start only after the bracket resolves.
-    Tournament { entrants: Vec<RuntimeTask> },
-    /// G2 deterministic compute: a *host-compute* node that runs no LLM agent. The kernel schedules
-    /// it like a `Spawn` (deps / ready / completion) but stamps its spawn descriptor with `reducer`
-    /// + the dependency agent ids, and the SDK routes it to a registered pure function over those
-    /// dependencies' outputs (dedupe / filter / merge / early-exit) instead of the model. This is the
-    /// "ordinary code between stages" of the code-orchestration model, expressed as a DAG node — no
-    /// agent burned, fully deterministic. `reducer` names the SDK-side function.
-    Reduce { reducer: String },
+/// How much of each output a `handle` brief shows.
+const HANDLE_PREVIEW_CHARS: usize = 600;
+
+/// The node's dependency context: which form the outputs take and how many tokens each may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DependencyContext {
+    #[serde(default)]
+    pub mode: DependencyMode,
+    /// Per-dependency cap in tokens (4 characters each, at least 256 characters). Default 2,000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+impl DependencyContext {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    fn max_chars(&self) -> usize {
+        self.max_tokens
+            .map_or(8_000, |tokens| (tokens as usize).saturating_mul(4).max(256))
+    }
+
+    /// The text a dependent node's goal is followed by. `outputs` pairs each dependency agent id
+    /// with its output, in dependency order; an empty output is skipped.
+    pub fn brief(&self, outputs: &[(String, String)]) -> String {
+        let produced = outputs.iter().filter(|(_, output)| !output.is_empty());
+        match self.mode {
+            DependencyMode::None => String::new(),
+            DependencyMode::Reference => {
+                let ids: Vec<&str> = produced.map(|(id, _)| id.as_str()).collect();
+                if ids.is_empty() {
+                    String::new()
+                } else {
+                    format!("[dependency references]\n{}", ids.join(", "))
+                }
+            }
+            DependencyMode::Full | DependencyMode::Handle => {
+                let max_chars = match self.mode {
+                    DependencyMode::Handle => HANDLE_PREVIEW_CHARS.min(self.max_chars()),
+                    _ => self.max_chars(),
+                };
+                produced
+                    .map(|(id, output)| match output.char_indices().nth(max_chars) {
+                        Some((cut, _)) => format!(
+                            "[dependency {id} output, {} characters]\n{}\n…[read_result(call_id=\"dep:{id}\") reads it in full]",
+                            output.chars().count(),
+                            &output[..cut]
+                        ),
+                        None => format!("[dependency {id} output]\n{output}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            }
+        }
+    }
 }
 
 /// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
@@ -126,9 +151,6 @@ pub struct WorkflowNode {
     /// Additive: omitted on the wire when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<serde_json::Value>,
-    /// Control-flow kind. Default `Spawn` (run once).
-    #[serde(default, skip_serializing_if = "is_spawn")]
-    pub kind: NodeKind,
     /// M4/G5: optional per-node cumulative token cap. The kernel carries it to the spawn descriptor;
     /// the SDK sets the node's child-run `max_total_tokens` to it, so an expensive node self-terminates
     /// at the cap (the "use N tokens" budget, applied per node). Additive: omitted on the wire when
@@ -145,6 +167,9 @@ pub struct WorkflowNode {
     /// Policy for interpreting this node's dependency terminal states.
     #[serde(default)]
     pub dep_policy: DependencyPolicy,
+    /// How the outputs of `depends_on` reach this node's brief.
+    #[serde(default, skip_serializing_if = "DependencyContext::is_default")]
+    pub dependency_context: DependencyContext,
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
@@ -170,10 +195,6 @@ fn is_trusted(t: &NodeTrust) -> bool {
     matches!(t, NodeTrust::Trusted)
 }
 
-fn is_spawn(k: &NodeKind) -> bool {
-    matches!(k, NodeKind::Spawn)
-}
-
 impl WorkflowNode {
     /// A node with role-default isolation/inheritance and no dependencies.
     pub fn new(task: RuntimeTask, role: AgentRole) -> Self {
@@ -186,11 +207,11 @@ impl WorkflowNode {
             model_hint: None,
             trust: NodeTrust::Trusted,
             output_schema: None,
-            kind: NodeKind::Spawn,
             token_budget: None,
             max_turns: None,
             max_wall_ms: None,
             dep_policy: DependencyPolicy::AllSuccess,
+            dependency_context: DependencyContext::default(),
             depends_on: Vec::new(),
             requested_capabilities: Vec::new(),
             requested_budget: None,
@@ -219,6 +240,11 @@ impl WorkflowNode {
         self
     }
 
+    pub fn with_dependency_context(mut self, context: DependencyContext) -> Self {
+        self.dependency_context = context;
+        self
+    }
+
     /// M4/G5: cap this node's child run at `tokens` cumulative tokens.
     pub fn with_token_budget(mut self, tokens: u64) -> Self {
         self.token_budget = Some(tokens);
@@ -234,37 +260,6 @@ impl WorkflowNode {
     /// O3: cap this node's child run at `ms` wall-clock milliseconds.
     pub fn with_max_wall_ms(mut self, ms: u64) -> Self {
         self.max_wall_ms = Some(ms);
-        self
-    }
-
-    /// Make this a loop node: re-run the agent up to `max_iters` times before completing.
-    /// Dependents wait for the whole loop to finish.
-    pub fn with_loop(mut self, max_iters: usize) -> Self {
-        self.kind = NodeKind::Loop { max_iters };
-        self
-    }
-
-    /// Make this a classify node: its result selects one of `branches` to run; the rest are pruned.
-    pub fn with_classify(mut self, branches: Vec<ClassifyBranch>) -> Self {
-        self.kind = NodeKind::Classify { branches };
-        self
-    }
-
-    /// Make this a tournament *controller* node: it spawns no agent of its own but generates each
-    /// of `entrants` (in parallel), then pairwise-judges them to a single winner. The node's own
-    /// `task.goal` is the judging criterion handed to every judge. Requires ≥2 entrants.
-    pub fn with_tournament(mut self, entrants: Vec<RuntimeTask>) -> Self {
-        self.kind = NodeKind::Tournament { entrants };
-        self
-    }
-
-    /// G2: make this a deterministic *reduce* node — it runs no LLM agent; the SDK routes it to the
-    /// registered `reducer` function over its dependencies' outputs (dedupe / filter / merge). Give
-    /// it `depends_on` the nodes whose outputs it consumes.
-    pub fn with_reduce(mut self, reducer: impl Into<String>) -> Self {
-        self.kind = NodeKind::Reduce {
-            reducer: reducer.into(),
-        };
         self
     }
 
@@ -315,8 +310,8 @@ fn role_defaults(role: AgentRole) -> (AgentIsolation, ContextInheritance) {
     match role {
         AgentRole::Explore => (AgentIsolation::ReadOnly, ContextInheritance::SystemOnly),
         AgentRole::Verify => (AgentIsolation::ReadOnly, ContextInheritance::None),
-        AgentRole::Plan => (AgentIsolation::Shared, ContextInheritance::Full),
-        AgentRole::Implement => (AgentIsolation::Worktree, ContextInheritance::Full),
+        AgentRole::Plan => (AgentIsolation::Shared, ContextInheritance::SystemOnly),
+        AgentRole::Implement => (AgentIsolation::Worktree, ContextInheritance::SystemOnly),
         AgentRole::Custom => (AgentIsolation::Shared, ContextInheritance::None),
     }
 }
@@ -339,39 +334,6 @@ impl WorkflowSpec {
     pub fn validate(&self) -> Result<TaskGraph> {
         let n = self.nodes.len();
         for (i, node) in self.nodes.iter().enumerate() {
-            if let NodeKind::Loop { max_iters: 0 } = node.kind {
-                return Err(DeepStrikeError::InvalidConfig(format!(
-                    "node {i} is a loop with max_iters=0 (would never run)"
-                )));
-            }
-            if let NodeKind::Tournament { entrants } = &node.kind {
-                if entrants.len() < 2 {
-                    return Err(DeepStrikeError::InvalidConfig(format!(
-                        "tournament node {i} needs at least 2 entrants (have {})",
-                        entrants.len()
-                    )));
-                }
-            }
-            if let NodeKind::Classify { branches } = &node.kind {
-                for branch in branches {
-                    for &bn in &branch.nodes {
-                        if bn >= n {
-                            return Err(DeepStrikeError::InvalidConfig(format!(
-                                "classify node {i} branch '{}' references out-of-range node {bn}",
-                                branch.label
-                            )));
-                        }
-                        // Branch nodes must be gated by the classifier, else they'd run before
-                        // classification and the prune would come too late.
-                        if !self.nodes[bn].depends_on.contains(&i) {
-                            return Err(DeepStrikeError::InvalidConfig(format!(
-                                "classify node {i} branch '{}' node {bn} must depends_on {i}",
-                                branch.label
-                            )));
-                        }
-                    }
-                }
-            }
             for &dep in &node.depends_on {
                 if dep >= n {
                     return Err(DeepStrikeError::InvalidConfig(format!(
@@ -478,27 +440,18 @@ pub fn verify_rules(rules: Vec<RuntimeTask>, skeptic: Option<RuntimeTask>) -> Wo
 // Quality gate — generate → evaluate (#6, the EvalPipeline successor)
 // ---------------------------------------------------------------------------
 
-/// The generate→evaluate quality gate as a workflow: a `Loop` **worker** node (the task, re-run up
-/// to `max_iters`, stopping early on a `loop_continue=false` self-signal) followed by a `Verify`
-/// **eval** node that scores the worker's output against the goal/criteria and emits a structured
-/// verdict ([`crate::harness::verdict_output_schema`] as its `output_schema`).
+/// The generate→evaluate quality gate as a workflow: a **worker** node (the task) followed by a
+/// `Verify` **eval** node that scores the worker's output against the goal/criteria and emits a
+/// structured verdict ([`crate::harness::verdict_output_schema`] as its `output_schema`).
 ///
-/// This is the declarative substrate form of the former `EvalPipeline` (0.5.0 fold, OS-axis #6).
 /// The eval node is a `Verify` agent — [`role_defaults`] gives it `ReadOnly` + [`ContextInheritance::None`]
 /// so it does not inherit the worker's reasoning (bias resistance); it evaluates the worker's
-/// *output*, carried in via its task goal. The verdict's `passed` is the gate.
+/// *output*, carried in via its dependency edge. The verdict's `passed` is the gate.
 ///
-/// For the **iterative retry-with-feedback** variant (re-run the worker with the eval's feedback
-/// folded into the next attempt), the SDK `AttemptLoop` drives this with the same
-/// [`crate::harness::build_eval_messages`] / [`crate::harness::parse_verdict`] primitives — the
-/// kernel `Loop` re-arms a single node, so per-iteration eval is necessarily SDK-driven.
-pub fn gen_eval(
-    worker: RuntimeTask,
-    eval: RuntimeTask,
-    max_iters: usize,
-    extract_skill_on_pass: bool,
-) -> WorkflowSpec {
-    let worker_node = WorkflowNode::new(worker, AgentRole::Implement).with_loop(max_iters.max(1));
+/// Retry-with-feedback is host control flow: the SDK `AttemptLoop` re-runs the worker with the
+/// eval's feedback using [`crate::harness::build_eval_messages`] / [`crate::harness::parse_verdict`].
+pub fn gen_eval(worker: RuntimeTask, eval: RuntimeTask, extract_skill_on_pass: bool) -> WorkflowSpec {
+    let worker_node = WorkflowNode::new(worker, AgentRole::Implement);
     let eval_node = WorkflowNode::new(eval, AgentRole::Verify)
         .with_depends_on(vec![0])
         .with_output_schema(crate::harness::verdict_output_schema(extract_skill_on_pass));
@@ -577,19 +530,13 @@ mod tests {
 
     #[test]
     fn gen_eval_shape() {
-        // Worker loops; eval is a bias-resistant Verify node gated on the worker, carrying the
-        // verdict output_schema.
-        let spec = gen_eval(
-            task("implement feature"),
-            task("score against criteria"),
-            3,
-            true,
-        );
+        // Eval is a bias-resistant Verify node gated on the worker, carrying the verdict
+        // output_schema.
+        let spec = gen_eval(task("implement feature"), task("score against criteria"), true);
         assert_eq!(spec.nodes.len(), 2);
 
         let worker = &spec.nodes[0];
         assert_eq!(worker.role, AgentRole::Implement);
-        assert_eq!(worker.kind, NodeKind::Loop { max_iters: 3 });
         assert!(worker.depends_on.is_empty());
 
         let eval = &spec.nodes[1];
@@ -610,10 +557,8 @@ mod tests {
     }
 
     #[test]
-    fn gen_eval_max_iters_floor_and_no_skill() {
-        // max_iters=0 would be an invalid loop; the template floors it to 1.
-        let spec = gen_eval(task("w"), task("e"), 0, false);
-        assert_eq!(spec.nodes[0].kind, NodeKind::Loop { max_iters: 1 });
+    fn gen_eval_without_skill_extraction() {
+        let spec = gen_eval(task("w"), task("e"), false);
         // extract_skill_on_pass=false ⇒ no skill property in the verdict schema.
         let schema = spec.nodes[1].output_schema.as_ref().unwrap();
         assert!(schema["properties"]["skill"].is_null());
@@ -657,41 +602,6 @@ mod tests {
     }
 
     #[test]
-    fn tournament_node_requires_two_entrants() {
-        // ≥2 entrants is valid; <2 is a spec error (no contest).
-        let ok = WorkflowSpec::new(vec![
-            WorkflowNode::new(task("rank"), AgentRole::Plan)
-                .with_tournament(vec![task("a"), task("b")]),
-        ]);
-        ok.validate().unwrap();
-
-        let one = WorkflowSpec::new(vec![
-            WorkflowNode::new(task("rank"), AgentRole::Plan).with_tournament(vec![task("only")]),
-        ]);
-        assert!(one.validate().is_err());
-    }
-
-    #[test]
-    fn tournament_node_kind_round_trips_and_gates_dependents() {
-        let spec = WorkflowSpec::new(vec![
-            WorkflowNode::new(task("pick best"), AgentRole::Plan).with_tournament(vec![
-                task("x"),
-                task("y"),
-                task("z"),
-            ]),
-            WorkflowNode::new(task("use winner"), AgentRole::Implement).with_depends_on(vec![0]),
-        ]);
-        spec.validate().unwrap();
-        // Only the controller is ready up front; the dependent waits for the bracket.
-        assert_eq!(spec.to_task_graph().unwrap().ready_tasks(), vec![0]);
-        // serde keeps the entrants under the tagged `tournament` kind.
-        let json = serde_json::to_string(&spec.nodes[0].kind).unwrap();
-        assert!(json.contains("\"type\":\"tournament\""), "{json}");
-        let back: NodeKind = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, spec.nodes[0].kind);
-    }
-
-    #[test]
     fn node_builder_overrides_defaults() {
         let n = WorkflowNode::new(task("x"), AgentRole::Verify)
             .with_isolation(AgentIsolation::Worktree)
@@ -700,5 +610,34 @@ mod tests {
         assert_eq!(n.model_hint.as_deref(), Some("opus"));
         // default inheritance for Verify is None (bias-resistant)
         assert_eq!(n.context_inheritance, ContextInheritance::None);
+    }
+
+    #[test]
+    fn dependency_brief_clips_skips_empty_and_honours_mode() {
+        let outputs = vec![
+            ("wf-node0".to_string(), "alpha findings".to_string()),
+            ("wf-node1".to_string(), "x".repeat(9_000)),
+            ("wf-node2".to_string(), String::new()),
+        ];
+        let full = DependencyContext::default().brief(&outputs);
+        assert!(full.starts_with("[dependency wf-node0 output]\nalpha findings\n\n"));
+        assert!(full.contains("[dependency wf-node1 output, 9000 characters]"));
+        assert!(full.ends_with("…[read_result(call_id=\"dep:wf-node1\") reads it in full]"));
+        assert!(!full.contains("wf-node2"));
+
+        let handle = DependencyContext { mode: DependencyMode::Handle, max_tokens: None };
+        let previewed = handle.brief(&outputs);
+        assert_eq!(previewed.matches('x').count(), 600);
+        assert!(previewed.contains("alpha findings"), "a short output is shown whole");
+
+        let capped = DependencyContext { mode: DependencyMode::Full, max_tokens: Some(1) };
+        let clipped = capped.brief(&outputs[1..2]);
+        assert_eq!(clipped.matches('x').count(), 256, "the cap never goes below 256 characters");
+
+        let reference = DependencyContext { mode: DependencyMode::Reference, max_tokens: None };
+        assert_eq!(reference.brief(&outputs), "[dependency references]\nwf-node0, wf-node1");
+        let none = DependencyContext { mode: DependencyMode::None, max_tokens: None };
+        assert_eq!(none.brief(&outputs), "");
+        assert_eq!(DependencyContext::default().brief(&[]), "");
     }
 }

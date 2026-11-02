@@ -1,6 +1,5 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
 import { estimateTextTokens } from "../token-estimate.js"
-import { createNativeContextPreparationAdapter } from "./context.js"
 import { THINKING_INTENSITY_EXTENSION_KEY, type ThinkingIntensity } from "../providers/thinking-config.js"
 import type {
   LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
@@ -32,7 +31,7 @@ import {
 } from "../memory/candidate-sink.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
 import { MemoryWriter } from "../memory/writer.js"
-import { memoryFetchRecall, memoryRecallTurn } from "../memory/recall-projection.js"
+import { memoryFetchRecall } from "../memory/recall-projection.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { Skill } from "../skill.js"
 import type { SkillMetadata } from "../skills/loader.js"
@@ -90,7 +89,7 @@ import {
 } from "./canonical-kernel-step.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
-  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome, WorkflowContextPolicy,
+  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
 import type { AgentCapabilityFilter } from "../types/agent.js"
@@ -139,11 +138,6 @@ import {
   schemaRetryInstruction,
   validateAgainstSchema,
 } from "./output-schema.js"
-import { resolveReducer, type ReducerRegistry } from "./reducers.js"
-import {
-  loopInstruction, classifyInstruction, judgeGoal, dependencyOutputsNote,
-  extractClassifyBranch, extractJudgeWinner,
-} from "./workflow-control-flow.js"
 import { governancePolicyToKernelEvent, type GovernancePolicy, type LivePolicyPatch } from "../governance.js"
 import {
   createProviderRequestPlanForProvider,
@@ -379,8 +373,6 @@ export interface RuntimeOptions {
   provider: LLMProvider
   /** Host-owned capability ceiling applied to the root run before skills or run profiles narrow it further. */
   capabilityFilter?: AgentCapabilityFilter
-  /** Host-owned artifact set identity captured in operation genesis. */
-  artifactSetDigest?: string
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
    *  `tokenBudget` flows here for its child run, so an expensive node self-terminates at the cap.
    *  Undefined ⇒ the kernel default. */
@@ -439,6 +431,10 @@ export interface RuntimeOptions {
    *  behavior difference. */
   nudges?: NudgeRule[]
   initialMemory?: string[]
+  /** Plan task 3.1 · outputs of the workflow nodes this run depends on, by agent id. The kernel
+   *  holds them; the model reads one with `read_result(call_id="dep:<agent_id>")`. Set by the
+   *  workflow driver for a node's child run. */
+  dependencyOutputs?: Record<string, string>
   /** Optional host ledger that admits dynamic context before kernel insertion. */
   contextManager?: ContextManager
   skillDir?: string
@@ -650,9 +646,6 @@ export interface RuntimeOptions {
     evalProvider: LLMProvider
     maxAttempts?: number
   }
-  /** G2: custom reducers for `NodeKind::Reduce` workflow nodes, merged over the built-ins
-   *  (`concat` / `dedupe_lines` / `merge_json_arrays` / `count`). A reduce node runs no LLM. */
-  reducers?: ReducerRegistry
   /**
    * Optional async LLM summarizer. When provided, a background call is fired
    * after each compression event to produce a richer semantic summary.
@@ -1232,7 +1225,6 @@ export class RuntimeRunner {
         maxTurns: this.opts.maxTurns,
         maxTotalTokens: this.opts.maxTotalTokens,
         maxWallMs: this.opts.timeoutMs,
-        artifactSetDigest: this.opts.artifactSetDigest,
         memoryBindingId: `node-memory-${this.opts.agentId ?? "root"}`,
         persistPayload: async (callId, content, previewBytes) => {
           const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`
@@ -1571,43 +1563,25 @@ export class RuntimeRunner {
     parentSessionId: string,
     orchestrator: SubAgentOrchestrator,
     budget?: WorkflowBudget,
-    outputs?: Map<string, string>,
     abortSignal?: AbortSignal,
-    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
     workflowAgentTargets?: Map<string, string>,
     workflowNodeToolAccess?: Map<string, "inherit" | "filtered">,
     parentRunId?: string,
   ): Promise<SubAgentResult> {
-    // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
-    // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
-    if (node.reducer) {
-      return this.runReduceNode(node, outputs ?? new Map())
-    }
-
     const baseSpec = workflowNodeToSpec(node, parentSessionId)
     const manifest = workflowNodeToManifest(node, parentSessionId)
     // G4: surface the workflow's remaining budget to the node's agent so a coordinator can size its
     // `submit_workflow_nodes` batch to what is available (empty string ⇒ unbounded, no note).
     const budgetNote = workflowBudgetNote(budget)
-    // W-N2: a DAG edge carries data — every dependent node sees its dependencies' outputs (the
-    // kernel sends `input_agent_ids` for all dependents; judges/reduce keep their special paths).
-    const policy = contextPolicies?.get(node.agent_id) ?? contextPolicies?.get(node.agent_id.replace(/-i\d+$/, ""))
-    const include = policy?.include ?? ["dependency_outputs"]
-    const depsNote = include.includes("dependency_outputs")
-      ? dependencyOutputsNote(
-          node.input_agent_ids,
-          outputs,
-          policy?.maxTokens !== undefined ? Math.max(256, policy.maxTokens * 4) : 8_000,
-          policy?.dependencyMode ?? "full",
-        )
-      : ""
+    // A DAG edge carries data: the kernel composes the dependency section of the brief.
     const withBudget = (goal: string) =>
-      [goal, depsNote, budgetNote].filter(Boolean).join("\n\n")
+      [goal, node.dependency_brief, budgetNote].filter(Boolean).join("\n\n")
     const mkCtx = (goal: string): SubAgentRunContext => ({
       parentOpts: this.opts,
       parentSessionId,
       ...(parentRunId ? { parentRunId } : {}),
       spec: { ...baseSpec, goal: withBudget(goal) },
+      ...(node.dependency_outputs ? { dependencyOutputs: node.dependency_outputs } : {}),
       manifest,
       sessionLog: this.opts.sessionLog,
       // This child is a workflow node, so capability resolution applies workflow-node quarantine
@@ -1617,14 +1591,12 @@ export class RuntimeRunner {
       // by design — filtering on the missing list ran every DAG node TOOL-LESS); quarantined nodes
       // stay deny-all filtered (they read untrusted content).
       toolAccess: workflowNodeToolAccess?.get(node.agent_id)
-        ?? workflowNodeToolAccess?.get(node.agent_id.replace(/-i\d+$/, ""))
         ?? (node.trust === "quarantined" ? "filtered" : "inherit") as "filtered" | "inherit",
       // #2-B-ii: the per-node abort signal the driver fires when the kernel preempts this node.
       ...(abortSignal ? { abortSignal } : {}),
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
     })
     const targetName = workflowAgentTargets?.get(node.agent_id)
-      ?? workflowAgentTargets?.get(node.agent_id.replace(/-i\d+$/, ""))
     const runNode = async (goal: string): Promise<SubAgentResult> => {
       const context = mkCtx(goal)
       if (targetName) {
@@ -1637,46 +1609,6 @@ export class RuntimeRunner {
       }
       return orchestrator.run(context)
     }
-    const textOf = (r: SubAgentResult): string => {
-      const c = r.result.finalMessage?.content
-      return typeof c === "string" ? c : c != null ? JSON.stringify(c) : ""
-    }
-    const withSignal = (r: SubAgentResult, patch: Partial<SubAgentResult["result"]>): SubAgentResult =>
-      ({ ...r, result: { ...r.result, ...patch } })
-
-    // A#2 tournament judge: this node compares two entrants' produced outputs rather than running its
-    // own goal. Look up both candidates, run a judge over the controller's criterion, and report the
-    // winning entrant's agent id as `tournamentWinner` (the kernel advances the bracket with it).
-    if (node.judge_match) {
-      const out = outputs ?? new Map<string, string>()
-      const left = out.get(node.judge_match.left) ?? ""
-      const right = out.get(node.judge_match.right) ?? ""
-      const result = await runNode(judgeGoal(baseSpec.goal, left, right))
-      const winner = extractJudgeWinner(textOf(result))
-      const winnerId = winner === "right" ? node.judge_match.right : node.judge_match.left
-      return withSignal(result, { tournamentWinner: winnerId })
-    }
-
-    // loop-control loop iteration: run the increment under the armed pacing trap (workflowNodeToSpec set
-    // `loopRound`, and the iteration resumes the loop's stable session — transcript-as-carry).
-    // The kernel-adjudicated `pace` verb is the only continuation signal. Ending without a pace
-    // decision completes the loop.
-    if (node.loop_max_iters != null) {
-      const iteration = Number(/-i(\d+)$/.exec(node.agent_id)?.[1] ?? "0")
-      const result = await runNode(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters, iteration)}`)
-      const pace = result.result.paceDecision
-      return withSignal(result, { loopContinue: pace?.action === "continue" })
-    }
-
-    // A#2 classify: run the classifier, then extract the chosen branch label; the kernel runs that
-    // branch and prunes the rest. No recognizable choice ⇒ leave unset (kernel prunes all branches).
-    if (node.classify_labels && node.classify_labels.length) {
-      const labels = node.classify_labels
-      const result = await runNode(`${baseSpec.goal}\n\n${classifyInstruction(labels)}`)
-      const branch = extractClassifyBranch(textOf(result), labels)
-      return branch === undefined ? result : withSignal(result, { classifyBranch: branch })
-    }
-
     const schema = node.output_schema
     if (!schema) return runNode(baseSpec.goal)
 
@@ -1706,27 +1638,6 @@ export class RuntimeRunner {
         termination: "error",
         finalMessage: { role: "assistant", content: reason, toolCalls: [] },
       },
-    }
-  }
-
-  /**
-   * G2: execute a deterministic reduce node. Looks up the named reducer (built-ins overlaid with
-   * `opts.reducers`), runs it over the node's dependency outputs (gathered from `outputs`), and
-   * returns a synthetic completion carrying the reducer's output — no LLM, zero tokens. An unknown
-   * reducer or a thrown reducer fails the node (`Error` termination → the kernel starves dependents).
-   */
-  private runReduceNode(node: WorkflowSpawnInfo, outputs: Map<string, string>): SubAgentResult {
-    const ok = (content: string, termination: string): SubAgentResult => ({
-      agentId: node.agent_id,
-      result: { termination, finalMessage: { role: "assistant", content, toolCalls: [] }, turnsUsed: 0, totalTokensUsed: 0 },
-    })
-    const reducer = resolveReducer(node.reducer as string, this.opts.reducers)
-    if (!reducer) return ok(`unknown reducer "${node.reducer}"`, "error")
-    const inputs = (node.input_agent_ids ?? []).map(agentId => ({ agentId, output: outputs.get(agentId) ?? "" }))
-    try {
-      return ok(reducer(inputs), "completed")
-    } catch (err) {
-      return ok(`reducer "${node.reducer}" threw: ${formatToolError(err)}`, "error")
     }
   }
 
@@ -1805,7 +1716,6 @@ export class RuntimeRunner {
         parentSessionId,
         runtime,
         new Map(),
-        new Map(spec.nodes.flatMap((node, index) => node.context ? [[`wf-node${index}`, node.context] as const] : [])),
         spec.nodes,
         0,
       )
@@ -1924,9 +1834,6 @@ export class RuntimeRunner {
                   sessionId,
                   runtime,
                   new Map(),
-                  new Map(submission.spec.nodes.flatMap((node, index) => node.context
-                    ? [[`wf-node${index}`, node.context] as const]
-                    : [])),
                   submission.spec.nodes,
                   ((observations.find(observation => observation.kind === "workflow_nodes_submitted") as { base?: number } | undefined)?.base ?? 0),
                 ),
@@ -2197,7 +2104,6 @@ export class RuntimeRunner {
     parentSessionId: string,
     runtime: CanonicalRunnerRuntime,
     seedOutputs?: Map<string, string>,
-    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
     workflowNodes?: import("../types/agent.js").WorkflowNodeSpec[],
     workflowNodeBase = 0,
   ): Promise<WorkflowOutcome> {
@@ -2297,9 +2203,7 @@ export class RuntimeRunner {
         parentSessionId,
         orchestrator,
         nodeBudget,
-        outputs,
         controller.signal,
-        contextPolicies,
         workflowAgentTargets,
         workflowNodeToolAccess,
         parentRunId,
@@ -2399,10 +2303,6 @@ export class RuntimeRunner {
       termination: result.result.termination as WorkflowNodeOutcome["termination"],
       ...(result.result.finalMessage ? { output: result.result.finalMessage } : {}),
     })
-    // A loop iteration completes under `wf-node{N}-i{k}` but its dependents consume the STABLE
-    // node id `wf-node{N}` — alias it so the LAST iteration's output is what dependents see.
-    const stableId = result.agentId.replace(/-i\d+$/, "")
-    if (stableId !== result.agentId) outputs.set(stableId, outText)
     const observationStart = this.pendingObservations.length
     const completionAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
       kind: "sub_agent_completed",
@@ -2443,17 +2343,13 @@ export class RuntimeRunner {
         }))
       }
     }
-    // Persist node completion for resume recovery. W-1: the result-borne control signals ride
-    // along (a resumed classifier re-prunes; a recorded loop stop is honored) plus the output
-    // text (post-resume dependents/reduce still see this node's output).
+    // Persist node completion for resume recovery, with the output text so post-resume dependents
+    // still see this node's output.
     await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodeCompletedEvent({
       turn: runtime.turn(),
       agentId: result.agentId,
       status: workflowNodeStatusFromTermination(result.result.termination),
       termination: result.result.termination,
-      classifyBranch: result.result.classifyBranch,
-      tournamentWinner: result.result.tournamentWinner,
-      loopContinue: result.result.loopContinue,
       ...(result.result.finalMessage ? { output: result.result.finalMessage } : {}),
     }))
     return {
@@ -2840,6 +2736,14 @@ export class RuntimeRunner {
       })
     }
 
+    for (const [agentId, content] of Object.entries(this.opts.dependencyOutputs ?? {})) {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
+        kind: "add_dependency_output",
+        agent_id: agentId,
+        content,
+      })
+    }
+
     if (this.opts.initialMemory) {
       for (const [index, mem] of this.opts.initialMemory.entries()) {
         await this.pushKnowledge({ role: "system", content: mem, toolCalls: [] }, undefined, { key: `initial:${index}`, pinned: true })
@@ -2892,6 +2796,8 @@ export class RuntimeRunner {
         write: this.memoryPathEnabled("modelWritesEnabled"),
         // Proposals must land in review, never straight in the store.
         propose_memory: Boolean(this.opts.memoryCandidateSink && this.memoryPathToCandidateSink("modelWrites")),
+        // The kernel recalls for the goal before the first call and after each renewal.
+        recall: Boolean(this.opts.memoryScope),
       })
     }
     // Install optional memory policy. Maps the ergonomic camelCase option onto the kernel's
@@ -3000,7 +2906,6 @@ export class RuntimeRunner {
       }
     }
     this.currentGoal = goal
-    if (!resumeMidRun) await this.prefetchMemory("initial")
 
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before root start pushes the "[TASK STATE]" anchor. init_task does not
@@ -3193,18 +3098,6 @@ export class RuntimeRunner {
           this.providerRetryPending = action.kind === "call_provider"
           continue
         }
-
-        if (!promptMeasurement) throw new Error("context preparation requires prompt measurement")
-        const contextAdapter = createNativeContextPreparationAdapter()
-        const preparation = contextAdapter.prepare({
-          effect: action.contextEffect,
-          request_fingerprint: providerPlan.fingerprint,
-          provider_route: { ...this.providerRoute, request_fingerprint_scope: preparedRequest.scope },
-          prompt_measurement: promptMeasurement,
-        })
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "context_prepared", turn: runtime.turn(), effect_id: providerEffectId, preparation,
-        })
 
         const abortSignal = this.abortController?.signal
         try {
@@ -3534,11 +3427,14 @@ export class RuntimeRunner {
         let error: string | undefined
         const agentId = this.opts.agentId
         const recordId = typeof action.query.record_id === "string" ? action.query.record_id : undefined
+        const causation = action.query.causation as { kind?: string; sprint?: number } | undefined
         try {
           if (!agentId) throw new Error("memory queries require RuntimeOptions.agentId")
-          hits = recordId === undefined
-            ? await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
-            : await this.fetchMemoryFromStore(query, recordId, agentId)
+          hits = causation?.kind === "kernel_recall"
+            ? await this.kernelRecallHits(query, action.requestedK, agentId, causation.sprint ? "renewal" : "initial")
+            : recordId === undefined
+              ? await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
+              : await this.fetchMemoryFromStore(query, recordId, agentId)
         } catch (cause) {
           error = formatToolError(cause)
         }
@@ -4053,52 +3949,28 @@ export class RuntimeRunner {
     }
   }
 
-  /** I4 + K4 · M5: fetch long-term memory hits for the current goal and put each one in context as
-   *  the canonical recall index line ({@link memoryRecallTurn}), as a keyed `memory:<record_id>`
-   *  knowledge entry through the same admission path as any other dynamic knowledge. Called once
-   *  before turn 1 (`phase: "initial"`) and re-fired after each sprint renewal (`phase:
-   *  "renewal"`). Both phases land in knowledge: a running operation accepts history only through
-   *  effects or external events, and one placement lets the key dedupe a record across phases.
-   *  One prefetch is one dedupe horizon and one `memory_retrieval_result`.
-   *  Errs-open throughout: a faulty prefetch never breaks the run. */
-  private async prefetchMemory(phase: "initial" | "renewal"): Promise<void> {
-    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
-    // P10: recall is default-on (CC session-start recall) — with no hook configured,
-    // the goal itself is the query. preQueryMemory stays as the targeting override.
-    const preQuery = this.opts.preQueryMemory
-      ?? ((ctx: { goal: string }) => [{
-        scope: this.opts.memoryScope!,
-        query: ctx.goal,
-        top_k: 5,
-        kinds: [],
-      }])
-    try {
-      const queries = await preQuery({
-        goal: this.currentGoal,
-        runSpec: this.opts.runSpec,
-        phase,
-      })
-      const seen = new Set<string>()
-      const accepted: MemoryRecall[] = []
-      for (const query of queries ?? []) {
-        if (!query.query.trim()) continue
-        const hits = await this.retrieveMemoryFromStore(query, query.top_k, this.opts.agentId)
-        for (const hit of hits) {
-          if (seen.has(hit.record.record_id)) continue
-          seen.add(hit.record.record_id)
-          accepted.push(hit)
-          const content = memoryRecallTurn(hit.record)
-          await this.pushKnowledge(
-            { role: "system", content, toolCalls: [] },
-            estimateTextTokens(content),
-            { key: `memory:${hit.record.record_id}` },
-          )
-        }
+  /** The kernel's own recall for the run goal (plan task 2.1). `preQueryMemory` may rewrite it
+   *  into several scoped queries; their hits are merged, one per record. */
+  private async kernelRecallHits(
+    query: MemoryQuery,
+    requestedK: number,
+    agentId: string,
+    phase: "initial" | "renewal",
+  ): Promise<MemoryRecall[]> {
+    const queries = this.opts.preQueryMemory
+      ? await this.opts.preQueryMemory({ goal: query.query, runSpec: this.opts.runSpec, phase }) ?? []
+      : [query]
+    const seen = new Set<string>()
+    const hits: MemoryRecall[] = []
+    for (const each of queries) {
+      if (!each.query.trim()) continue
+      for (const hit of await this.retrieveMemoryFromStore(each, each.top_k ?? requestedK, agentId)) {
+        if (seen.has(hit.record.record_id)) continue
+        seen.add(hit.record.record_id)
+        hits.push(hit)
       }
-      if (accepted.length === 0) return
-      await this.recordHostMemoryRecall(accepted, this.opts.agentId)
-      await this.logMemoryRetrievalResult(this.currentSessionId, accepted)
-    } catch { /* errs-open — a faulty prefetch never breaks the run */ }
+    }
+    return hits
   }
 
   private async appendObservations(
@@ -4154,12 +4026,6 @@ export class RuntimeRunner {
           })
         }
         nextArchiveStart = compressedSeq + 1
-      }
-      // K4: a sprint renewal dropped the old history — including any earlier memory hits — so
-      // re-run the preQueryMemory prefetch for the new sprint (live observations only: this
-      // consumer sits on the live drain path).
-      if (obs.kind === "renewed") {
-        await this.prefetchMemory("renewal")
       }
     }
     return nextArchiveStart

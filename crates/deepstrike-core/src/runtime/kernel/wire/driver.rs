@@ -554,16 +554,6 @@ fn durable_block_to_content_part(block: &DurableContentBlock) -> Result<ContentP
     }
 }
 
-fn workflow_kind_label(state: &WorkflowRuntimeNodeState) -> &'static str {
-    match state.node.kind {
-        crate::orchestration::workflow::NodeKind::Spawn => "spawn",
-        crate::orchestration::workflow::NodeKind::Loop { .. } => "loop",
-        crate::orchestration::workflow::NodeKind::Classify { .. } => "classify",
-        crate::orchestration::workflow::NodeKind::Tournament { .. } => "tournament",
-        crate::orchestration::workflow::NodeKind::Reduce { .. } => "reduce",
-    }
-}
-
 fn workflow_status_label(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
@@ -992,17 +982,7 @@ fn restore_scheduler(
             .nodes
             .iter()
             .enumerate()
-            .zip(core_spec.nodes.iter())
-            .map(|((index, node), core)| {
-                if node.kind != "spawn" {
-                    return Err(KernelFault::new(
-                        KernelFaultCode::CheckpointIncompatible,
-                        format!(
-                            "workflow node {} carries unsupported checkpoint kind {:?}",
-                            node.node_id, node.kind
-                        ),
-                    ));
-                }
+            .map(|(index, node)| {
                 let result = engine
                     .task_table()
                     .get(&crate::orchestration::workflow::node_agent_id(index))
@@ -1010,11 +990,9 @@ fn restore_scheduler(
                     .and_then(|process| process.result.as_ref())
                     .map(|result| result.result.clone());
                 Ok(WorkflowRuntimeNodeState {
-                    node: core.clone(),
                     status: restore_workflow_status(&node.status)?,
                     result,
                     active_agent_id: node.active_agent_id.clone(),
-                    iterations_completed: node.iterations_completed as usize,
                 })
             })
             .collect();
@@ -1236,6 +1214,7 @@ fn restore_context_vm(
             entry.evict_at_boundary = slot.evict_at_boundary;
             entry.use_count = slot.use_count;
             entry.last_used_step = slot.last_used_step;
+            entry.staged = slot.staged;
             entry.pending = slot
                 .pending
                 .as_ref()
@@ -1252,9 +1231,15 @@ fn restore_context_vm(
         state.knowledge_reference_step,
         state.knowledge_budget_warned,
     );
+    ctx.restore_cache_checkpoint_state(state.prefix_sent, state.cache_invalidated_tokens);
+    ctx.partitions.knowledge.evicted_keys = state.evicted_knowledge_keys.iter().cloned().collect();
+    ctx.partitions.knowledge.regret = state.knowledge_regret;
+    ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;
+    ctx.recall_top_k = state.recall_top_k;
+    ctx.recall_due = state.recall_due;
+    ctx.dependency_bodies = state.dependency_bodies.clone();
     ctx.partitions.signals = state.signals.clone();
     ctx.partitions.task_state = restore_task_state(&state.task_state);
-    ctx.restore_state_generation(state.state_generation);
     ctx.last_activity_ms = state.last_activity_ms.get();
     ctx.last_compact_ms = state.last_compact_ms.map(WireU64::get);
     ctx.active_skills = state
@@ -1504,6 +1489,8 @@ struct AuthoredMemoryQuery {
     requested_k: u32,
     /// Set for a point fetch: the only record the host may answer with.
     record_id: Option<String>,
+    /// The kernel's own recall: hits land as keyed knowledge, not history.
+    recall: bool,
 }
 
 /// What the kernel published for a pending `LoadPayload` effect (§7.10 rule 4).
@@ -1570,6 +1557,8 @@ pub struct CanonicalOperationDriver {
     pending_memory_writes: BTreeMap<EffectId, AuthoredMemoryWrite>,
     /// The same for `QueryMemory`: the query the kernel authored and the width it clamped.
     pending_memory_queries: BTreeMap<EffectId, AuthoredMemoryQuery>,
+    /// A kernel recall between its minting and its effect id (one disposition, never persisted).
+    recall_query: Option<AuthoredMemoryQuery>,
     /// §7.10 · the handle each pending `LoadPayload` addresses, with the digest the loaded body has
     /// to reproduce. Kept here rather than re-read from the handle table at resolution time, so a
     /// residency that moved in between cannot silently change what a page-in is verified against.
@@ -1613,6 +1602,7 @@ impl CanonicalOperationDriver {
             provider_calls: BTreeMap::new(),
             pending_memory_writes: BTreeMap::new(),
             pending_memory_queries: BTreeMap::new(),
+            recall_query: None,
             pending_payload_loads: BTreeMap::new(),
             consumed_calls: BTreeSet::new(),
             policy: None,
@@ -1869,6 +1859,7 @@ fn causation_task(causation: &SyscallCausation) -> TaskId {
     match causation {
         SyscallCausation::ProviderTool(provider) => provider.task_id.clone(),
         SyscallCausation::ChildAttempt(child) => child.task_id.clone(),
+        SyscallCausation::KernelRecall(recall) => recall.task_id.clone(),
     }
 }
 
@@ -2084,6 +2075,19 @@ fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
                         )
                     })?;
                 core = core.with_scheduling_factors(factors);
+            }
+            if let Some(context) = metadata.get("dependency_context") {
+                let context: crate::orchestration::workflow::DependencyContext =
+                    serde_json::from_value(context.clone()).map_err(|error| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidConfig,
+                            format!(
+                                "workflow node {:?} metadata.dependency_context is malformed: {error}",
+                                node.node_id
+                            ),
+                        )
+                    })?;
+                core = core.with_dependency_context(context);
             }
         }
         let mut depends_on = Vec::with_capacity(node.depends_on.len());
@@ -2311,6 +2315,12 @@ fn seed_initial_context(engine: &mut LoopStateMachine, initial: &InitialContext)
     seed_knowledge(engine, &initial.knowledge);
     if !initial.requested_capabilities.is_empty() {
         engine.set_requested_capabilities(initial.requested_capabilities.clone());
+    }
+    for dependency in &initial.dependencies {
+        engine
+            .ctx
+            .dependency_bodies
+            .insert(dependency.agent_id.clone(), dependency.content.clone());
     }
 }
 
@@ -2547,10 +2557,7 @@ fn sub_agent_result(completed: &ChildCompleted) -> SubAgentResult {
                 .usage
                 .as_ref()
                 .map_or(0, child_total_tokens),
-            loop_continue: None,
-            classify_branch: None,
             pace_decision: None,
-            tournament_winner: None,
         },
     }
 }

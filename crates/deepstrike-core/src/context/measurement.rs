@@ -55,8 +55,7 @@ impl TokenMeasurement {
 
     fn message_fingerprint(message: &crate::types::message::CoreMessage) -> String {
         use sha2::{Digest as _, Sha256};
-        let material =
-            super::execution::message_material(message, &crate::mm::handle::HandleTable::new());
+        let material = message_material(message);
         let digest =
             Sha256::digest(serde_json::to_vec(&material).expect("message is serializable"));
         let hex = digest
@@ -65,6 +64,32 @@ impl TokenMeasurement {
             .collect::<String>();
         format!("sha256:{hex}")
     }
+}
+
+/// Canonical fingerprint material: a durable text block and its resident body are the same
+/// semantic object, so both fingerprint as `content`.
+fn message_material(message: &crate::types::message::CoreMessage) -> serde_json::Value {
+    use crate::types::durable_content::DurableContent;
+    use crate::types::message::{Content, ContentPart};
+    let blocks = match &message.content {
+        Content::Text(text) => vec![serde_json::json!({"type": "text", "text": text})],
+        Content::Parts(parts) => parts
+            .iter()
+            .map(|part| match part {
+                ContentPart::ToolResult {
+                    call_id,
+                    output,
+                    is_error,
+                    durable_content,
+                } => serde_json::json!({
+                    "type": "tool_result", "call_id": call_id, "is_error": is_error,
+                    "content": durable_content.clone().unwrap_or_else(|| DurableContent::text(output)),
+                }),
+                _ => serde_json::to_value(part).expect("content part is serializable"),
+            })
+            .collect(),
+    };
+    serde_json::json!([&message.role, blocks, &message.tool_calls])
 }
 
 /// Host-owned accounting fact for one completed tool call. It is an input to settlement and

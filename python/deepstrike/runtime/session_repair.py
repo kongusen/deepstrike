@@ -88,9 +88,6 @@ def build_workflow_node_completed_event(
   agent_id: str,
   status: str,
   termination: str,
-  classify_branch: str | None = None,
-  tournament_winner: str | None = None,
-  loop_continue: bool | None = None,
   output: Any | None = None,
 ) -> dict[str, Any]:
   """Build the audit projection emitted after a workflow node finishes."""
@@ -101,12 +98,6 @@ def build_workflow_node_completed_event(
     "status": status,
     "termination": termination,
   }
-  if classify_branch is not None:
-    event["classify_branch"] = classify_branch
-  if tournament_winner is not None:
-    event["tournament_winner"] = tournament_winner
-  if loop_continue is not None:
-    event["loop_continue"] = loop_continue
   if output:
     event["output"] = {
       "role": getattr(output, "role", "assistant"),

@@ -25,7 +25,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::evolution::ArtifactSetBinding;
 
 use super::KernelBootstrapLimits;
 use super::command::{
@@ -81,10 +80,6 @@ fn require_le_u32(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationConfig {
-    /// Optional host-owned artifact identity this operation executes against. When omitted,
-    /// the operation runs without a bound artifact set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_set_binding: Option<ArtifactSetBinding>,
     /// Turn/token/wall budgets plus the loop guards (criteria gate, repeat fuse, entropy watch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_policy: Option<ExecutionPolicy>,
@@ -142,7 +137,6 @@ pub struct OperationConfig {
 impl Default for OperationConfig {
     fn default() -> Self {
         Self {
-            artifact_set_binding: None,
             execution_policy: None,
             governance_policy: None,
             scheduler_policy: None,
@@ -484,6 +478,10 @@ pub struct MemoryPolicy {
     /// Recall count at which a record becomes a promotion candidate. Absent ⇒ no suggestion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promotion_recall_threshold: Option<WireU64>,
+    /// The kernel recalls long-term memory for the run goal before the first provider call and
+    /// after each renewal. Needs a readable memory binding and `query_memory` support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recall: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -616,10 +614,6 @@ impl HostEffectSupport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedOperationConfig {
-    /// Optional artifact identity captured in the genesis record. When None, the operation
-    /// runs without a bound artifact set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_set_binding: Option<ArtifactSetBinding>,
     pub execution_policy: ResolvedExecutionPolicy,
     pub governance_policy: ResolvedGovernancePolicy,
     pub scheduler_policy: ResolvedSchedulerPolicy,
@@ -862,6 +856,8 @@ pub struct ResolvedMemoryPolicy {
     pub max_content_bytes: u32,
     pub max_name_length: u32,
     pub promotion_recall_threshold: Option<WireU64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recall: bool,
 }
 
 impl ResolvedMemoryPolicy {
@@ -874,6 +870,7 @@ impl ResolvedMemoryPolicy {
         max_content_bytes: 10_000,
         max_name_length: 100,
         promotion_recall_threshold: None,
+        recall: false,
     };
 
     /// §22.13 · the one admission rule for a memory write, whoever proposes it.
@@ -946,7 +943,6 @@ impl ConfigDefaults {
         Self {
             bootstrap_limits,
             baseline: ResolvedOperationConfig {
-                artifact_set_binding: None,
                 execution_policy: ResolvedExecutionPolicy {
                     max_context_tokens: 128_000,
                     max_turns: 25,
@@ -1074,8 +1070,6 @@ pub fn resolve_operation_config(
 ) -> Result<ResolvedOperationConfig, WireRejection> {
     let base = &defaults.baseline;
 
-    let artifact_set_binding = config.artifact_set_binding.clone();
-
     let kernel_limits = resolve_kernel_limits(
         config.kernel_limits.as_ref(),
         &defaults.bootstrap_limits,
@@ -1147,7 +1141,6 @@ pub fn resolve_operation_config(
     }
 
     Ok(ResolvedOperationConfig {
-        artifact_set_binding,
         execution_policy,
         governance_policy,
         scheduler_policy,
@@ -1968,6 +1961,9 @@ fn resolve_memory_policy(
         if let Some(value) = policy.promotion_recall_threshold {
             resolved.promotion_recall_threshold = Some(value);
         }
+        if let Some(value) = policy.recall {
+            resolved.recall = value;
+        }
     }
     if resolved.retrieval_top_k == 0 {
         return Err(invalid("memory_policy.retrieval_top_k must be positive"));
@@ -2202,7 +2198,6 @@ mod tests {
     /// A config exercising every field, so key-absence tests see the whole surface.
     fn fully_populated_config() -> OperationConfig {
         OperationConfig {
-            artifact_set_binding: None,
             execution_policy: Some(ExecutionPolicy {
                 max_context_tokens: Some(200_000),
                 max_turns: Some(40),
@@ -2333,6 +2328,7 @@ mod tests {
                 max_content_bytes: Some(20_000),
                 max_name_length: Some(120),
                 promotion_recall_threshold: Some(WireU64::new(3)),
+                recall: None,
             }),
             tool_catalog: vec![
                 ToolSchema {

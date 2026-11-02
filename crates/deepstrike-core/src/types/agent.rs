@@ -168,8 +168,11 @@ impl IsolationManifest {
 
     fn role_default_context_inheritance(role: AgentRole) -> ContextInheritance {
         match role {
-            AgentRole::Explore | AgentRole::Verify => ContextInheritance::SystemOnly,
-            AgentRole::Plan | AgentRole::Implement => ContextInheritance::Full,
+            // A child gets a clean context plus its brief. `Full` (the parent's whole transcript)
+            // is never a role default; a caller must ask for it explicitly.
+            AgentRole::Explore | AgentRole::Verify | AgentRole::Plan | AgentRole::Implement => {
+                ContextInheritance::SystemOnly
+            }
             AgentRole::Custom => ContextInheritance::None,
         }
     }

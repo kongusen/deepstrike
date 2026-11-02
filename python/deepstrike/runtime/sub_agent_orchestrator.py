@@ -35,6 +35,8 @@ class SubAgentRunContext:
   tool_access: str = "filtered"  # "inherit" | "filtered"
   # AttemptLoop carry material; delivered through the child's signal input.
   context_input: str | None = None
+  # Plan task 3.1 · the outputs of the workflow nodes this child depends on, by agent id.
+  dependency_outputs: dict[str, str] | None = None
 
 
 def _termination_from_status(status: str) -> str:
@@ -150,7 +152,7 @@ def _build_child_opts(
   meta_tools: frozenset[str],
 ) -> RuntimeOptions:
   # Inherit-everything like node's `{...ctx.parentOpts, ...overrides}` spread, so the child stays in
-  # the parent's governance domain (`run_group`) and sees `reducers` / `worktree_manager` / every
+  # the parent's governance domain (`run_group`) and sees `worktree_manager` / every
   # future option without this list drifting. Only the per-child contract fields are overridden.
   return replace(
     ctx.parent_opts,
@@ -173,6 +175,8 @@ def _build_child_opts(
     # must NOT re-reserve budget axes the parent already holds (that double-reserve squeezed the
     # child's grant to 0 and the kernel stripped its first-turn tools).
     nested_group_vehicle=True,
+    # A child reads only its own dependencies, never ones inherited from the parent's options.
+    dependency_outputs=ctx.dependency_outputs,
     # The child runs under ITS OWN spec, never the parent's: the replace() above would otherwise
     # leak the parent's ``run_spec`` (identity, capability filter — and a LoopDriver's armed
     # ``loop_round``, giving every child a phantom pace tool). A loop-node iteration carries its

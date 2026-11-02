@@ -8,8 +8,7 @@ def test_file_workflow_store_roundtrips_lists_and_rejects_unsafe(tmp_path):
     spec = WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="explore", role="explore", isolation="read_only"),
         WorkflowNodeSpec(
-            task="judge", role="plan", depends_on=[0],
-            tournament={"entrants": ["x", "y"]}, token_budget=10000,
+            task="judge", role="plan", depends_on=[0], token_budget=10000,
         ),
     ])
     path = store.save("my-flow", spec)

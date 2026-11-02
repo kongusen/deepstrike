@@ -17,7 +17,6 @@ from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, 
 from deepstrike.runtime.runner import MemoryPolicy
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
-from deepstrike.memory import memory_recall_turn
 from deepstrike.memory.protocols import (
     MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope,
 )
@@ -157,17 +156,6 @@ async def test_prefetched_hit_is_the_canonical_recall_turn_and_is_audited():
                if e.event.get("kind") == "memory_retrieval_result"]
     assert len(audited) == 1
     assert [hit["record"]["record_id"] for hit in audited[0]["hits"]] == ["record-t5"]
-
-
-def test_recall_turn_matches_the_vector_every_sdk_pins():
-    vector = MemoryRecord(
-        record_id="record-v", scope=MemoryScope("t", "n"), name="fact", kind="project",
-        content="prefers numbered sections", description="how briefs are laid out",
-        provenance=MemoryProvenance(author="extraction", trust="untrusted"),
-        created_at=1, updated_at=1, confidence=0.5,
-    )
-    assert memory_recall_turn(vector) == "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
-    assert memory_recall_turn(replace(vector, description=" ")) == "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
 
 
 @pytest.mark.asyncio

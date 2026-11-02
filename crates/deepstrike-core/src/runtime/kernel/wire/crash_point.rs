@@ -6,7 +6,7 @@
 //! the matrix that turns "durable" from a property of the primitives into a property of the
 //! seams between them.
 //!
-//! Design rulings (same style as `chain_validator`: the contract lives in this one module):
+//! Design rulings (the contract lives in this one module):
 //!
 //! 1. **Boundaries, not timers.** A crash is modelled exactly as the API surface allows it:
 //!    a candidate dropped, an append without a commit, a commit whose effects were never

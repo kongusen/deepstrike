@@ -1030,20 +1030,6 @@ pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
-/// Framework Verifiable Runtime bridge. Rust core remains the single semantic implementation.
-#[wasm_bindgen(js_name = verifiableOperationJson)]
-pub fn verifiable_operation_json(request: String) -> Result<String, JsValue> {
-    deepstrike_core::runtime::verifiable::operation_json(&request)
-        .map_err(|error| JsValue::from_str(&error))
-}
-
-/// Framework Evolution Runtime bridge. Rust core remains the single E1–E8 validation authority.
-#[wasm_bindgen(js_name = evolutionValidateJson)]
-pub fn evolution_validate_json(request: String) -> Result<String, JsValue> {
-    deepstrike_core::evolution::validate_evolution_json(&request)
-        .map_err(|error| JsValue::from_str(&error))
-}
-
 /// §22.13 memory authority for a host with no live operation: write admission and the recall
 /// lifecycle, answered by the same kernel functions the in-operation paths use.
 #[wasm_bindgen(js_name = memoryAuthorityJson)]
@@ -1111,16 +1097,3 @@ pub struct MemoryProvenance {
     pub evidence_refs: Vec<String>,
 }
 
-/// Freeze host route and measurement against the kernel's committed Context candidate.
-#[wasm_bindgen(js_name = contextPrepareJson)]
-pub fn context_prepare_json(request: String) -> Result<String, JsValue> {
-    deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
-        .map_err(|error| JsValue::from_str(&error))
-}
-
-/// Verify recorded execution evidence against a replayed Context candidate.
-#[wasm_bindgen(js_name = contextVerifyJson)]
-pub fn context_verify_json(request: String) -> Result<String, JsValue> {
-    deepstrike_core::context::execution::verify_context_dispatch_json(&request)
-        .map_err(|error| JsValue::from_str(&error))
-}

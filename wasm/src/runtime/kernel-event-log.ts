@@ -15,6 +15,8 @@ export function categoryForKind(kind: string): KernelEventCategory {
     case "page_in_requested":
     case "renewed":
     case "context_renewed":
+    case "lifecycle_report":
+    case "context_lifecycle_reported":
     case "memory_written":
     case "memory_queried":
     case "memory_validation_failed":
@@ -96,6 +98,16 @@ function projectKernelObservation(
         turn: t,
         sprint: obs.sprint ?? 0,
         handoff_ref: "",
+      }
+    case "lifecycle_report":
+      return {
+        kind: "context_lifecycle_reported" as const,
+        turn: t,
+        knowledge_entries: obs.knowledge_entries ?? 0,
+        knowledge_referenced: obs.knowledge_referenced ?? 0,
+        regret: obs.regret ?? 0,
+        waste_tokens: obs.waste_tokens ?? 0,
+        cache_loss_tokens: obs.cache_loss_tokens ?? 0,
       }
     case "rollbacked":
       return {

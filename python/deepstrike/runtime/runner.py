@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import inspect
 import json
-import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -23,14 +22,13 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.memory.runtime_policy import MemoryRuntimePolicy, resolve_memory_runtime_policy
-from deepstrike.memory.recall_projection import memory_fetch_recall, memory_recall_turn
+from deepstrike.memory.recall_projection import memory_fetch_recall
 from deepstrike.memory.writer import MemoryWriter
 from deepstrike.memory.candidate_sink import (
   MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
   memory_candidate_id,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
-from deepstrike.runtime.context import create_native_context_preparation_adapter
 from deepstrike.providers.prepared_request import prepare_provider_request
 from deepstrike.providers.request_plan import (
   create_provider_request_plan,
@@ -246,8 +244,6 @@ class TurnMetrics:
 class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
-  # Optional host-owned artifact set identity captured in operation genesis.
-  artifact_set_digest: str | None = None
   # Optional explicit canonical journal. Default SessionLog implementations expose
   # ``kernel_journal``; custom logs must provide this capability explicitly.
   kernel_journal: KernelJournal | None = None
@@ -275,6 +271,10 @@ class RuntimeOptions:
   pre_query_memory: "Callable[..., Any] | None" = None
   system_prompt: str | None = None
   initial_memory: list[str] | None = None
+  # Plan task 3.1 · outputs of the workflow nodes this run depends on, by agent id. The kernel holds
+  # them; the model reads one with ``read_result(call_id="dep:<agent_id>")``. Set by the workflow
+  # driver for a node's child run.
+  dependency_outputs: dict[str, str] | None = None
   skill_dir: str | Path | None = None
   # Host-layer allowlist over the ``skill_dir`` catalog by skill NAME. When set, only scanned
   # skills whose name is listed are fed via ``set_available_skills`` (and eligible for knowledge
@@ -358,8 +358,6 @@ class RuntimeOptions:
   usage_accounting_policy: "UsageAccountingPolicy | None" = None
   sub_agent_orchestrator: Any | None = None
   sub_agent_harness: SubAgentHarnessConfig | None = None
-  # G2: custom reducers for NodeKind::Reduce nodes, merged over the built-ins. A reduce node runs no LLM.
-  reducers: dict | None = None
   milestone_policy: "MilestonePolicy | None" = None
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
   milestone_contract: "MilestoneContract | None" = None
@@ -620,7 +618,6 @@ class RuntimeRunner:
       max_turns=self._opts.max_turns,
       max_total_tokens=self._opts.max_total_tokens,
       max_wall_ms=self._opts.timeout_ms,
-      artifact_set_digest=self._opts.artifact_set_digest,
       memory_binding_id=f"python-memory-{self._opts.agent_id or 'root'}",
       persist_payload=persist_payload,
     )
@@ -1218,14 +1215,6 @@ class RuntimeRunner:
       schema_retry_instruction,
       validate_against_schema,
     )
-    from deepstrike.runtime.workflow_control_flow import (
-      classify_instruction,
-      dependency_outputs_note,
-      extract_classify_branch,
-      extract_judge_winner,
-      judge_goal,
-      loop_instruction,
-    )
 
     # The public run_workflow wrapper guarantees an active kernel here (bootstrapping one when called
     # standalone), so no guard is needed.
@@ -1257,42 +1246,12 @@ class RuntimeRunner:
         )
       observations = self._pending_observations[observation_start:]
 
-    # G2: each completed node's output keyed by agent id — a reduce node reads its dependencies'
-    # outputs from here. Dependencies complete in an earlier round than the reduce node consuming
-    # them.
+    # Each completed node's output keyed by agent id — a dependent node reads its dependencies'
+    # outputs from here. Dependencies complete in an earlier round than their dependents.
     outputs: dict[str, str] = {}
-
-    def _run_reduce_node(raw: dict) -> Any:
-      from deepstrike.runtime.reducers import resolve_reducer
-      from deepstrike._kernel import ModelMessage
-
-      def _result(content: str, termination: str) -> Any:
-        return SubAgentResult(
-          agent_id=raw["agent_id"],
-          result=LoopResult(
-            termination=termination,
-            turns_used=0,
-            total_tokens_used=0,
-            final_message=ModelMessage(role="assistant", content=content),
-          ),
-        )
-
-      reducer = resolve_reducer(raw["reducer"], self._opts.reducers)
-      if reducer is None:
-        return _result(f'unknown reducer "{raw["reducer"]}"', "error")
-      inputs = [{"agent_id": aid, "output": outputs.get(aid, "")} for aid in raw.get("input_agent_ids", [])]
-      try:
-        return _result(reducer(inputs), "completed")
-      except Exception as exc:  # noqa: BLE001 — a thrown reducer fails the node deterministically
-        return _result(f'reducer "{raw["reducer"]}" threw: {exc}', "error")
 
     async def run_node(raw: dict, budget: dict | None = None) -> Any:
       from deepstrike.types.agent import workflow_budget_note
-
-      # G2: a reduce node runs no LLM — execute the registered pure function over its dependency
-      # outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
-      if raw.get("reducer"):
-        return _run_reduce_node(raw)
 
       node = WorkflowSpawnInfo(
         agent_id=raw["agent_id"],
@@ -1305,9 +1264,7 @@ class RuntimeRunner:
         output_schema=raw.get("output_schema"),
         # W-N2: the dependency agent ids — a DAG edge carries data, not just ordering.
         input_agent_ids=list(raw.get("input_agent_ids") or []),
-        # loop-control: marks a loop-iteration spawn — workflow_node_to_spec keys the W-N6 stable
-        # session id and the DW-3 loop_round pacing trap off it.
-        loop_max_iters=raw.get("loop_max_iters"),
+        dependency_brief=str(raw.get("dependency_brief") or ""),
         # M4/G5: without this the per-node token cap never reaches the child run (node parity).
         token_budget=raw.get("token_budget"),
         # W-N7: per-node turn / wall-clock caps (same hops as token_budget).
@@ -1318,9 +1275,8 @@ class RuntimeRunner:
       manifest = workflow_node_to_manifest(node, parent_session_id)
       # G4: surface remaining workflow budget so a coordinator node can size its submission.
       budget_note = workflow_budget_note(budget)
-      # W-N2: every dependent node sees its dependencies' outputs (the kernel sends
-      # ``input_agent_ids`` for all dependents; judges/reduce keep their special paths).
-      deps_note = dependency_outputs_note(node.input_agent_ids, outputs)
+      # A DAG edge carries data: the kernel composes the dependency section of the brief.
+      deps_note = node.dependency_brief
 
       async def _run(goal: str) -> Any:
         final_goal = "\n\n".join(s for s in (goal, deps_note, budget_note) if s)
@@ -1337,44 +1293,8 @@ class RuntimeRunner:
           # list by design — filtering on the missing list ran every DAG node TOOL-LESS);
           # quarantined nodes stay deny-all filtered (they read untrusted content).
           tool_access="filtered" if raw.get("trust") == "quarantined" else "inherit",
+          dependency_outputs=dict(raw.get("dependency_outputs") or {}) or None,
         ))
-
-      def _text(result: Any) -> str:
-        final = result.result.final_message
-        return getattr(final, "content", "") if final is not None else ""
-
-      def _with_signal(result: Any, **patch: Any) -> Any:
-        return _dc_replace(result, result=_dc_replace(result.result, **patch))
-
-      # A#2 tournament judge: compare two entrants' produced outputs rather than running the node's own
-      # goal. Look up both candidates, judge over the controller's criterion, report the winner's id.
-      judge = raw.get("judge_match")
-      if judge:
-        left = outputs.get(judge["left"], "")
-        right = outputs.get(judge["right"], "")
-        result = await _run(judge_goal(base_spec.goal, left, right))
-        winner = extract_judge_winner(_text(result))
-        winner_id = judge["right"] if winner == "right" else judge["left"]
-        return _with_signal(result, tournament_winner=winner_id)
-
-      # loop-control loop iteration: run the increment under the armed pacing trap (workflow_node_to_spec
-      # set ``loop_round``, and the iteration resumes the loop's stable session — transcript-as-
-      # carry). The kernel-adjudicated ``pace`` verb is the only continuation signal. Ending
-      # without a pace decision completes the loop.
-      loop_max = raw.get("loop_max_iters")
-      if loop_max is not None:
-        m = re.search(r"-i(\d+)$", raw["agent_id"])
-        iteration = int(m.group(1)) if m else 0
-        result = await _run(f"{base_spec.goal}\n\n{loop_instruction(loop_max, iteration)}")
-        pace = getattr(result.result, "pace_decision", None)
-        return _with_signal(result, loop_continue=bool(pace and pace.get("action") == "continue"))
-
-      # A#2 classify: run the classifier, then extract the chosen branch label (kernel prunes the rest).
-      labels = raw.get("classify_labels") or []
-      if labels:
-        result = await _run(f"{base_spec.goal}\n\n{classify_instruction(labels)}")
-        branch = extract_classify_branch(_text(result), labels)
-        return result if branch is None else _with_signal(result, classify_branch=branch)
 
       schema = node.output_schema
       if not schema:
@@ -1562,15 +1482,10 @@ class RuntimeRunner:
     async def _feed(node: dict, result: Any) -> tuple[list, dict | None]:
       """Feed one completion to the kernel and record it; returns (spawned, done)."""
       nonlocal budget
-      # G2: record this node's output so a downstream reduce node can consume it.
+      # Record this node's output so its dependents can consume it.
       _final = result.result.final_message
       out_text = getattr(_final, "content", "") if _final is not None else ""
       outputs[result.agent_id] = out_text
-      # A loop iteration completes under `wf-node{N}-i{k}` but its dependents consume the STABLE
-      # node id `wf-node{N}` — alias it so the LAST iteration's output is what dependents see.
-      stable_id = re.sub(r"-i\d+$", "", result.agent_id)
-      if stable_id != result.agent_id:
-        outputs[stable_id] = out_text
       # ABI: child-authored DAG additions ride on ChildCompleted.parent_requests.
       # Admission is independent of the completion fact; only an admitted request emits
       # workflow_nodes_submitted.
@@ -1632,9 +1547,6 @@ class RuntimeRunner:
           agent_id=result.agent_id,
           status=workflow_node_status_from_termination(result.result.termination),
           termination=result.result.termination,
-          classify_branch=getattr(result.result, "classify_branch", None),
-          tournament_winner=getattr(result.result, "tournament_winner", None),
-          loop_continue=getattr(result.result, "loop_continue", None),
           output=_final,
         ),
       )
@@ -2199,6 +2111,12 @@ class RuntimeRunner:
         "tokens": max(1, len(self._opts.system_prompt) // 4),
       })
 
+    if not resume_mid_run:
+      for dep_agent_id, dep_content in (self._opts.dependency_outputs or {}).items():
+        await apply_host(runtime, self._pending_observations, {
+          "kind": "add_dependency_output", "agent_id": dep_agent_id, "content": dep_content,
+        })
+
     if not resume_mid_run and self._opts.initial_memory:
       for mem in self._opts.initial_memory:
         await apply_host(runtime, self._pending_observations, {
@@ -2240,6 +2158,8 @@ class RuntimeRunner:
         "write": self._memory_path_enabled("model_writes"),
         # Proposals must land in review, never straight in the store.
         "propose_memory": bool(self._opts.memory_candidate_sink and self._memory_path_to_candidate_sink("model_writes")),
+        # The kernel recalls for the goal before the first call and after each renewal.
+        "recall": bool(self._opts.memory_scope),
       })
     if not resume_mid_run and self._opts.knowledge_source:
       await apply_host(runtime, self._pending_observations, {"kind": "set_knowledge_enabled", "enabled": True})
@@ -2464,10 +2384,6 @@ class RuntimeRunner:
       })
 
     self._current_goal = goal
-    # I4/T5: initial memory prefetch is host-side before root start (keyed knowledge);
-    # renewal re-seeds the same way after the history drop.
-    if not resume_mid_run:
-      await self._prefetch_memory(runtime, "initial")
 
     # Multimodal upload: seed the user's attachments (images/audio) as a history
     # message before root start pushes the "[TASK STATE]" anchor. init_task does not
@@ -2638,23 +2554,6 @@ class RuntimeRunner:
           })
           self._provider_retry_pending = getattr(action, "kind", None) == "call_provider"
           continue
-        if prompt_measurement is None or action.context_effect is None:
-          raise RuntimeError("context preparation requires candidate and prompt measurement")
-        preparation = create_native_context_preparation_adapter().prepare({
-          "effect": action.context_effect,
-          "request_fingerprint": provider_plan.fingerprint,
-          "provider_route": {**route_to_record(self._provider_route), "request_fingerprint_scope": prepared_request.scope},
-          "prompt_measurement": {
-            "requestFingerprint": prompt_measurement.request_fingerprint,
-            "inputTokens": prompt_measurement.input_tokens,
-            "source": prompt_measurement.source,
-            "confidence": prompt_measurement.confidence,
-          },
-        })
-        await self._opts.session_log.append(session_id, {
-          "kind": "context_prepared", "turn": runtime.turn(),
-          "effect_id": provider_effect_id, "preparation": preparation,
-        })
         try:
           async for evt in prepared_request.stream():
             # #2-B-ii: a preempting interrupt() stops consuming the live stream immediately; breaking
@@ -3332,7 +3231,11 @@ class RuntimeRunner:
         try:
           if not self._opts.agent_id:
             raise RuntimeError("memory queries require agent_id")
-          if isinstance(record_id, str):
+          causation = raw_query.get("causation") or {}
+          if causation.get("kind") == "kernel_recall":
+            hits = await self._kernel_recall_hits(
+              query, int(action.requested_k or 0), "renewal" if causation.get("sprint") else "initial")
+          elif isinstance(record_id, str):
             hits = await self._fetch_memory_from_store(query, record_id, self._opts.agent_id)
           else:
             hits = await self._retrieve_memory_from_store(query, int(action.requested_k or 0), self._opts.agent_id)
@@ -3513,11 +3416,6 @@ class RuntimeRunner:
             tier,
           ))
         next_archive_start = compressed_seq + 1
-      # K4: a sprint renewal dropped the old history — including any earlier memory hits — so
-      # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
-      # consumer sits on the live drain path, same placement as the semantic page-out archival).
-      if obs.get("kind") == "renewed":
-        await self._prefetch_memory(runtime, "renewal")
     return next_archive_start
 
   async def _apply_host_memory_recall_lifecycle(
@@ -3553,15 +3451,29 @@ class RuntimeRunner:
           recall_count=int(promotion["recall_count"]),
         )
 
-  async def _memory_prefetch_queries(self, phase: str) -> list[Any]:
+  async def _kernel_recall_hits(self, query: Any, requested_k: int, phase: str) -> list[Any]:
+    """The kernel's own recall for the run goal (plan task 2.1). ``pre_query_memory`` may rewrite
+    it into several scoped queries; their hits are merged, one per record."""
+    queries = await self._memory_prefetch_queries(phase, query.query) if self._opts.pre_query_memory else [query]
+    seen: set[str] = set()
+    hits: list[Any] = []
+    for each in queries:
+      if not each.query.strip():
+        continue
+      for hit in await self._retrieve_memory_from_store(each, each.top_k or requested_k, self._opts.agent_id):
+        if hit.record.record_id in seen:
+          continue
+        seen.add(hit.record.record_id)
+        hits.append(hit)
+    return hits
+
+  async def _memory_prefetch_queries(self, phase: str, goal: str) -> list[Any]:
     if not self._memory_path_enabled("retrieval"):
       return []
     from deepstrike.memory.protocols import MemoryQuery
     if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
       return []
-    hook = self._opts.pre_query_memory or (lambda goal: [MemoryQuery(
-      scope=self._opts.memory_scope, query=goal, top_k=5,
-    )])
+    hook = self._opts.pre_query_memory
     try:
       params = inspect.signature(hook).parameters
       accepts_phase = "phase" in params or any(
@@ -3569,49 +3481,10 @@ class RuntimeRunner:
       )
     except (TypeError, ValueError):
       accepts_phase = False
-    result = hook(goal=self._current_goal, phase=phase) if accepts_phase else hook(goal=self._current_goal)
+    result = hook(goal=goal, phase=phase) if accepts_phase else hook(goal=goal)
     if hasattr(result, "__await__"):
       result = await result
     return list(result or [])
-
-  async def _prefetch_memory(self, runtime: CanonicalRunnerRuntime, phase: str) -> None:
-    """I4 + K4 · M5: put each recalled hit in context as the canonical recall index line.
-
-    Called once before ``start_operation`` (``phase="initial"``) and re-fired after each sprint
-    renewal (``phase="renewal"``). Both phases land each hit as a keyed ``memory:<record_id>``
-    knowledge entry: a running operation accepts history only through effects or external events,
-    and one placement lets the key dedupe a record across phases. One prefetch is one dedupe
-    horizon and one ``memory_retrieval_result``. Errs-open: a faulty prefetch never breaks the run.
-    """
-    from deepstrike.memory.protocols import MemoryQuery
-    if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
-      return
-    try:
-      seen: set[str] = set()
-      accepted: list[Any] = []
-      for query in await self._memory_prefetch_queries(phase):
-        if not isinstance(query, MemoryQuery) or not query.query.strip():
-          continue
-        hits = await self._retrieve_memory_from_store(query, query.top_k, self._opts.agent_id)
-        for hit in hits:
-          rid = hit.record.record_id
-          if rid in seen:
-            continue
-          seen.add(rid)
-          accepted.append(hit)
-          content = memory_recall_turn(hit.record)
-          await apply_host(runtime, self._pending_observations, {
-            "kind": "add_knowledge_message",
-            "key": f"memory:{rid}",
-            "content": content,
-            "tokens": max(1, (len(content) + 3) // 4),
-          })
-      if not accepted:
-        return
-      await self._apply_host_memory_recall_lifecycle(accepted, self._opts.agent_id)
-      await self._log_memory_retrieval_result(self._current_session_id, accepted)
-    except Exception:
-      pass
 
 
 def _entropy_sample_from_observation(obs: dict) -> EntropySample:

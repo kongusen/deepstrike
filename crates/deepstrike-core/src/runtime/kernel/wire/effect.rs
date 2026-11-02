@@ -25,7 +25,6 @@ use std::fmt;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::context::execution::ContextCandidate;
 use crate::context::measurement::ToolMeasurement;
 use crate::types::durable_content::DurableContent;
 
@@ -359,9 +358,6 @@ impl fmt::Display for EffectKindTag {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallProviderEffect {
-    /// Frozen kernel facts; the host binds its actual provider route and preflight measurement
-    /// through the canonical Context ABI before dispatching this projection.
-    pub context_candidate: Box<ContextCandidate>,
     pub context: RenderedContext,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
@@ -1076,6 +1072,12 @@ pub struct MemoryRecall {
     pub name: String,
     pub kind: MemoryKind,
     pub content: String,
+    /// The record's one-line description; a kernel recall shows it in the index line.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The record's provenance trust label (`host_verified`, `untrusted`, ...).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trust: String,
     /// Observation-only relevance score. Finite by construction and never a branch input —
     /// thresholds that gate kernel decisions use fixed-point `Ppm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1443,22 +1445,8 @@ mod tests {
             description: "read a file".to_string(),
             parameters: BoundedJson::null(),
         }];
-        let (mut context_candidate, _) = crate::context::manager::ContextManager::new(100_000)
-            .prepare_candidate(
-                "op-1".into(),
-                "op-1:step:1".into(),
-                1,
-                crate::evolution::ContentDigest::from_bytes(b"test-policy"),
-            )
-            .unwrap();
-        context_candidate.rendered_snapshot = crate::evolution::ContentDigest::from_bytes(
-            super::super::record::canonical_bytes(&(&context, &tools))
-                .unwrap()
-                .as_slice(),
-        );
         vec![
             EffectKind::CallProvider(CallProviderEffect {
-                context_candidate: Box::new(context_candidate),
                 context,
                 tools,
             }),
@@ -1608,6 +1596,8 @@ mod tests {
             }),
             EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
                 recalls: vec![MemoryRecall {
+                    description: String::new(),
+                    trust: String::new(),
                     record_ref: MemoryRecordRef::new("memory:01J8Y2QK7C4N0X").unwrap(),
                     name: "release pipeline".to_string(),
                     kind: MemoryKind::Project,

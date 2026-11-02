@@ -14,7 +14,7 @@ from .candidate_sink import (
     PendingMemoryCandidateReceipt, AcceptedMemoryCandidateReceipt, RejectedMemoryCandidateReceipt,
     InMemoryMemoryCandidateSink, memory_candidate_duplicate_reason, memory_candidate_id, memory_candidate_payload_digest,
 )
-from .recall_projection import memory_fetch_recall, memory_recall_turn
+from .recall_projection import memory_fetch_recall
 from .lifecycle import (
     MemoryLease, MemoryLeaseRejection, MemoryWriteBudget, consume_memory_lease_write,
     memory_record_expired, memory_scope_matches, revoke_memory_lease,
@@ -51,7 +51,6 @@ __all__ = [
     "memory_candidate_duplicate_reason",
     "memory_candidate_payload_digest",
     "memory_fetch_recall",
-    "memory_recall_turn",
     "MemoryLease", "MemoryLeaseRejection", "MemoryWriteBudget", "consume_memory_lease_write", "FileMemoryLifecycleStore",
     "memory_record_expired", "memory_scope_matches", "revoke_memory_lease",
     "scope_matches_memory_deletion", "verify_memory_lease",

@@ -100,20 +100,20 @@ pub enum Syscall {
 - 压缩 pipeline 在压力下回收 token，并标记 prompt-cache 失效点
 - Skill / Memory 通过 meta-tool 与 syscall 改变 **能力 manifest**，而非直接 mutate history
 
-## 六种 Harness 模式 = 一等内核节点
+## 六种 Harness 模式
 
 ![Dynamic Workflow Orchestration DAG](/agent_os_workflow_dag.svg)
 
-Anthropic 文章中的六种可组合模式，在 DeepStrike 里都是 **Workflow 节点 kind**，由同一 executor 驱动：
+Anthropic 文章中的六种可组合模式里，三种是固定形状的 DAG，内核直接调度；另外三种是控制流，由宿主程序或模型决定下一步提交什么节点，内核负责每次 spawn 的准入：
 
-| Harness 模式 | 内核原语 | SDK 模板 |
+| Harness 模式 | 实现方式 | SDK 入口 |
 |--------------|----------|----------|
-| **Classify-and-act** | `classify` 节点 → 选一支、prune 其余 | `classify_instruction()` |
 | **Fan-out-and-synthesize** | DAG：N worker → 1 barrier synthesize | `fanout_synthesize()` |
 | **Adversarial verification** | 每规则独立 verify TCB，`context_inheritance: none` | `verify_rules()` |
 | **Generate-and-filter** | N implement → 1 verify barrier | `generate_and_filter()` |
-| **Tournament** | 并行 entrant → 两两 judge bracket | `tournament` 节点 |
-| **Loop until done** | `loop` + `loop_continue` + `max_iters`；运行时 `SubmitNodes` | `loop_instruction()` |
+| **Classify-and-act** | 分类节点只 `submit_workflow_nodes` 选中的分支 | 模型运行时提交 |
+| **Tournament** | 宿主程序并行生成候选、两两评判 | `runDynamicWorkflow()` |
+| **Loop until done** | 宿主程序循环，或节点逐轮提交下一轮 | `runDynamicWorkflow()` / `submit_workflow_nodes` |
 
 详见 [动态工作流](../guides/workflow)。
 

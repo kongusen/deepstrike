@@ -12,7 +12,7 @@ describe("FileWorkflowStore", () => {
       const spec: WorkflowSpec = {
         nodes: [
           { task: "explore", role: "explore", isolation: "read_only" },
-          { task: "judge", role: "plan", dependsOn: [0], tournament: { entrants: ["x", "y"] }, tokenBudget: 10000 },
+          { task: "judge", role: "plan", dependsOn: [0], tokenBudget: 10000 },
         ],
       }
       const path = await store.save("my-flow", spec)

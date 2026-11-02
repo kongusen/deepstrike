@@ -1080,6 +1080,12 @@ impl LoopStateMachine {
         self.emit_call_llm()
     }
 
+    /// Continue the turn a kernel recall paused: the recalled records are in knowledge now.
+    pub fn resume_after_recall(&mut self) -> LoopAction {
+        self.phase = LoopPhase::Reason;
+        self.emit_call_llm()
+    }
+
     /// Return all messages added to history during the current run
     /// (since the last `preload_history` call or since construction).
     ///
@@ -1813,6 +1819,16 @@ impl LoopStateMachine {
             let tokens = self.message_tokens(msg);
             self.ctx.push_history(msg.clone(), tokens);
         }
+        let (knowledge_entries, knowledge_referenced, regret, waste_tokens, cache_loss_tokens) =
+            self.ctx.lifecycle_metrics();
+        self.observations.push(KernelObservation::LifecycleReport {
+            turn: self.turn,
+            knowledge_entries,
+            knowledge_referenced,
+            regret,
+            waste_tokens,
+            cache_loss_tokens,
+        });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
         // "sleep" for cron loops) — but ONLY on a clean Completed. NoProgress /
@@ -1847,9 +1863,6 @@ impl LoopStateMachine {
             final_message,
             turns_used: self.turn,
             total_tokens_used: self.total_tokens,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision,
         };
         self.set_lifecycle(TaskLifecycle::Done(termination), None);
@@ -1884,6 +1897,21 @@ impl LoopStateMachine {
         // Calling the provider is definitionally "running" — the single funnel for entering the
         // Running lifecycle (covers start, resume, signal-driven turns, budget final-call).
         self.set_lifecycle(TaskLifecycle::Running, None);
+
+        // Plan task 2.1 · a recall owed at run start or after a renewal goes out before the
+        // provider call, so its hits are in system knowledge before that knowledge is cached.
+        if self.pending_termination.is_none()
+            && let Some((text, top_k)) = self.ctx.take_due_recall()
+        {
+            return LoopAction::QueryMemory {
+                query: crate::mm::memory::MemoryQuery {
+                    query: text,
+                    top_k: top_k as usize,
+                    ..Default::default()
+                },
+                requested_k: top_k as usize,
+            };
+        }
 
         // M1 収口 (completed): the budget verdict lives at the same single funnel. Every edge that
         // requests a provider call — tool-turn completion, milestone retry, signal-forced turns,
@@ -2139,6 +2167,7 @@ impl LoopStateMachine {
         tools: Vec<ToolSchema>,
     ) -> LoopAction {
         self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
+        self.ctx.mark_prefix_sent();
         LoopAction::CallLLM { context, tools }
     }
 

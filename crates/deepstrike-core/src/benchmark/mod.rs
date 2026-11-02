@@ -16,25 +16,17 @@ pub struct CriticalPathGate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LoopFairnessGate {
-    pub waiting_rounds: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminationPolicyGate {
     pub cases_checked: usize,
 }
 
-fn result(termination: TerminationReason, loop_continue: Option<bool>) -> LoopResult {
+fn result(termination: TerminationReason) -> LoopResult {
     LoopResult {
         termination,
         final_message: None,
         turns_used: 1,
         total_tokens_used: 0,
-        loop_continue,
-        classify_branch: None,
         pace_decision: None,
-        tournament_winner: None,
     }
 }
 
@@ -87,7 +79,7 @@ fn simulate_f1(policy: SchedulerPolicyConfig) -> u64 {
             .collect();
         running.retain(|(_, finish)| *finish != now);
         for node in completed {
-            graph.complete(node, result(TerminationReason::Completed, None));
+            graph.complete(node, result(TerminationReason::Completed));
         }
     }
     now
@@ -105,23 +97,6 @@ pub fn f1_critical_path_skew() -> CriticalPathGate {
     CriticalPathGate {
         id_order_makespan: simulate_f1(id_policy),
         policy_makespan: simulate_f1(SchedulerPolicyConfig::default()),
-    }
-}
-
-/// F2: a 100-iteration loop gets one quantum, then yields to an already-waiting peer.
-pub fn f2_loop_fairness() -> LoopFairnessGate {
-    let spec = WorkflowSpec::new(vec![
-        WorkflowNode::new(RuntimeTask::new("loop"), AgentRole::Implement).with_loop(100),
-        WorkflowNode::new(RuntimeTask::new("peer"), AgentRole::Implement),
-    ]);
-    let mut run = WorkflowRun::new(&spec).expect("valid F2 workflow");
-    assert_eq!(run.ready_batch(), vec![0, 1]);
-    let loop_id = run.current_agent_id(0);
-    run.mark_spawned(0, &loop_id);
-    run.record_completion(&loop_id, result(TerminationReason::Completed, Some(true)));
-    let next = run.ready_batch();
-    LoopFairnessGate {
-        waiting_rounds: u64::from(next.first().copied() != Some(1)),
     }
 }
 
@@ -174,7 +149,7 @@ pub fn f3_termination_dependency_matrix() -> TerminationPolicyGate {
             let mut run = WorkflowRun::new(&spec).expect("valid F3 workflow");
             let upstream = run.current_agent_id(0);
             run.mark_spawned(0, &upstream);
-            run.record_completion(&upstream, result(termination, None));
+            run.record_completion(&upstream, result(termination));
             match expected_status(termination, policy) {
                 None => assert!(run.ready_batch().contains(&1)),
                 Some(status) => assert_eq!(run.node_outcomes()[1].status, status),
@@ -193,11 +168,6 @@ mod tests {
     fn f1_gate_reduces_makespan() {
         let gate = f1_critical_path_skew();
         assert!(gate.policy_makespan < gate.id_order_makespan, "{gate:?}");
-    }
-
-    #[test]
-    fn f2_gate_bounds_peer_wait() {
-        assert_eq!(f2_loop_fairness().waiting_rounds, 0);
     }
 
     #[test]

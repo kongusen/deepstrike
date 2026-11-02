@@ -26,6 +26,8 @@ export interface SubAgentRunContext {
   /** #2-B-ii: parent-controlled abort — when the kernel preempts this node (`AgentPreempted`), the
    *  orchestrator interrupts the child runner, cancelling its in-flight LLM call. */
   abortSignal?: AbortSignal
+  /** Plan task 3.1 · the outputs of the workflow nodes this child depends on, by agent id. */
+  dependencyOutputs?: Record<string, string>
 }
 
 /** #2-B-ii: bridge a parent AbortSignal to a child runner's `interrupt()` (fires now if already aborted). */
@@ -156,6 +158,8 @@ export class SubAgentOrchestrator {
       runSpec: ctx.spec.loopRound
         ? { identity: ctx.spec.identity, role: ctx.spec.role, goal: ctx.spec.goal, loopRound: ctx.spec.loopRound }
         : undefined,
+      // A child reads only its own dependencies, never ones inherited from the parent's options.
+      dependencyOutputs: ctx.dependencyOutputs,
     })
     // #2-B-ii: parent preempt → interrupt the child (cancels its in-flight LLM call).
     linkAbort(ctx.abortSignal, childRunner)

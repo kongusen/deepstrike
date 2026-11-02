@@ -1,5 +1,7 @@
 # 0.2.70 Evolution Runtime
 
+> **历史设计（2026-11-01 已删除）。** 本文描述的上下文证据层（`ContextCandidate`、`ContextExecutionInput`、`context_prepared`、shared evidence、Evolution Runtime 与 artifact set 绑定）已从内核和四个 SDK 中删除。崩溃恢复只依赖 journal + checkpoint。原因与后续计划见 [上下文优先实施计划](../plans/context-lifecycle-first.md)。
+
 0.2.70 把 Framework Verifiable Runtime 推进为 Evolution Runtime。框架可以证明一个新操作使用了哪组 artifact、候选版本为何被提出、评估证据是什么，以及 promotion decision 为什么允许激活。
 
 ```text

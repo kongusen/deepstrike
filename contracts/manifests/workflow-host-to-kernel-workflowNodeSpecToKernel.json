@@ -18,7 +18,7 @@
     "lossiness": "intentional",
     "validation": {
       "mode": "behavioral-tests",
-      "reason": "Workflow ABI and control-flow tests cover node lowering, snake_case fields, and root composition.",
+      "reason": "Workflow ABI tests cover node lowering, snake_case fields, and root composition.",
       "testRefs": [
         {
           "path": "node/tests/workflow-boundary.test.ts",
@@ -27,9 +27,9 @@
           ]
         },
         {
-          "path": "node/tests/workflow-control-flow.test.ts",
+          "path": "node/tests/workflow-definition.test.ts",
           "selectors": [
-            "workflowNodeSpecToKernel: control-flow kinds"
+            "workflowNodeSpecToKernel lowers a node's context to the kernel dependency_context"
           ]
         },
         {
@@ -72,16 +72,10 @@
         "agent",
         "context",
         "toolAccess",
-        "reducer",
-        "loop",
-        "classify",
-        "tournament",
         "schedulingFactors"
       ]
     },
-    "derived": [
-      "kind"
-    ],
+    "derived": [],
     "forbidden": [],
     "envelope": {
       "source": [],

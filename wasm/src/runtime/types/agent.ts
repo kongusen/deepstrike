@@ -100,18 +100,8 @@ export interface LoopResult {
   finalMessage?: ModelMessage
   turnsUsed: number
   totalTokensUsed: number
-  /** loop-control loop stop signal: a loop iteration sets `false` to end the loop before `max_iters`.
-   *  `undefined` (every non-loop result) ⇒ no opinion → run to the cap. Sent only when set. */
-  loopContinue?: boolean
-  /** A#2 classify routing: a classifier node reports the chosen branch label here; the kernel runs
-   *  that branch and prunes the rest. Sent only when set. */
-  classifyBranch?: string
-  /** A#2 tournament verdict: a judge reports the winning entrant's agent id here. Sent only when set. */
-  tournamentWinner?: string
   /** ③ loop-agent pacing: the kernel-adjudicated after-round decision, surfaced by the orchestrator
-   *  from the child's done event. For a loop-node iteration this is the PRIMARY continuation
-   *  vocabulary (stop → loopContinue=false).
-   *  SDK-internal — stripped by `subAgentResultToKernel`. */
+   *  from the child's done event. SDK-internal — stripped by `subAgentResultToKernel`. */
   paceDecision?: import("../kernel-step.js").PaceDecision
 }
 
@@ -239,11 +229,6 @@ export function subAgentResultToKernel(result: SubAgentResult): Record<string, u
         : null,
       turns_used: result.result.turnsUsed,
       total_tokens_used: result.result.totalTokensUsed,
-      // A#2: control-flow signals — additive, omitted on the wire when unset so a plain spawn's
-      // result is byte-identical to before. The kernel reads each only for the matching node kind.
-      ...(result.result.loopContinue !== undefined ? { loop_continue: result.result.loopContinue } : {}),
-      ...(result.result.classifyBranch !== undefined ? { classify_branch: result.result.classifyBranch } : {}),
-      ...(result.result.tournamentWinner !== undefined ? { tournament_winner: result.result.tournamentWinner } : {}),
     },
   }
 }
@@ -307,18 +292,6 @@ export interface WorkflowNodeSpec {
   trust?: NodeTrust
   /** G3: JSON Schema the node's output must conform to (validated + retried SDK-side). */
   outputSchema?: Record<string, unknown>
-  /** G2: make this a deterministic reduce node — runs no LLM; the runner routes it to the registered
-   *  reducer of this name over its `dependsOn` nodes' outputs. */
-  reducer?: string
-  /** loop-control: make this a *loop* node — re-run its agent up to `maxIters` times. An iteration may end
-   *  the loop early by reporting `loopContinue: false` (the runner solicits this from the agent). */
-  loop?: { maxIters: number }
-  /** A#2: make this a *classify* node — its agent picks exactly one branch `label`; that branch's
-   *  nodes run and the others are pruned. Each branch node must list this node's index in `dependsOn`. */
-  classify?: { branches: Array<{ label: string; nodes: number[] }> }
-  /** A#2: make this a *tournament controller* — generate each `entrants` candidate in parallel, then
-   *  pairwise-judge them to one winner (this node's `task.goal` is the judging criterion). ≥2 entrants. */
-  tournament?: { entrants: WorkflowTaskSpec[] }
   /** M4/G5: cap this node's child run at `tokenBudget` cumulative tokens (the per-node "use N tokens"). */
   tokenBudget?: number
   /** O3: cap this node's child run at `maxTurns` provider turns (falls back to the parent's). */
@@ -404,20 +377,11 @@ export interface WorkflowSpawnInfo {
   trust?: string
   /** G3: JSON Schema the node's output must conform to (carried verbatim from the spec). */
   output_schema?: Record<string, unknown>
-  /** G2: for a reduce node, the registered reducer name to run (no LLM). */
-  reducer?: string
-  /** The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data). A reduce
-   *  node's registered function consumes them; every other node gets its deps' outputs in context. */
+  /** The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data): the node
+   *  gets its deps' outputs in context. */
   input_agent_ids?: string[]
-  /** A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose produced
-   *  outputs this judge compares. The runner looks them up and reports the winner as `tournamentWinner`. */
-  judge_match?: { left: string; right: string }
-  /** loop-control: present only for a *loop* iteration spawn — the loop's `max_iters`. Marks the spawn as a
-   *  loop iteration so the runner solicits + reports a `loopContinue` stop signal. */
-  loop_max_iters?: number
-  /** A#2: present only for a *classify* spawn — the branch labels the classifier must choose among.
-   *  Non-empty marks the spawn as a classifier so the runner instructs the agent + reports `classifyBranch`. */
-  classify_labels?: string[]
+  /** The kernel-composed dependency section that follows the node's goal. */
+  dependency_brief?: string
   /** M4/G5: the node's per-node cumulative token cap, if set — the runner caps the child run here. */
   token_budget?: number
   /** O3: per-node turn cap → the child run's `maxTurns`. */
@@ -475,26 +439,9 @@ function workflowTaskToKernel(t: WorkflowTaskSpec): Record<string, unknown> {
   }
 }
 
-/** Lower a node's control-flow kind to the kernel's serde-tagged `NodeKind` JSON, or `undefined` for
- *  a plain spawn. `reducer` / `loop` / `classify` / `tournament` are mutually exclusive. */
-function nodeKindToKernel(n: WorkflowNodeSpec): Record<string, unknown> | undefined {
-  const declared = [n.reducer != null, n.loop != null, n.classify != null, n.tournament != null].filter(Boolean).length
-  if (declared > 1) {
-    throw new Error("a workflow node may declare at most one of: reducer, loop, classify, tournament")
-  }
-  if (n.reducer != null) return { type: "reduce", reducer: n.reducer }
-  if (n.loop != null) return { type: "loop", max_iters: n.loop.maxIters }
-  if (n.classify != null) {
-    return { type: "classify", branches: n.classify.branches.map(b => ({ label: b.label, nodes: b.nodes })) }
-  }
-  if (n.tournament != null) return { type: "tournament", entrants: n.tournament.entrants.map(workflowTaskToKernel) }
-  return undefined
-}
-
 /** Map one host `WorkflowNodeSpec` to its snake_case canonical JSON. Shared by the workflow root and
  *  `submit_workflow_nodes` (R3-1) so the two encodings never drift. */
 export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, unknown> {
-  const kind = nodeKindToKernel(n)
   const schedulingFactors = schedulingFactorsToKernel(n.schedulingFactors)
   return {
     ...(n.nodeId ? { node_id: n.nodeId } : {}),
@@ -505,8 +452,6 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
     ...(n.modelHint ? { model_hint: n.modelHint } : {}),
     ...(n.trust && n.trust !== "trusted" ? { trust: n.trust } : {}),
     ...(n.outputSchema ? { output_schema: n.outputSchema } : {}),
-    // A#2/G2: loop / classify / tournament / reduce lower to a serde-tagged `NodeKind`; spawn omits it.
-    ...(kind ? { kind } : {}),
     // M4/G5: per-node token cap (additive; omitted when unset).
     ...(n.tokenBudget != null ? { token_budget: n.tokenBudget } : {}),
     // O3: per-node turn / wall-clock caps (additive; omitted when unset).
@@ -604,15 +549,10 @@ export const startWorkflowTool: ToolSchema = {
 
 /** Build a sub-agent run spec for a kernel-generated workflow node. */
 export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: string): AgentRunSpec {
-  // W-N6 transcript-as-carry: a loop node's iterations share ONE stable session id (the `-i{k}`
-  // suffix names the spawn, not the session), so iteration k replays the transcript of 0..k-1 —
-  // "do the next increment" actually sees the previous increments. The agent_id keeps the
-  // per-iteration suffix (kernel completion routing).
-  const sessionNodeId = node.loop_max_iters != null ? node.agent_id.replace(/-i\d+$/, "") : node.agent_id
   return {
     identity: {
       agentId: node.agent_id,
-      sessionId: `${parentSessionId}-${sessionNodeId}`,
+      sessionId: `${parentSessionId}-${node.agent_id}`,
       isSubAgent: true,
       parentSessionId,
     },
@@ -626,11 +566,6 @@ export function workflowNodeToSpec(node: WorkflowSpawnInfo, parentSessionId: str
     // O3: carry the node's turn / wall-clock caps (the orchestrator already honors these).
     ...(node.max_turns != null ? { maxTurns: node.max_turns } : {}),
     ...(node.max_wall_ms != null ? { maxWallMs: node.max_wall_ms } : {}),
-    // DW-3 one continuation vocabulary: a loop ITERATION runs with the pacing trap armed, so the
-    // agent signals continue/stop through the kernel-adjudicated `pace` meta-tool instead of a
-    // text-sniffed JSON blob. One iteration = one round; the DAG (not max_rounds) caps iterations,
-    // and default stop means "ended without pacing" = done — the CC silence-is-completion contract.
-    ...(node.loop_max_iters != null ? { loopRound: { defaultAction: "stop" as const } } : {}),
   }
 }
 
@@ -669,7 +604,7 @@ export function fanoutSynthesize(workers: WorkflowTaskSpec[], synthesize: Workfl
     task: asTask(synthesize),
     role: "plan",
     isolation: "shared",
-    contextInheritance: "full",
+    contextInheritance: "system_only",
     dependsOn: workers.map((_, i) => i),
   })
   return { nodes }
@@ -681,7 +616,7 @@ export function generateAndFilter(generators: WorkflowTaskSpec[], filter: Workfl
     task: asTask(t),
     role: "implement",
     isolation: "worktree",
-    contextInheritance: "full",
+    contextInheritance: "system_only",
   }))
   nodes.push({
     task: asTask(filter),
@@ -717,14 +652,13 @@ export function verifyRules(rules: WorkflowTaskSpec[], skeptic?: WorkflowTaskSpe
 }
 
 /**
- * Generate → evaluate loop template (parity with node/python `genEval`): a worker Loop node
- * (worktree isolation, full context) feeding a fresh-context verifier whose output is pinned
- * to the kernel's verdict schema. Async because the wasm kernel module loads lazily.
+ * Generate → evaluate template (parity with node/python `genEval`): a worker node (worktree
+ * isolation, full context) feeding a fresh-context verifier whose output is pinned to the kernel's
+ * verdict schema. Retry-with-feedback is `AttemptLoop`. Async because the wasm kernel loads lazily.
  */
 export async function genEval(
   worker: WorkflowTaskSpec,
   evaluate: WorkflowTaskSpec,
-  maxIters = 3,
   extractSkillOnPass = true,
 ): Promise<WorkflowSpec> {
   const kernel = await getKernel()
@@ -735,8 +669,7 @@ export async function genEval(
         task: asTask(worker),
         role: "implement",
         isolation: "worktree",
-        contextInheritance: "full",
-        loop: { maxIters: Math.max(1, maxIters) },
+        contextInheritance: "system_only",
       },
       {
         task: asTask(evaluate),

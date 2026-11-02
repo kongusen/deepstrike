@@ -79,13 +79,6 @@ class PromptMeasuredEvent(_PromptMeasuredRequired, total=False):
     effect_id: str
 
 
-class ContextPreparedEvent(TypedDict):
-    kind: Literal["context_prepared"]
-    turn: int
-    effect_id: str
-    preparation: dict[str, Any]
-
-
 class _ProviderAttemptRequired(TypedDict):
     kind: Literal["provider_attempt"]
     effect_id: str
@@ -371,6 +364,16 @@ class ContextRenewedEvent(TypedDict):
     handoff_ref: str
 
 
+class ContextLifecycleReportedEvent(TypedDict):
+    kind: Literal["context_lifecycle_reported"]
+    turn: int
+    knowledge_entries: int
+    knowledge_referenced: int
+    regret: int
+    waste_tokens: int
+    cache_loss_tokens: int
+
+
 class MemoryWrittenEvent(TypedDict):
     kind: Literal["memory_written"]
     turn: int
@@ -453,11 +456,6 @@ class _WorkflowNodeCompletedRequired(TypedDict):
 
 
 class WorkflowNodeCompletedEvent(_WorkflowNodeCompletedRequired, total=False):
-    # W-1: result-borne control signals, persisted so resume replays control flow faithfully —
-    # a classifier re-prunes its rejected branches, a recorded loop stop is honored.
-    classify_branch: str
-    tournament_winner: str
-    loop_continue: bool
     output: dict[str, Any]
 
 
@@ -547,7 +545,6 @@ SessionEvent = (
     RunStartedEvent
     | LlmCompletedEvent
     | PromptMeasuredEvent
-    | ContextPreparedEvent
     | ProviderAttemptEvent
     | ToolRequestedEvent
     | ToolCompletedEvent
@@ -577,6 +574,7 @@ SessionEvent = (
     | BudgetUsageReportedEvent
     | OperationCancelledEvent
     | ContextRenewedEvent
+    | ContextLifecycleReportedEvent
     | MemoryWrittenEvent
     | MemoryQueriedEvent
     | MemoryValidationFailedEvent

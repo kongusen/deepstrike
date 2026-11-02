@@ -1,5 +1,7 @@
 # Framework Verifiable Runtime Foundation
 
+> **Historical design (removed 2026-11-01).** The `deepstrike inspect|verify|replay|fork` CLI, `VerifiableOperation`, `verifiableOperationJson`, and the chain validator have been removed. Crash recovery is the kernel's restore: chain verification, deterministic re-plan, and the state-digest self-check. See the [context-lifecycle-first plan](../../plans/context-lifecycle-first.md).
+
 0.2.70 continues the storage-neutral `VerifiableOperation` foundation. A filesystem, database, object-store,
 or browser adapter assembles an `EvidenceBundle` and calls the same framework operations:
 

@@ -42,7 +42,6 @@ class KernelRunnerAction:
   kind: str
   effect_id: str = ""
   context: RenderedContext | None = None
-  context_effect: dict[str, Any] | None = None
   tools: list[ToolSchema] | None = None
   calls: list[ToolCall] | None = None
   phase_id: str | None = None

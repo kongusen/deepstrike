@@ -1,30 +1,14 @@
-"""M5 · how a recalled record enters the model's context.
+"""M5 · the host half of reading one record in full.
 
-Recall pushes an index line, not the record: the header names the record, and the body is its
-one-line description (its name when it has none). The model reads a record in full with
-``memory(record_id)`` when it judges it relevant, so a prefetch costs a line per hit, not a record
-per hit. Every prefetch — the turn-1 one and each renewal re-query — lands its hits as keyed
-knowledge ``memory:<record_id>``: a running operation cannot append to its own history, and one
-placement lets the key dedupe a record across phases. One rule in every SDK, pinned by the same
-vectors in each SDK's test.
+Recall itself is the kernel's: it queries for the goal at run start and after each renewal and
+lands an index line per hit as keyed knowledge ``memory:<record_id>``. The model reads a record with
+``memory(record_id)``, answered here.
 """
 
 from __future__ import annotations
 
 from deepstrike.memory.lifecycle import memory_record_expired, memory_scope_matches
 from deepstrike.memory.protocols import MemoryQuery, MemoryRecall, MemoryRecord
-
-
-def memory_recall_turn(record: MemoryRecord) -> str:
-    """The index line one recalled record becomes.
-
-    The header names the record and its trust level so the model can tell host-verified facts from
-    untrusted ones; the retrieval score is left out because it changes between retrievals while
-    the record does not.
-    """
-    summary = record.description.strip() or record.name
-    return (f"[MEMORY record_id={record.record_id} kind={record.kind} "
-            f"trust={record.provenance.trust}] {summary}")
 
 
 def memory_fetch_recall(record: MemoryRecord | None, query: MemoryQuery, now_ms: int) -> list[MemoryRecall]:

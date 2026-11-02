@@ -13,8 +13,6 @@ use deepstrike_core::types::durable_content::{
     DurableContent, DurableContentBlock, DurableToolResult,
 };
 use deepstrike_core::types::message::{Content, ToolResult};
-use deepstrike_sdk::runtime::project_shared_evidence;
-use deepstrike_sdk::runtime::read_shared_evidence_values;
 use deepstrike_sdk::{ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -117,42 +115,12 @@ fn load_fixture(path: &Path) -> Result<Fixture, String> {
 
 fn project(fixture: &Fixture) -> Result<Value, AdapterError> {
     match fixture.domain.as_str() {
-        "context_execution" => {
-            let request: deepstrike_core::context::execution::ContextDispatchRequest =
-                serde_json::from_value(fixture.input["request"].clone()).map_err(|error| {
-                    AdapterError {
-                        code: "invalid_context".into(),
-                        path: "/input/request".into(),
-                        message: error.to_string(),
-                    }
-                })?;
-            let prepared = deepstrike_core::context::execution::prepare_context_dispatch(&request)
-                .map_err(|error| AdapterError {
-                    code: "invalid_context".into(),
-                    path: "/input/request".into(),
-                    message: error.to_string(),
-                })?;
-            deepstrike_core::context::execution::verify_context_dispatch(
-                &request.effect,
-                &prepared,
-            )
-            .map_err(|error| AdapterError {
-                code: "invalid_context".into(),
-                path: "/input/request".into(),
-                message: error.to_string(),
-            })?;
-            Ok(
-                json!({ "input_digest": prepared.execution_input.input_digest,
-                "plan_digest": prepared.plan.plan_id, "verified": true }),
-            )
-        }
         "provider_request_plan" => project_request_plan(&fixture.input),
         "durable_tool_result" => project_durable_tool_result(&fixture.input),
         "prompt_measurement" => project_prompt_measurement(&fixture.input),
         "provider_error" => project_provider_error(&fixture.input),
         "session_event" => project_session_event(&fixture.input),
         "session_event_vocabulary" => project_session_event_vocabulary(&fixture.input),
-        "shared_evidence_snapshot" => project_shared_evidence_snapshot(&fixture.input),
         "kernel_observation_projection" => project_kernel_observations(&fixture.input),
         domain => Err(AdapterError::unsupported_domain(domain)),
     }
@@ -336,43 +304,6 @@ fn project_session_event_vocabulary(input: &Value) -> Result<Value, AdapterError
         );
     }
     Ok(json!({ "kinds": kinds }))
-}
-
-fn project_shared_evidence_snapshot(input: &Value) -> Result<Value, AdapterError> {
-    let cases = input
-        .get("cases")
-        .and_then(Value::as_array)
-        .ok_or_else(|| AdapterError::failure("shared_evidence_snapshot input must carry cases"))?;
-    let mut snapshots = serde_json::Map::new();
-    for item in cases {
-        let name = required_value_str(item, "name", "/input/cases/name")?;
-        let operation_id =
-            required_value_str(item, "operation_id", "/input/cases/operation_id")?.to_owned();
-        let session_id =
-            required_value_str(item, "session_id", "/input/cases/session_id")?.to_owned();
-        let scope = item.get("scope").cloned().unwrap_or_else(|| json!({}));
-        let events = item
-            .get("events")
-            .and_then(Value::as_array)
-            .ok_or_else(|| AdapterError::failure("shared evidence events must be an array"))?;
-        let journal = item.get("journal");
-        let sidecar = item.get("sidecar");
-        let event_values = events
-            .iter()
-            .enumerate()
-            .map(|(seq, event)| (seq as u64, event.clone()))
-            .collect::<Vec<_>>();
-        let snapshot = read_shared_evidence_values(
-            &operation_id,
-            &session_id,
-            &scope,
-            &event_values,
-            journal,
-            sidecar,
-        );
-        snapshots.insert(name.to_string(), project_shared_evidence(&snapshot));
-    }
-    Ok(json!({ "snapshots": snapshots }))
 }
 
 fn project_kernel_observations(input: &Value) -> Result<Value, AdapterError> {

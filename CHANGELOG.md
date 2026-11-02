@@ -34,6 +34,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   returns is captured from streamed and complete responses and replayed in front of that turn on
   later requests. Set the trigger below the kernel's renewal threshold; renewal still decides on
   the full local history.
+- A finished run records `context_lifecycle_reported` in the session log, with `regret`
+  (evicted knowledge keys that were pushed again), `waste_tokens` (knowledge tokens never
+  referenced) and `cache_loss_tokens` (history tokens whose prompt cache a mid-run knowledge
+  promotion discarded), plus `knowledge_entries` and `knowledge_referenced`.
 
 ### Fixed
 
@@ -42,6 +46,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A workflow node's child run holds its dependencies' outputs in its own kernel
+  (`initial_context.dependencies`). When the brief clips an output, it says so and the model reads
+  the whole output with `read_result(call_id="dep:<agent_id>")`, answered by the kernel without a
+  host effect. A new `dependencyMode: "handle"` shows only a 600-character preview of each output.
+- Long-term memory recall moved into the kernel. With `memory_policy.recall` on (the SDKs turn
+  it on when a memory store, agent id and memory scope are configured), the kernel issues a
+  `query_memory` effect for the goal before the first provider call and after each renewal, and
+  lands one `memory:<record_id>` index line per hit in knowledge. The host only runs the search;
+  `preQueryMemory` / `pre_query_memory` now rewrites that query. Recall counts and promotion
+  suggestions follow the same kernel path as a model query. The Rust SDK now recalls whenever a
+  memory scope is set, not only when `pre_query_memory` is.
+- The kernel writes the dependency section of a workflow node's brief and sends it as
+  `dependency_brief` with the spawn. Node, Python, WASM and Rust append it to the goal. The Rust
+  SDK previously sent no dependency outputs at all. A node's `context.dependencyMode` is `full`
+  (default), `reference` or `none`, and `context.maxTokens` caps each dependency. Before this
+  change, a policy on a node submitted at runtime was applied to the wrong node.
+- Sub-agents with the `plan` or `implement` role now default to `system_only` context inheritance,
+  like `explore` and `verify`. A child starts from the system prompt and its brief. Pass
+  `contextInheritance: "full"` (`context_inheritance="full"`) to give a child the parent's
+  transcript.
+- Knowledge that arrives after the first provider call of a context generation no longer goes into
+  the cached system knowledge block. It is shown in the state turn at the end of the context and
+  moves into system knowledge at the next compaction or renewal, so the cached history stays valid.
+  When staged knowledge reaches a quarter of the history size, it is promoted at once and the
+  history tokens are counted as `cache_loss_tokens`.
 - Memory prefetch pushes an index line per hit,
   `[MEMORY record_id=… kind=… trust=…] <description>`, instead of the record content. The model
   reads relevant records with `memory(record_id=…)`. Hosts whose records have no description
@@ -73,6 +102,48 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `memoryCandidateAttestationMatches`, `verifyMemoryCandidateSource` and `admitMemoryCandidate`
   return promises, because the WASM kernel loads asynchronously. A `MemoryCandidateSourceVerifier`
   may now return a promise.
+
+### Removed
+
+- **Breaking:** the context evidence layer is gone from the kernel and all four SDKs. This covers
+  `ContextCandidate`, `ContextExecutionInput`, `ContextPlan` and `ContextState`, the
+  `context_prepared` session event, `prepare_context_dispatch` and `contextPrepareJson` /
+  `contextVerifyJson`, the shared evidence read model (`readSessionEvidence` /
+  `read_session_evidence`, `SharedEvidence*`, `Evidence*`), and the Evolution Runtime
+  (`EvolutionRuntime`, `evolutionValidateJson`, `EvaluationContextBinding`, artifact sets).
+  Crash recovery depends only on the journal and checkpoints, and restore still checks the
+  state digest.
+- **Breaking:** the provider-call effect no longer carries `context_candidate`, and the operation
+  config no longer accepts `artifact_set_binding`. The checkpoint's context state drops
+  `state_generation`. Journals and checkpoints written by 0.2.77 cannot be restored.
+- **Breaking:** `artifactSetDigest` / `artifact_set_digest` is removed from `RuntimeOptions`.
+  `RunResult.evidence` / `AgentRunResult.evidence` keep `route` and `measurement` but lose
+  `contextBinding` and `artifactSet`. The Rust `AgentRunResult.evidence` field and
+  `AgentEvidence` are removed.
+- The runner no longer writes to the session log before each provider call. A failed session log
+  write no longer blocks the call, and the kernel no longer renders the context a second time to
+  check that it has not changed.
+- The `context_execution` and `shared_evidence_snapshot` cross-SDK conformance domains are
+  removed.
+- **Breaking:** the offline evidence tooling is removed: the `deepstrike inspect|verify|replay|fork`
+  CLI, `runtime::verifiable` (`VerifiableOperation`, `EvidenceBundle`, …), the chain validator,
+  `verifiableOperationJson` / `verifiable_operation_json`, and the SDK verifiable-report modules.
+  The kernel's restore already verifies the record chain, replays deterministically and checks the
+  state digest.
+- **Breaking:** workflow node kinds are removed. `NodeKind` (`Loop`, `Classify`, `Tournament`,
+  `Reduce`), `orchestration::tournament`, `WorkflowNode::with_loop` / `with_classify` /
+  `with_tournament` / `with_reduce`, and the matching SDK fields (`loop`, `classify`, `tournament`,
+  `reducer`) are gone. The canonical kernel ABI never accepted these kinds, so declarative specs
+  that used them were already rejected at load. Branches, loops and tournaments are host control
+  flow (`runDynamicWorkflow`) or model-driven `submit_workflow_nodes`. `LoopResult` loses
+  `loop_continue`, `classify_branch` and `tournament_winner`; spawn descriptors lose `reducer`,
+  `judge_match`, `loop_max_iters` and `classify_labels`; `workflow_node_completed` loses the three
+  signal fields. The reducers module (`builtinReducers`, `resolveReducer`, `RuntimeOptions.reducers`)
+  and the loop/classify/judge prompt helpers are removed.
+- **Breaking:** `gen_eval` / `genEval` no longer take `max_iters`. The worker runs once; retry with
+  feedback is `AttemptLoop`. The SDK templates previously emitted a `loop` node that the canonical
+  kernel rejected.
+- Workflow checkpoints drop the per-node `kind` and `iterations_completed` fields.
 
 ## [0.2.76] - 2026-10-20
 

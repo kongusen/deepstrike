@@ -7,7 +7,6 @@
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import type { MemoryStore, MemoryRecall } from "../src/memory/index.js"
-import { memoryRecallTurn } from "../src/memory/recall-projection.js"
 import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
@@ -122,20 +121,8 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_operation (K2)",
   })
 })
 
-describe("preQueryMemory prefetch lands in initial knowledge, keyed per record", () => {
-  it("M5 · the recall turn matches the vector every SDK pins", () => {
-    const vector = {
-      record_id: "record-v", scope: { tenant_id: "t", namespace: "n" }, name: "fact", kind: "project",
-      content: "prefers numbered sections", description: "how briefs are laid out",
-      provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
-      created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.5, links: [], pinned: false,
-    } as const
-    expect(memoryRecallTurn(vector)).toBe("[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out")
-    expect(memoryRecallTurn({ ...vector, description: " " })).toBe("[MEMORY record_id=record-v kind=project trust=untrusted] fact")
-  })
-
-
-  it("seeds start_operation knowledge with prefetch content, never history/page_in", async () => {
+describe("memory recall is the kernel's", () => {
+  it("a scoped memory store turns on kernel recall; the host seeds no recall itself", async () => {
     kernelEvents.length = 0
     const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
     const memoryStore: MemoryStore = {
@@ -173,23 +160,42 @@ describe("preQueryMemory prefetch lands in initial knowledge, keyed per record",
       preQueryMemory: () => [{ scope, query: "past facts", top_k: 5, kinds: [] }],
     })
 
-    const sessionLog = (runner as unknown as { opts: { sessionLog: InMemorySessionLog } }).opts.sessionLog
     for await (const _e of runner.run({ sessionId: "prequery", goal: "use the fact" })) { /* drain */ }
 
-    const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
-      | { initial_context?: {
-        messages?: Array<{ role?: string; content?: string }>
-        knowledge?: Array<{ key?: string; content?: string }>
-      } }
+    const configure = kernelEvents.find((e: { kind?: string }) => e.kind === "configure_operation") as
+      | { config?: { memory_policy?: { recall?: boolean }; memory_access?: { capabilities?: { read?: boolean } } } }
       | undefined
-    // M5 · one keyed canonical recall entry per hit (the same text every SDK writes), and an audit.
-    expect((start?.initial_context?.knowledge ?? []).filter(k => String(k.content).startsWith("[MEMORY "))
-      .map(k => [k.key, k.content])).toEqual([
-      ["memory:record-prefetch", "[MEMORY record_id=record-prefetch kind=reference trust=host_verified] fixture"],
-    ])
-    expect((start?.initial_context?.messages ?? []).some(m => String(m.content).startsWith("[MEMORY "))).toBe(false)
-    const audited = (await sessionLog.read("prequery")).filter(entry => entry.event.kind === "memory_retrieval_result")
-    expect(audited).toHaveLength(1)
-    expect(kernelEvents.some((e: { kind?: string }) => e.kind === "page_in")).toBe(false)
+    expect(configure?.config?.memory_policy?.recall).toBe(true)
+    expect(configure?.config?.memory_access?.capabilities?.read).toBe(true)
+    const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
+      | { initial_context?: { knowledge?: Array<{ content?: string }> } }
+      | undefined
+    expect((start?.initial_context?.knowledge ?? []).some(k => String(k.content).startsWith("[MEMORY "))).toBe(false)
+  })
+})
+
+describe("dependency outputs reach the child kernel", () => {
+  it("lands dependencyOutputs in start_operation initial_context.dependencies", async () => {
+    kernelEvents.length = 0
+    const provider: LLMProvider = {
+      async complete(): Promise<ModelMessage> {
+        return { role: "assistant", content: "unused", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", delta: "done" }
+      },
+    }
+    const runner = new RuntimeRunner({
+      provider,
+      sessionLog: new InMemorySessionLog(),
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 2048,
+      dependencyOutputs: { "wf-node0": "FULL_SURVEY_BODY" },
+    })
+    for await (const _e of runner.run({ sessionId: "deps", goal: "synthesize" })) { /* drain */ }
+    const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
+      | { initial_context?: { dependencies?: Array<{ agent_id: string; content: string }> } }
+      | undefined
+    expect(start?.initial_context?.dependencies).toEqual([{ agent_id: "wf-node0", content: "FULL_SURVEY_BODY" }])
   })
 })

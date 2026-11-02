@@ -102,6 +102,9 @@ pub struct KnowledgeEntry {
     /// Deterministic evidence that later input actually referenced this entry.
     pub use_count: u64,
     pub last_used_step: Option<u64>,
+    /// Arrived after the current cache prefix was sent: rendered in the state turn instead of
+    /// system[1] until the next boundary promotes it (see [`KnowledgePartition::sweep_at_boundary`]).
+    pub staged: bool,
 }
 
 /// Outcome of one boundary sweep, for the `KnowledgeSwept` kernel observation.
@@ -114,12 +117,22 @@ pub struct KnowledgeSweep {
 }
 
 /// The knowledge partition: durable, identity-bearing entries rendered into system[1].
-/// Appends are immediate (they extend the cached prefix — the cheap direction); mutation and
-/// removal of existing entries are boundary-deferred (see [`KnowledgeEntry::evict_at_boundary`]).
+///
+/// system[1] renders before the history turns, so ANY change to it — an append included —
+/// invalidates the cached history behind it. Appends are therefore immediate only while the
+/// current prefix has not been sent; afterwards a fresh entry is `staged` (rendered in the state
+/// turn) until the next compaction/renewal boundary. Mutation and removal of existing entries are
+/// boundary-deferred the same way (see [`KnowledgeEntry::evict_at_boundary`]).
 #[derive(Debug, Clone, Default)]
 pub struct KnowledgePartition {
     pub entries: Vec<KnowledgeEntry>,
     pub token_count: u32,
+    /// Keys a boundary sweep removed. A later push of one of them is regret.
+    pub evicted_keys: std::collections::BTreeSet<String>,
+    /// Evicted keys that came back.
+    pub regret: u32,
+    /// Tokens of entries removed without ever being referenced.
+    pub wasted_tokens: u64,
 }
 
 impl KnowledgePartition {
@@ -150,6 +163,11 @@ impl KnowledgePartition {
                 return;
             }
         }
+        if let Some(ref k) = key {
+            if self.evicted_keys.remove(k.as_str()) {
+                self.regret += 1;
+            }
+        }
         self.token_count += tokens;
         self.entries.push(KnowledgeEntry {
             key,
@@ -160,7 +178,43 @@ impl KnowledgePartition {
             pending: None,
             use_count: 0,
             last_used_step: None,
+            staged: false,
         });
+    }
+
+    /// Promote every staged entry into system[1]. Returns the promoted tokens.
+    pub fn promote_staged(&mut self) -> u32 {
+        let mut promoted = 0;
+        for entry in self.entries.iter_mut().filter(|entry| entry.staged) {
+            entry.staged = false;
+            promoted += entry.tokens;
+        }
+        promoted
+    }
+
+    /// Tokens currently staged outside system[1].
+    pub fn staged_tokens(&self) -> u32 {
+        self.entries
+            .iter()
+            .filter(|entry| entry.staged)
+            .map(|entry| entry.tokens)
+            .sum()
+    }
+
+    /// The system[1] messages, in entry order.
+    pub fn resident_messages(&self) -> impl Iterator<Item = &CoreMessage> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.staged)
+            .map(|entry| &entry.message)
+    }
+
+    /// The staged messages, in entry order (rendered in the state turn).
+    pub fn staged_messages(&self) -> impl Iterator<Item = &CoreMessage> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.staged)
+            .map(|entry| &entry.message)
     }
 
     /// Record references from a journal-derived history message. This is deliberately driven by
@@ -234,6 +288,13 @@ impl KnowledgePartition {
 
     /// Mark the keyed entry for removal at the next boundary. Errs-open: unknown key is a no-op.
     /// Returns whether a matching entry was marked.
+    /// A live entry holds `key` (one not already marked for removal).
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| !entry.evict_at_boundary && entry.key.as_deref() == Some(key))
+    }
+
     pub fn remove(&mut self, key: &str) -> bool {
         match self
             .entries
@@ -253,6 +314,9 @@ impl KnowledgePartition {
     /// boundaries — this is the one place existing system[1] bytes may be rewritten.
     pub fn sweep_at_boundary(&mut self) -> KnowledgeSweep {
         let mut sweep = KnowledgeSweep::default();
+        if self.promote_staged() > 0 {
+            sweep.changed = true;
+        }
         for entry in &mut self.entries {
             if let Some(replacement) = entry.pending.take() {
                 let (msg, tokens) = *replacement;
@@ -263,10 +327,15 @@ impl KnowledgePartition {
             }
         }
         let before = self.entries.len();
+        let (evicted_keys, wasted_tokens) = (&mut self.evicted_keys, &mut self.wasted_tokens);
         self.entries.retain(|e| {
             if e.evict_at_boundary {
                 if let Some(ref k) = e.key {
                     sweep.removed_keys.push(k.to_string());
+                    evicted_keys.insert(k.to_string());
+                }
+                if e.use_count == 0 {
+                    *wasted_tokens += u64::from(e.tokens);
                 }
                 sweep.tokens_freed += e.tokens;
                 false

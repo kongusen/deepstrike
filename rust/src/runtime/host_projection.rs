@@ -25,7 +25,6 @@ pub(crate) struct HostAction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum HostEffect {
     CallProvider {
-        context_effect: deepstrike_core::runtime::kernel::wire::effect::CallProviderEffect,
         context: InternalRenderedContext,
         tools: Vec<ToolSchema>,
     },
@@ -56,6 +55,9 @@ pub(crate) enum HostEffect {
         /// `memory(record_id)`: a point read of this record, answered with it or with nothing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record_id: Option<String>,
+        /// The kernel's own recall (plan task 2.1), with the sprint it serves: 0 at run start.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recall_sprint: Option<u32>,
     },
     ArchivePageOut {
         turn: u32,

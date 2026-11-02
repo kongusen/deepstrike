@@ -181,7 +181,6 @@ fn harness_with_hits(
         }) as Arc<dyn Fn(&str) -> Vec<MemoryQuery> + Send + Sync>
     });
     let runner = RuntimeRunner::new(RuntimeOptions {
-        artifact_set_digest: None,
         provider: Box::new(CountingProvider {
             calls: model_calls.clone(),
             seen_turns: seen_turns.clone(),
@@ -202,6 +201,7 @@ fn harness_with_hits(
         pre_query_memory,
         system_prompt: None,
         initial_memory: vec![],
+        dependency_outputs: Default::default(),
         skill_dir: None,
         memory_store: Some(Box::new(store)),
         knowledge_source: None,
@@ -486,7 +486,6 @@ async fn the_kernel_candidate_observation_is_projected_into_the_session_log() {
                 max_turns: Some(3),
                 max_total_tokens: None,
                 max_wall_ms: None,
-                artifact_set_digest: None,
                 memory_binding_id: "memory".into(),
                 persist_payload: None,
             },
@@ -588,38 +587,6 @@ fn recalled(record_id: &str, content: &str) -> MemoryRecall {
     }
 }
 
-/// M5 · the vectors every SDK's recall-projection test pins.
-#[test]
-fn the_recall_turn_matches_the_other_sdks() {
-    let record = MemoryRecord {
-        record_id: "record-v".into(),
-        scope: MemoryScope::new("t", "n"),
-        kind: MemoryKind::Project,
-        provenance: MemoryProvenance {
-            session_id: None,
-            author: MemoryAuthor::Extraction,
-            trust: MemoryTrustLevel::Untrusted,
-            evidence_refs: Vec::new(),
-        },
-        name: "fact".into(),
-        description: "how briefs are laid out".into(),
-        ..proposal("prefers numbered sections")
-    };
-    // An index line, not the record: the body is the description, or the name when there is
-    // none — never the content.
-    assert_eq!(
-        crate::memory::memory_recall_turn(&record),
-        "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
-    );
-    assert_eq!(
-        crate::memory::memory_recall_turn(&MemoryRecord {
-            description: " ".into(),
-            ..record
-        }),
-        "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
-    );
-}
-
 /// M5 · the turn-1 prefetch puts each hit in keyed knowledge as its canonical recall line, once
 /// per record however many queries hit it, never in history, and audits the prefetch.
 #[tokio::test]
@@ -658,63 +625,6 @@ async fn the_initial_prefetch_lands_each_hit_as_canonical_keyed_knowledge() {
         .collect();
     assert_eq!(audited.len(), 1);
     assert_eq!(audited[0].len(), 1, "the duplicate hit is one recall");
-}
-
-/// K4 · M5: a sprint renewal re-runs the prefetch for the live goal. The hit is seeded as keyed
-/// knowledge, not a history message (a running operation refuses host history), and the
-/// re-fetch is audited.
-#[tokio::test]
-async fn a_renewal_re_runs_the_prefetch_into_keyed_knowledge() {
-    let h = harness_with_hits(
-        None,
-        false,
-        Some(Arc::new(AtomicUsize::new(0))),
-        vec![recalled("record-a", "FACT_A")],
-    );
-    *h.runner.current_goal.lock().unwrap() = Some("keep going".into());
-    let kernel = Arc::new(tokio::sync::Mutex::new(
-        crate::runtime::canonical_runner_runtime::CanonicalRunnerRuntime::new(
-            crate::runtime::canonical_kernel::CanonicalKernel::default(),
-            Arc::new(crate::runtime::InMemoryKernelJournal::new()),
-            "renewal",
-            crate::runtime::canonical_runner_runtime::CanonicalRunnerOptions {
-                max_context_tokens: 1_000,
-                max_turns: Some(3),
-                max_total_tokens: None,
-                max_wall_ms: None,
-                artifact_set_digest: None,
-                memory_binding_id: "memory".into(),
-                persist_payload: None,
-            },
-        )
-        .unwrap(),
-    ));
-    // A running operation: the state a live renewal observation arrives in.
-    kernel
-        .lock()
-        .await
-        .start_agent_value(serde_json::json!({ "goal": "keep going" }), None)
-        .await
-        .unwrap();
-    let mut observations = vec![KernelObservation::Renewed { sprint: 1 }];
-    h.runner
-        .append_observations(
-            "renewal",
-            &kernel,
-            &mut observations,
-            &mut std::collections::VecDeque::new(),
-            0,
-        )
-        .await;
-
-    assert_eq!(h.searches.load(Ordering::SeqCst), 1);
-    // The audit is written only after the kernel accepted every seed command.
-    let audited = events(&h.log, "renewal")
-        .await
-        .into_iter()
-        .filter(|event| matches!(event, SessionEvent::MemoryRetrievalResult { .. }))
-        .count();
-    assert_eq!(audited, 1);
 }
 
 /// M4 · `AgentSession::remember` reports a write the kernel refused instead of returning `Ok`

@@ -179,12 +179,29 @@ impl CanonicalOperationDriver {
                 }
                 let mut recalled = Vec::with_capacity(queried.recalls.len());
                 let mut priors = Vec::with_capacity(queried.recalls.len());
+                let mut index_lines = Vec::new();
                 for recall in &queried.recalls {
                     priors.push(crate::mm::memory::MemoryRecallPrior {
                         record_id: recall.record_ref.as_str().to_string(),
                         recall_count: recall.recall_count.get(),
                         pinned: recall.pinned,
                     });
+                    recalled.push(recall.record_ref.as_str().to_string());
+                    // Plan task 2.1 · a kernel recall lands an index line per record as keyed
+                    // knowledge; the model reads a record in full with `memory(record_id)`.
+                    if query.recall {
+                        index_lines.push((
+                            recall.record_ref.as_str().to_string(),
+                            crate::context::manager::ContextManager::recall_index_line(
+                                recall.record_ref.as_str(),
+                                wire_memory_kind_label(recall.kind),
+                                &recall.trust,
+                                &recall.description,
+                                &recall.name,
+                            ),
+                        ));
+                        continue;
+                    }
                     // §22.13 · the host answers with records, never with authority: the recall is
                     // rendered into history as content the model reads, and nothing about it
                     // rewrites this operation's binding, trust or provenance.
@@ -197,14 +214,18 @@ impl CanonicalOperationDriver {
                     let engine = self.engine_mut()?;
                     let tokens = engine.ctx.engine.count(&content).max(1);
                     engine.ctx.push_history(CoreMessage::user(content), tokens);
-                    recalled.push(recall.record_ref.as_str().to_string());
                 }
                 // The recalls are in history now, so the turn that asked for them resumes with a
                 // rendered context that contains them. The observation is pushed *after* the
                 // resume, which clears the buffer at its head: a fact recorded before it would be
                 // erased by the very continuation it describes.
                 let engine = self.engine_mut()?;
-                let action = engine.resume_after_preload();
+                let action = if query.recall {
+                    engine.ctx.push_recalled(index_lines);
+                    engine.resume_after_recall()
+                } else {
+                    engine.resume_after_preload()
+                };
                 // §5k · other effects this kernel published are still outstanding — resuming the
                 // turn now would emit a provider call that outruns work the host still owes (the
                 // sibling effect of a mixed syscall batch). The last of them to settle re-runs
@@ -489,7 +510,11 @@ impl CanonicalOperationDriver {
                 let error = host_failure_text(failure);
                 let engine = self.engine_mut()?;
                 let turn = engine.turn;
-                let action = engine.resume_after_preload();
+                let action = if query.recall {
+                    engine.resume_after_recall()
+                } else {
+                    engine.resume_after_preload()
+                };
                 engine
                     .observations
                     .push(KernelObservation::MemoryQueryFailed {

@@ -74,11 +74,6 @@ pub enum RollbackReason {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionEvent {
-    ContextPrepared {
-        turn: u32,
-        effect_id: String,
-        preparation: Box<crate::context::execution::ContextDispatchPreparation>,
-    },
     // ─── 1. Execution & Inference Loop ───
     RunStarted {
         run_id: String,
@@ -235,6 +230,16 @@ pub enum SessionEvent {
         turn: u32,
         sprint: u32,
         handoff_ref: String,
+    },
+    /// End-of-run context lifecycle metrics: knowledge regret, never-referenced knowledge
+    /// tokens, and history tokens whose prompt cache a mid-run system[1] promotion discarded.
+    ContextLifecycleReported {
+        turn: u32,
+        knowledge_entries: u32,
+        knowledge_referenced: u32,
+        regret: u32,
+        waste_tokens: u64,
+        cache_loss_tokens: u64,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).
@@ -441,10 +446,13 @@ pub enum SessionEvent {
 }
 
 impl SessionEvent {
+    /// Kinds older logs may still hold that no longer have a variant. Readers skip them rather
+    /// than fail the whole session.
+    pub const RETIRED_KINDS: &'static [&'static str] = &["context_prepared"];
+
     /// Every kind this SDK carries, in declaration order. `session_registry_tests` checks it
     /// against both serde's variant list and the Rust slice of `contracts/session-events.json`.
     pub const KINDS: &'static [&'static str] = &[
-        "context_prepared",
         "run_started",
         "llm_completed",
         "tool_requested",
@@ -462,6 +470,7 @@ impl SessionEvent {
         "tool_denied",
         "capability_changed",
         "context_renewed",
+        "context_lifecycle_reported",
         "suspended",
         "resumed",
         "tool_gated",
@@ -532,7 +541,6 @@ impl SessionEvent {
     /// Event `kind` string (snake_case tag).
     pub fn kind_str(&self) -> &'static str {
         match self {
-            Self::ContextPrepared { .. } => "context_prepared",
             Self::RunStarted { .. } => "run_started",
             Self::LlmCompleted { .. } => "llm_completed",
             Self::ToolRequested { .. } => "tool_requested",
@@ -550,6 +558,7 @@ impl SessionEvent {
             Self::ToolDenied { .. } => "tool_denied",
             Self::CapabilityChanged { .. } => "capability_changed",
             Self::ContextRenewed { .. } => "context_renewed",
+            Self::ContextLifecycleReported { .. } => "context_lifecycle_reported",
             Self::Suspended { .. } => "suspended",
             Self::Resumed { .. } => "resumed",
             Self::ToolGated { .. } => "tool_gated",
@@ -587,6 +596,7 @@ impl SessionEvent {
                 | Self::PageIn { .. }
                 | Self::CapabilityChanged { .. }
                 | Self::ContextRenewed { .. }
+                | Self::ContextLifecycleReported { .. }
                 | Self::Suspended { .. }
                 | Self::Resumed { .. }
                 | Self::ToolGated { .. }

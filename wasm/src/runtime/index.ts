@@ -2,36 +2,6 @@ export type { SessionEvent, SessionEventKind, SessionLog } from "./session-log.j
 export { InMemorySessionLog, assertCanonicalProviderAttemptRecord } from "./session-log.js"
 // Registered session-event vocabulary (F9/S3; manifest-pinned by sdk-conformance, P7-S4)
 export { SESSION_EVENT_KINDS } from "./session-log.js"
-export {
-  SharedEvidenceBuilder,
-  SessionEvidenceReader,
-  createSharedEvidence,
-  readSessionEvidence,
-  canonicalEventJson,
-  knowledgeIdentity,
-} from "./shared-evidence.js"
-export type {
-  EvidenceAuthority,
-  EvidenceAvailability,
-  EvidenceCompleteness,
-  EvidenceCursor,
-  EvidenceDiagnostic,
-  EvidenceDomain,
-  EvidenceLink,
-  EvidenceRef,
-  EvidenceRelation,
-  EvidenceRetentionObservation,
-  EvidenceScope,
-  EvidenceSidecar,
-  KnowledgeIdentity,
-  MemorySettlement,
-  SessionEvidenceSources,
-  SharedEvidence,
-  SharedEvidenceFacets,
-  SharedEvidenceIdentity,
-  SharedEvidenceInput,
-  SharedEvidenceSnapshot,
-} from "./shared-evidence.js"
 // Durable transaction capability (Canonical Kernel ABI §9.1)
 export {
   DriverKernelJournal,
@@ -77,8 +47,6 @@ export { runAgent, runFanout } from "./facade.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./facade.js"
 export { McpExecutionPlane } from "./mcp-transport.js"
 export type { McpConnection, McpConnectionFactory, McpCredentialVault, McpServerConfig } from "./mcp-transport.js"
-export { builtinReducers, resolveReducer } from "./reducers.js"
-export type { Reducer, ReducerRegistry, ReducerInput } from "./reducers.js"
 export { getKernel } from "./kernel.js"
 export { ReplayProvider } from "./replay-provider.js"
 export type { ReplayProviderOpts } from "./replay-provider.js"

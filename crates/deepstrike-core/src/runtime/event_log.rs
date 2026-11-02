@@ -80,7 +80,7 @@ pub fn category_for_kind(kind: &str) -> KernelEventCategory {
         | "rollbacked"
         | "milestone_advanced"
         | "milestone_blocked" => KernelEventCategory::Sched,
-        "compressed" | "page_out" | "page_in" | "renewed" | "context_renewed" => {
+        "compressed" | "page_out" | "page_in" | "renewed" | "context_renewed" | "lifecycle_report" | "context_lifecycle_reported" => {
             KernelEventCategory::Mm
         }
         "agent_process_changed"

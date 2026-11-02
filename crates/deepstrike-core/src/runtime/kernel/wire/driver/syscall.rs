@@ -566,6 +566,7 @@ impl CanonicalOperationDriver {
             text: proposal.text.clone(),
             requested_k,
             record_id: record_id.as_ref().map(|id| id.as_str().to_string()),
+            recall: false,
         };
         let effect = EffectKind::QueryMemory(QueryMemoryEffect {
             binding,
@@ -611,6 +612,20 @@ impl CanonicalOperationDriver {
         effect_index: &mut u32,
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        // Plan task 3.1 · a dependency output is held by this kernel: the read answers with the
+        // body itself, with no host effect.
+        if let Some(agent_id) = handle_id.as_str().strip_prefix("dep:") {
+            let Some(body) = engine.ctx.dependency_bodies.get(agent_id) else {
+                return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                    READ_RESULT_TOOL_NAME,
+                    format!("this run has no dependency output from {agent_id}"),
+                )));
+            };
+            return Ok(SyscallOutcome {
+                ack: Some(format!("[PAYLOAD handle_id={handle_id}]\n{body}")),
+                ..Default::default()
+            });
+        }
         if let Some(handle) = engine.ctx.handles.all().iter().find(|handle| {
             handle.source.as_deref() == Some(handle_id.as_str())
                 || handle.id.to_string() == handle_id.as_str()

@@ -194,7 +194,6 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
       kind: "call_provider",
       effectId,
       context: renderedContextToSdk(context),
-      contextEffect: payload,
       tools: (Array.isArray(payload.tools) ? payload.tools : []).map(raw => {
         const tool = asObject(raw)
         return {
@@ -608,7 +607,6 @@ export interface CanonicalRunnerRuntimeOptions {
   maxTurns?: number
   maxTotalTokens?: number
   maxWallMs?: number
-  artifactSetDigest?: string
   memoryBindingId?: string
   persistPayload?: (callId: string, content: string, previewBytes: number) => Promise<{
     payloadRef: string
@@ -852,6 +850,7 @@ function canonicalWorkflowSpec(
       const tokenBudget = node.token_budget ?? node.tokenBudget
       const maxTurns = node.max_turns ?? node.maxTurns
       const maxWallMs = node.max_wall_ms ?? node.maxWallMs
+      const dependencyContext = node.dependency_context
       const canonicalSchedulingFactors = schedulingFactors === undefined
         ? undefined
         : canonicalSchedulingFactorsForHost(schedulingFactors)
@@ -861,7 +860,8 @@ function canonicalWorkflowSpec(
         ...(node.isolation ? { isolation: node.isolation } : {}),
         ...(inheritance ? { context_inheritance: inheritance } : {}),
         ...((modelHint !== undefined || outputSchema !== undefined || tokenBudget !== undefined
-          || maxTurns !== undefined || maxWallMs !== undefined || canonicalSchedulingFactors !== undefined)
+          || maxTurns !== undefined || maxWallMs !== undefined || canonicalSchedulingFactors !== undefined
+          || dependencyContext !== undefined)
           ? {
               metadata: {
                 ...(modelHint !== undefined ? { model_hint: modelHint } : {}),
@@ -870,6 +870,7 @@ function canonicalWorkflowSpec(
                 ...(maxTurns !== undefined ? { max_turns: maxTurns } : {}),
                 ...(maxWallMs !== undefined ? { max_wall_ms: maxWallMs } : {}),
                 ...(canonicalSchedulingFactors !== undefined ? { scheduling_factors: canonicalSchedulingFactors } : {}),
+                ...(dependencyContext !== undefined ? { dependency_context: dependencyContext } : {}),
               },
             }
           : {}),
@@ -929,6 +930,7 @@ export class CanonicalRunnerRuntime {
     messages: Array<Record<string, unknown>>
     knowledge: Array<Record<string, unknown>>
     capabilities: Array<Record<string, unknown>>
+    dependencies?: Array<{ agent_id: string; content: string }>
   } = { messages: [], knowledge: [], capabilities: [] }
   private configured = false
   private started = false
@@ -958,9 +960,6 @@ export class CanonicalRunnerRuntime {
     this.host = new CanonicalKernelHost(kernel, journal, operationId)
     this.memoryBindingId = options.memoryBindingId ?? "node-memory"
     this.config = {
-      ...(options.artifactSetDigest
-        ? { artifact_set_binding: { artifact_set_digest: options.artifactSetDigest } }
-        : {}),
       execution_policy: {
         max_context_tokens: options.maxContextTokens,
         ...(options.maxTurns !== undefined ? { max_turns: options.maxTurns } : {}),
@@ -1448,6 +1447,10 @@ export class CanonicalRunnerRuntime {
                   name: String(record.name ?? ""),
                   kind: String(record.kind ?? "reference"),
                   content: String(record.content ?? ""),
+                  ...(typeof record.description === "string" && record.description.trim()
+                    ? { description: record.description } : {}),
+                  ...(typeof asObject(record.provenance).trust === "string"
+                    ? { trust: String(asObject(record.provenance).trust) } : {}),
                   ...(typeof hit.score === "number" ? { score: hit.score } : {}),
                   // M3: the store reports the count it holds; the kernel derives the next one.
                   ...(Number(record.recall_count) > 0
@@ -1847,6 +1850,12 @@ export class CanonicalRunnerRuntime {
           ...(event.tokens !== undefined ? { tokens: Number(event.tokens) } : {}),
         })
         return true
+      case "add_dependency_output":
+        (this.initialContext.dependencies ??= []).push({
+          agent_id: String(event.agent_id ?? ""),
+          content: String(event.content ?? ""),
+        })
+        return true
       case "add_knowledge_message":
         this.initialContext.knowledge.push({
           content: String(event.content ?? ""),
@@ -1866,6 +1875,9 @@ export class CanonicalRunnerRuntime {
         // Only sent when on, so kernels that predate the field still accept memory-enabled runs.
         if (event.propose_memory) this.featurePolicy().propose_memory_enabled = true
         else delete this.featurePolicy().propose_memory_enabled
+        if (event.enabled && event.recall) {
+          this.config.memory_policy = { ...asObject(this.config.memory_policy), recall: true }
+        }
         if (event.enabled) {
           // The binding is the kernel-enforced gate: `plan_memory_write` / `plan_memory_query`
           // refuse any syscall whose capability bit is off. Absent bits default to granted.
@@ -1880,6 +1892,7 @@ export class CanonicalRunnerRuntime {
         return true
       case "set_memory_policy":
         this.config.memory_policy = {
+          ...(asObject(this.config.memory_policy).recall ? { recall: true } : {}),
           ...(event.stale_warning_days !== undefined ? { stale_warning_days: event.stale_warning_days } : {}),
           ...(event.retrieval_top_k !== undefined ? { retrieval_top_k: event.retrieval_top_k } : {}),
           ...(event.validation_enabled !== undefined ? { validation_enabled: event.validation_enabled } : {}),

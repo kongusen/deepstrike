@@ -13,10 +13,8 @@ test("SPC-028-44 keeps execution evidence in optional eval traces", async () => 
   const run = await evaluate({ run: async input => ({
     output: input.toUpperCase(),
     evidence: {
-      contextBinding: { tenant: "demo" },
       route: { provider: "test" },
       measurement: { inputTokens: 2, outputTokens: 1 },
-      artifactSet: ["artifact-1"],
     },
   }) }, {
     dataset: { cases: [{ id: "one", input: "hello", metadata: { tenant: "demo" } }] },
@@ -28,9 +26,7 @@ test("SPC-028-44 keeps execution evidence in optional eval traces", async () => 
   expect(run.traces).toEqual([{
     caseId: "one",
     executedInput: "hello",
-    contextBinding: { tenant: "demo" },
     route: { provider: "test" },
     measurement: { inputTokens: 2, outputTokens: 1 },
-    artifactSet: ["artifact-1"],
   }])
 })

@@ -1,9 +1,5 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
-use super::execution::{
-    ContextCandidate, ContextContractError, ContextEntrySource, ContextPlanAction,
-    ContextPreparation, ContextPreparationRequest, ContextSelection, ContextState,
-};
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
@@ -108,8 +104,6 @@ pub struct ContextManager {
     pub propose_memory_enabled: bool,
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
-    /// Monotonic semantic-state generation used to invalidate ContextPlan decisions.
-    state_generation: u64,
     last_observed_prompt_tokens: Option<u32>,
     compression: CompressionPipeline,
     pressure: PressureMonitor,
@@ -149,6 +143,19 @@ pub struct ContextManager {
     knowledge_budget_warned: bool,
     /// Monotonic, input-derived clock for knowledge-reference recency.
     knowledge_reference_step: u64,
+    /// A provider call has sent the current system[1] since the last boundary, so a change to
+    /// system[1] now would invalidate the cached history behind it.
+    prefix_sent: bool,
+    /// History tokens whose cache a mid-run system[1] promotion discarded, summed over the run.
+    cache_invalidated_tokens: u64,
+    /// Long-term memory recall (plan task 2.1): `Some(top_k)` when the operation can read memory.
+    /// The kernel recalls at the start of a run and after every renewal.
+    pub(crate) recall_top_k: Option<u32>,
+    /// A recall is owed before the next provider call.
+    pub(crate) recall_due: bool,
+    /// Plan task 3.1 · dependency outputs by agent id, read in full with
+    /// `read_result(call_id="dep:<agent_id>")`. Only previews are in the rendered context.
+    pub dependency_bodies: std::collections::BTreeMap<String, String>,
 }
 
 impl ContextManager {
@@ -182,7 +189,6 @@ impl ContextManager {
             propose_memory_enabled: false,
             knowledge_enabled: false,
             plan_tool_enabled: false,
-            state_generation: 0,
             last_observed_prompt_tokens: None,
             compression,
             pressure,
@@ -195,6 +201,11 @@ impl ContextManager {
             pending_knowledge_sweeps: Vec::new(),
             knowledge_budget_warned: false,
             knowledge_reference_step: 0,
+            prefix_sent: false,
+            recall_top_k: None,
+            recall_due: false,
+            dependency_bodies: std::collections::BTreeMap::new(),
+            cache_invalidated_tokens: 0,
         }
     }
 
@@ -459,7 +470,6 @@ impl ContextManager {
         target_tokens: u32,
         now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
-        self.state_generation = self.state_generation.saturating_add(1);
         let result = self.compression.compress(
             &mut self.partitions,
             action,
@@ -514,12 +524,13 @@ impl ContextManager {
     }
 
     pub fn renew(&mut self) {
-        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions = self
             .renewal
             .renew(&self.partitions, self.max_tokens, &self.engine);
         self.sprint += 1;
         self.last_observed_prompt_tokens = None;
+        // The renewed history dropped earlier recalls with the rest; recall again for the new sprint.
+        self.recall_due = self.recall_top_k.is_some();
         // History was rebuilt wholesale — drop handles anchored to messages it no longer carries,
         // and start a fresh collapse generation (P0-C) since the whole prefix changed.
         self.prune_orphaned_handles();
@@ -553,196 +564,9 @@ impl ContextManager {
         )
     }
 
-    /// Build the canonical ContextState index for the current semantic state.
-    pub fn context_state(&self) -> Result<ContextState, ContextContractError> {
-        ContextState::from_partitions_with_handles(
-            &self.partitions,
-            self.state_generation,
-            &self.handles,
-        )
-    }
-
-    /// Prepare one verifiable execution input and its explicit optimisation decision.
-    ///
-    /// The current compression/renderer algorithms remain behind this boundary. The returned
-    /// projection is transient; only the digests in `execution_input` are suitable for journal or
-    /// evaluation evidence. Provider adapters attach that input identity to the host execution
-    /// record together with the raw request and native measurement evidence.
-    pub fn prepare_execution_input(
-        &self,
-        request: &ContextPreparationRequest,
-    ) -> Result<ContextPreparation, ContextContractError> {
-        let (candidate, rendered_projection) = self.prepare_candidate(
-            request.operation_id.clone(),
-            request.step_id.clone(),
-            request.input_sequence,
-            request.policy_digest.clone(),
-        )?;
-        let (plan, execution_input) = candidate.bind(
-            request.prompt_measurement.clone(),
-            request.provider_route.clone(),
-        )?;
-        Ok(ContextPreparation {
-            execution_input,
-            plan,
-            rendered_projection,
-        })
-    }
-
-    /// Freeze kernel-owned selection facts before the host resolves route and prompt measurement.
-    pub fn prepare_candidate(
-        &self,
-        operation_id: String,
-        step_id: String,
-        input_sequence: u64,
-        policy_digest: crate::evolution::ContentDigest,
-    ) -> Result<(ContextCandidate, InternalRenderedContext), ContextContractError> {
-        let state = self.context_state()?;
-        let (rendered_projection, trace) = super::renderer::render_projected_with_trace(
-            &self.partitions,
-            self.available_input_tokens(),
-            &self.engine,
-            self.config.preserve_recent_units,
-            &self.handles,
-            self.frozen_history_len,
-            self.config.collapse_assistant_narration,
-        );
-        let rendered_bytes =
-            crate::runtime::kernel::wire::record::canonical_bytes(&rendered_projection)
-                .map_err(|error| ContextContractError::Canonical(error.to_string()))?;
-        let rendered_snapshot =
-            crate::evolution::ContentDigest::from_bytes(rendered_bytes.as_slice());
-        let rendered_history = &rendered_projection.turns;
-        let selections = state
-            .system
-            .iter()
-            .chain(state.knowledge.iter())
-            .chain(state.history.iter())
-            .chain(state.state.iter())
-            .map(|entry| {
-                let (action, reason) = match entry.source {
-                    ContextEntrySource::System | ContextEntrySource::Knowledge => {
-                        let message = match entry.source {
-                            ContextEntrySource::System => {
-                                &self.partitions.system.messages[entry.ordinal as usize]
-                            }
-                            _ => &self.partitions.knowledge.entries[entry.ordinal as usize].message,
-                        };
-                        if message.content.as_text().is_some() {
-                            (ContextPlanAction::Include, "stable_partition".to_string())
-                        } else {
-                            (
-                                ContextPlanAction::Omit,
-                                "non_text_system_projection".to_string(),
-                            )
-                        }
-                    }
-                    ContextEntrySource::State | ContextEntrySource::Signal => {
-                        let included = match entry.source {
-                            ContextEntrySource::State => {
-                                !self.partitions.task_state.format_compact().is_empty()
-                            }
-                            _ => !self.partitions.signals[entry.ordinal as usize].is_empty(),
-                        };
-                        if included && rendered_projection.state_turn.is_some() {
-                            (
-                                ContextPlanAction::Include,
-                                "volatile_state_turn".to_string(),
-                            )
-                        } else {
-                            (
-                                ContextPlanAction::Omit,
-                                "empty_state_projection".to_string(),
-                            )
-                        }
-                    }
-                    ContextEntrySource::History => {
-                        let decision = &trace.history[entry.ordinal as usize];
-                        (decision.action, decision.reason.to_string())
-                    }
-                };
-                ContextSelection {
-                    entry_id: entry.entry_id.clone(),
-                    action,
-                    reason,
-                }
-            })
-            .collect();
-        let cache_prefix = if let Some(entries) = rendered_projection.frozen_prefix_len {
-            let prefix_turns = rendered_history.get(..entries).unwrap_or(rendered_history);
-            let prefix_bytes = crate::runtime::kernel::wire::record::canonical_bytes(&(
-                &rendered_projection.system_stable,
-                &rendered_projection.system_knowledge,
-                prefix_turns,
-            ))
-            .map_err(|error| ContextContractError::Canonical(error.to_string()))?;
-            Some(crate::context::execution::CachePrefixBoundary {
-                digest: crate::evolution::ContentDigest::from_bytes(prefix_bytes.as_slice()),
-                entries: prefix_turns.len() as u32,
-            })
-        } else {
-            None
-        };
-        let knowledge_lifecycle = self
-            .partitions
-            .knowledge
-            .entries
-            .iter()
-            .map(|entry| {
-                let pending = entry
-                    .pending
-                    .as_ref()
-                    .map(|pending| {
-                        super::execution::message_digest(&pending.0, &self.handles)
-                            .map(|content| (content, pending.1))
-                    })
-                    .transpose()?;
-                Ok((
-                    &entry.key,
-                    entry.pinned,
-                    entry.evict_at_boundary,
-                    pending,
-                    entry.use_count,
-                    entry.last_used_step,
-                    entry.tokens,
-                ))
-            })
-            .collect::<Result<Vec<_>, ContextContractError>>()?;
-        let runtime_bytes = crate::runtime::kernel::wire::record::canonical_bytes(&(
-            &self.handles,
-            &self.partitions.system.measurements,
-            &self.partitions.history.measurements,
-            knowledge_lifecycle,
-            self.knowledge_reference_step,
-            self.knowledge_budget_warned,
-            self.frozen_history_len,
-        ))
-        .map_err(|error| ContextContractError::Canonical(error.to_string()))?;
-        let runtime_inputs = crate::evolution::ContentDigest::from_bytes(runtime_bytes.as_slice());
-        Ok((
-            ContextCandidate {
-                schema: super::execution::CONTEXT_SCHEMA.to_string(),
-                operation_id,
-                step_id,
-                input_sequence,
-                state,
-                runtime_inputs,
-                policy_digest,
-                rendered_snapshot,
-                selections,
-                input_budget_tokens: self.available_input_tokens(),
-                projected_tokens: trace.projected_tokens,
-                pressure_ppm: (self.rho().clamp(0.0, 1.0) * 1_000_000.0).round() as u32,
-                cache_prefix,
-            },
-            rendered_projection,
-        ))
-    }
-
     // ── History / Knowledge ───────────────────────────────────────────────────
 
     pub fn push_history(&mut self, msg: CoreMessage, tokens: u32) {
-        self.state_generation = self.state_generation.saturating_add(1);
         self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
         self.partitions
             .knowledge
@@ -806,12 +630,99 @@ impl ContextManager {
         self.knowledge_budget_warned = warned;
     }
 
-    pub fn state_generation(&self) -> u64 {
-        self.state_generation
+    pub(crate) fn cache_checkpoint_state(&self) -> (bool, u64) {
+        (self.prefix_sent, self.cache_invalidated_tokens)
     }
 
-    pub fn restore_state_generation(&mut self, generation: u64) {
-        self.state_generation = generation;
+    pub(crate) fn restore_cache_checkpoint_state(&mut self, prefix_sent: bool, invalidated: u64) {
+        self.prefix_sent = prefix_sent;
+        self.cache_invalidated_tokens = invalidated;
+    }
+
+    /// Turn on kernel-owned memory recall for this operation, `top_k` hits per recall.
+    pub fn enable_recall(&mut self, top_k: u32) {
+        self.recall_top_k = Some(top_k.max(1));
+    }
+
+    /// Take the owed recall, if any: the query text and width the kernel asks the host for.
+    pub fn take_due_recall(&mut self) -> Option<(String, u32)> {
+        let top_k = self.recall_top_k?;
+        if !std::mem::take(&mut self.recall_due) {
+            return None;
+        }
+        let goal = self.partitions.task_state.goal.trim();
+        (!goal.is_empty()).then(|| (goal.to_string(), top_k))
+    }
+
+    /// The index line one recalled record becomes. The header names the record, its kind and trust;
+    /// the body is its one-line description (its name when it has none). The model reads the
+    /// record in full with `memory(record_id)`.
+    pub fn recall_index_line(record_id: &str, kind: &str, trust: &str, description: &str, name: &str) -> String {
+        let summary = if description.trim().is_empty() { name.trim() } else { description.trim() };
+        let trust = if trust.is_empty() { String::new() } else { format!(" trust={trust}") };
+        format!("[MEMORY record_id={record_id} kind={kind}{trust}] {summary}")
+    }
+
+    /// Land recalled records as keyed knowledge `memory:<record_id>`. The key dedupes a record
+    /// across recalls; a record already resident is left as it is.
+    pub fn push_recalled(&mut self, lines: Vec<(String, String)>) {
+        for (record_id, line) in lines {
+            let key = CompactString::from(format!("memory:{record_id}"));
+            if self.partitions.knowledge.contains_key(&key) {
+                continue;
+            }
+            let tokens = self.engine.count(&line).max(1);
+            self.push_knowledge_entry(Some(key), CoreMessage::system(line), tokens, false);
+        }
+    }
+
+    /// The rendered context is about to go to a provider: from now on system[1] is cached.
+    pub fn mark_prefix_sent(&mut self) {
+        self.prefix_sent = true;
+    }
+
+    /// The run's context lifecycle metrics: (entries, referenced, regret, waste, cache loss).
+    pub fn lifecycle_metrics(&self) -> (u32, u32, u32, u64, u64) {
+        let knowledge = &self.partitions.knowledge;
+        let referenced = knowledge.entries.iter().filter(|e| e.use_count > 0).count() as u32;
+        let resident_waste: u64 = knowledge
+            .entries
+            .iter()
+            .filter(|e| e.use_count == 0)
+            .map(|e| u64::from(e.tokens))
+            .sum();
+        (
+            knowledge.entries.len() as u32,
+            referenced,
+            knowledge.regret,
+            knowledge.wasted_tokens + resident_waste,
+            self.cache_invalidated_tokens,
+        )
+    }
+
+    /// History tokens whose cache mid-run system[1] promotions discarded.
+    pub fn cache_invalidated_tokens(&self) -> u64 {
+        self.cache_invalidated_tokens
+    }
+
+    /// Place a just-appended knowledge entry. Before the prefix is sent it stays in system[1].
+    /// After, it is staged in the state turn: re-sending it uncached each turn costs less than
+    /// re-caching the history behind system[1] until the staged tokens reach a quarter of the
+    /// history, at which point every staged entry is promoted at once.
+    fn place_appended_knowledge(&mut self, entries_before: usize) {
+        let knowledge = &mut self.partitions.knowledge;
+        if !self.prefix_sent || knowledge.entries.len() == entries_before {
+            return;
+        }
+        if let Some(entry) = knowledge.entries.last_mut() {
+            entry.staged = true;
+        }
+        let history = self.partitions.history.token_count;
+        if self.partitions.knowledge.staged_tokens().saturating_mul(4) >= history {
+            self.partitions.knowledge.promote_staged();
+            self.cache_invalidated_tokens += u64::from(history);
+            self.prefix_sent = false;
+        }
     }
 
     pub fn restore_frozen_history_len(&mut self, len: usize) -> bool {
@@ -824,13 +735,14 @@ impl ContextManager {
 
     /// Push content into the Knowledge slot (memory retrievals, skill defs, artifacts).
     pub fn push_knowledge(&mut self, msg: CoreMessage, tokens: u32) {
-        self.state_generation = self.state_generation.saturating_add(1);
+        let before = self.partitions.knowledge.entries.len();
         self.partitions.knowledge.push(msg, tokens);
+        self.place_appended_knowledge(before);
     }
 
-    /// K1: keyed knowledge push — fresh key appends immediately (cache-cheap direction), an
-    /// existing key stages a boundary-deferred upsert. `pinned` entries are exempt from the
-    /// K2 budget sweep.
+    /// K1: keyed knowledge push — a fresh key appends (placed by
+    /// [`Self::place_appended_knowledge`]), an existing key stages a boundary-deferred upsert.
+    /// `pinned` entries are exempt from the K2 budget sweep.
     pub fn push_knowledge_entry(
         &mut self,
         key: Option<CompactString>,
@@ -838,10 +750,11 @@ impl ContextManager {
         tokens: u32,
         pinned: bool,
     ) {
-        self.state_generation = self.state_generation.saturating_add(1);
+        let before = self.partitions.knowledge.entries.len();
         self.partitions
             .knowledge
             .push_entry(key, msg, tokens, pinned);
+        self.place_appended_knowledge(before);
     }
 
     /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
@@ -849,8 +762,7 @@ impl ContextManager {
     pub fn remove_knowledge(&mut self, key: &str) -> bool {
         let removed = self.partitions.knowledge.remove(key);
         if removed {
-            self.state_generation = self.state_generation.saturating_add(1);
-        }
+            }
         removed
     }
 
@@ -860,8 +772,7 @@ impl ContextManager {
     fn sweep_knowledge_at_boundary(&mut self) {
         let sweep = self.partitions.knowledge.sweep_at_boundary();
         if sweep.changed {
-            self.state_generation = self.state_generation.saturating_add(1);
-            // P9: the model must not have knowledge silently vanish under it. The boundary
+                // P9: the model must not have knowledge silently vanish under it. The boundary
             // already broke the prompt-cache prefix, so a one-line ephemeral tail note is
             // cache-free; keyed removals name what left and how to get it back.
             if !sweep.removed_keys.is_empty() {
@@ -874,6 +785,7 @@ impl ContextManager {
         }
         // K2: a boundary starts a fresh cache generation — the budget warning may fire again.
         self.knowledge_budget_warned = false;
+        self.prefix_sent = false;
     }
 
     /// K2: knowledge-budget check, run per turn before render. Over budget ⇒ mark the LOWEST-VALUE
@@ -951,7 +863,6 @@ impl ContextManager {
     /// Rendering does not consume signals. The state machine clears only the prefix acknowledged by
     /// a correlated provider result, so provider failures and retries see the same signal payload.
     pub fn push_signal(&mut self, text: String) {
-        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.signals.push(text);
     }
 
@@ -959,14 +870,13 @@ impl ContextManager {
     /// mid-task user command keeps its salience across compaction/renewal — unlike the ephemeral
     /// signal channel, which is cleared on renewal.
     pub fn record_directive(&mut self, text: impl Into<String>) {
-        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.task_state.record_directive(text);
     }
 
     // ── Task state ────────────────────────────────────────────────────────────
 
     pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
-        self.state_generation = self.state_generation.saturating_add(1);
+        self.recall_due = self.recall_top_k.is_some();
         self.partitions.task_state = TaskState {
             goal,
             criteria,
@@ -975,7 +885,6 @@ impl ContextManager {
     }
 
     pub fn update_task(&mut self, update: TaskUpdate) {
-        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.task_state.apply(update);
     }
 
@@ -986,7 +895,6 @@ impl ContextManager {
     /// a repeat. Control-plane meta-tools (plan/skill/memory/knowledge/workflow authoring) are noise,
     /// not task progress — filtered by name. A turn with only meta-tool calls records nothing.
     pub fn note_tool_actions(&mut self, calls: &[(String, String)]) {
-        self.state_generation = self.state_generation.saturating_add(1);
         let summary = calls
             .iter()
             .filter(|(name, _)| !is_meta_tool(name))
@@ -1073,8 +981,7 @@ impl ContextManager {
         for name in expired {
             self.deactivate_skill(&name);
             // P9: lease expiry re-widens the toolset invisibly otherwise — tell the model.
-            self.state_generation = self.state_generation.saturating_add(1);
-            self.partitions.signals.push(format!(
+                self.partitions.signals.push(format!(
                 "[SKILL] lease expired: {name} unloaded; the full toolset is restored."
             ));
         }
@@ -1215,20 +1122,21 @@ impl ContextManager {
     /// (progressive disclosure; golden fixtures and cache prefixes stay byte-stable). Content is
     /// host-resolved through the payload store — the kernel only advertises the capability.
     pub fn read_result_tool_schema(&self) -> Option<ToolSchema> {
-        let any_evicted = self
-            .handles
-            .all()
-            .iter()
-            .any(|h| !h.residency.occupies_context());
+        let any_evicted = !self.dependency_bodies.is_empty()
+            || self
+                .handles
+                .all()
+                .iter()
+                .any(|h| !h.residency.occupies_context());
         if !any_evicted {
             return None;
         }
         Some(ToolSchema {
             name: CompactString::new(READ_RESULT_TOOL_NAME),
             description: "Re-read the full content of a tool result that was truncated to save \
-                          context (marked '[Output truncated: … call the read_result tool …]'). \
-                          Pass that marker's call_id; use offset/max_bytes to page through \
-                          large content."
+                          context (marked '[Output truncated: … call the read_result tool …]'), \
+                          or of a dependency output (call_id \"dep:<agent_id>\"). Pass that \
+                          call_id; use offset/max_bytes to page through large content."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -1335,9 +1243,7 @@ Scope, identity, provenance, and timestamps are derived for you.".to_string(),
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::execution::ContextPreparationRequest;
     use crate::context::task_state::PlanStep;
-    use crate::evolution::ContentDigest;
     use crate::types::message::CoreMessage;
     use crate::types::skill::SkillMetadata;
 
@@ -1355,30 +1261,101 @@ mod tests {
         assert!(!mgr.should_renew());
     }
 
+    fn staged_text(mgr: &ContextManager) -> String {
+        mgr.render()
+            .state_turn
+            .and_then(|turn| turn.content.as_text().map(str::to_string))
+            .unwrap_or_default()
+    }
+
     #[test]
-    fn preparation_freezes_state_plan_and_render_identity() {
+    fn lifecycle_metrics_count_regret_waste_and_cache_loss() {
         let mut mgr = ContextManager::new(100_000);
-        mgr.init_task("verify context".to_string(), vec![]);
-        mgr.push_history(CoreMessage::user("hello"), 2);
-        let request = ContextPreparationRequest {
-            operation_id: "op-1".to_string(),
-            step_id: "step-1".to_string(),
-            input_sequence: 1,
-            policy_digest: ContentDigest::from_bytes(b"policy"),
-            prompt_measurement: ContentDigest::from_bytes(b"measurement"),
-            provider_route: ContentDigest::from_bytes(b"route"),
-        };
-        let prepared = mgr.prepare_execution_input(&request).unwrap();
-        prepared.plan.verify(&mgr.context_state().unwrap()).unwrap();
-        prepared.execution_input.verify(&prepared.plan).unwrap();
-        let binding = crate::evolution::EvaluationContextBinding::from_execution_input(
-            &prepared.execution_input,
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_knowledge_entry(Some("memory:a".into()), CoreMessage::system("alpha notes"), 7, false);
+        mgr.push_knowledge_entry(Some("memory:b".into()), CoreMessage::system("beta notes"), 5, false);
+        mgr.push_history(CoreMessage::user("tell me about memory:b"), 10);
+        assert!(mgr.remove_knowledge("memory:a"));
+        mgr.sweep_knowledge_at_boundary();
+        // memory:a left unreferenced (waste) and comes back (regret).
+        mgr.push_knowledge_entry(Some("memory:a".into()), CoreMessage::system("alpha notes"), 7, false);
+        let (entries, referenced, regret, waste, cache_loss) = mgr.lifecycle_metrics();
+        assert_eq!((entries, referenced, regret), (2, 1, 1));
+        assert_eq!(waste, 7 + 7, "evicted unreferenced + resident unreferenced");
+        assert_eq!(cache_loss, 0);
+    }
+
+    #[test]
+    fn the_recall_index_line_matches_the_shared_vector() {
+        assert_eq!(
+            ContextManager::recall_index_line("record-v", "project", "untrusted", "how briefs are laid out", "fact"),
+            "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
         );
-        binding.verify_digest().unwrap();
-        assert_eq!(prepared.execution_input.operation_id, request.operation_id);
-        assert!(!prepared.execution_input.input_digest.as_str().is_empty());
-        mgr.push_signal("new evidence".to_string());
-        assert!(prepared.plan.verify(&mgr.context_state().unwrap()).is_err());
+        assert_eq!(
+            ContextManager::recall_index_line("record-v", "project", "untrusted", " ", "fact"),
+            "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
+        );
+    }
+
+    #[test]
+    fn recall_is_owed_at_start_and_after_each_renewal_and_dedupes_by_record() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        assert_eq!(mgr.take_due_recall(), None, "recall is off unless enabled");
+        mgr.enable_recall(3);
+        mgr.init_task("find the bug".to_string(), vec![]);
+        assert_eq!(mgr.take_due_recall(), Some(("find the bug".to_string(), 3)));
+        assert_eq!(mgr.take_due_recall(), None, "one recall per boundary");
+        mgr.push_recalled(vec![("r1".into(), "[MEMORY record_id=r1 kind=project] a".into())]);
+        mgr.push_recalled(vec![("r1".into(), "[MEMORY record_id=r1 kind=project] changed".into())]);
+        assert_eq!(mgr.partitions.knowledge.len(), 1);
+        mgr.renew();
+        assert!(mgr.take_due_recall().is_some());
+    }
+
+    #[test]
+    fn knowledge_before_the_first_send_goes_straight_into_system_knowledge() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_history(CoreMessage::user("goal"), 10);
+        mgr.push_knowledge_entry(Some("memory:a".into()), CoreMessage::system("recall a"), 5, false);
+        assert!(mgr.render().system_knowledge.contains("recall a"));
+        assert!(!staged_text(&mgr).contains("recall a"));
+    }
+
+    #[test]
+    fn knowledge_after_the_send_is_staged_and_keeps_the_cached_prefix() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_history(CoreMessage::user("goal ".repeat(200)), 400);
+        let before = mgr.render();
+        mgr.mark_prefix_sent();
+        mgr.push_knowledge_entry(Some("skill:x".into()), CoreMessage::system("skill body"), 20, false);
+        let after = mgr.render();
+        assert_eq!(after.system_stable, before.system_stable);
+        assert_eq!(after.system_knowledge, before.system_knowledge, "system[1] bytes unchanged");
+        assert_eq!(after.turns.len(), before.turns.len());
+        assert!(staged_text(&mgr).contains("skill body"));
+        assert_eq!(mgr.cache_invalidated_tokens(), 0);
+
+        // The next boundary promotes it into system[1].
+        mgr.sweep_knowledge_at_boundary();
+        assert!(mgr.render().system_knowledge.contains("skill body"));
+        assert!(!staged_text(&mgr).contains("skill body"));
+    }
+
+    #[test]
+    fn large_staged_knowledge_is_promoted_at_once_and_the_invalidation_is_counted() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_history(CoreMessage::user("short"), 40);
+        mgr.mark_prefix_sent();
+        mgr.push_knowledge_entry(Some("ref:big".into()), CoreMessage::system("big reference"), 10, false);
+        assert!(mgr.render().system_knowledge.contains("big reference"));
+        assert_eq!(mgr.cache_invalidated_tokens(), 40);
+        // The promotion rewrote system[1]; the next append before a send is free again.
+        mgr.push_knowledge_entry(Some("ref:next".into()), CoreMessage::system("next"), 1, false);
+        assert!(mgr.render().system_knowledge.contains("next"));
     }
 
     #[test]

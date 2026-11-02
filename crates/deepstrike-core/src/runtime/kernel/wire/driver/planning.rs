@@ -333,15 +333,34 @@ impl CanonicalOperationDriver {
                 // The cascade is installed before `start`, which is the engine's own precondition:
                 // a contract loaded afterwards would leave phase 0 already behind the run.
                 self.load_verification_contract(context.config, agent.run_spec.as_ref())?;
+                // Plan task 2.1 · an operation that can read memory recalls before its first call.
+                let recall_top_k = context
+                    .config
+                    .memory_access
+                    .as_ref()
+                    .filter(|binding| context.config.memory_policy.recall && binding.capabilities.read)
+                    .filter(|_| {
+                        context
+                            .config
+                            .host_effect_support
+                            .supports(EffectKindTag::QueryMemory)
+                    })
+                    .map(|_| context.config.memory_policy.retrieval_top_k);
                 let engine = self.engine_mut()?;
                 seed_initial_context(engine, initial);
                 engine.run_spec = run_spec;
+                if let Some(top_k) = recall_top_k {
+                    engine.ctx.enable_recall(top_k);
+                }
                 let action = engine.start(task);
                 let disposition = self.disposition_for(context, action, RootKind::Agent)?;
-                if !publishes(&disposition, EffectKindTag::CallProvider) {
+                if !publishes(&disposition, EffectKindTag::CallProvider)
+                    && !publishes(&disposition, EffectKindTag::QueryMemory)
+                {
                     return Err(KernelFault::new(
                         KernelFaultCode::InvalidLifecycle,
-                        "an agent root's first committed step must publish a provider call (§7.4)"
+                        "an agent root's first committed step must publish a provider call or its \
+                         memory recall (§7.4)"
                             .to_string(),
                     ));
                 }

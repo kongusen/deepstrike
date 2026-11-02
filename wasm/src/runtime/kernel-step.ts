@@ -84,7 +84,7 @@ export interface KernelLoopResult {
 }
 
 export type KernelRunnerAction =
-  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[]; contextEffect: Record<string, unknown> }
+  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[] }
   | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
   | { kind: "request_approval"; effectId: string; requests: Array<{ callId: string; tool: string; arguments: string; reason: string }> }
   | { kind: "spawn_workflow"; effectId: string; nodes: Array<Record<string, unknown>>; budget?: Record<string, unknown> }
@@ -119,6 +119,12 @@ export interface KernelObservation {
   rho_after?: number
   sprint?: number
   summary?: string
+  // lifecycle_report (plan 4.1): end-of-run context lifecycle metrics.
+  knowledge_entries?: number
+  knowledge_referenced?: number
+  regret?: number
+  waste_tokens?: number
+  cache_loss_tokens?: number
   archived_count?: number
   turn?: number
   checkpoint_history_len?: number

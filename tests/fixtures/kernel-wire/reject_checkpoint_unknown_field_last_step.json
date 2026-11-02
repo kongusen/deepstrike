@@ -2,17 +2,23 @@
   "checkpoint": {
     "base_record_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:286ed344b99b7efdb100c89449a4012dec7b27da66fe95e2abc5eb691772e0cf",
+    "checkpoint_digest": "sha256:89f483a9643d3a59586ca95a75208725d215949287d7ec41efe69134a13f6405",
     "covered_transaction_head_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "last_step": null,
     "logical_state": {
       "context_vm": {
         "active_skills": [],
+        "cache_invalidated_tokens": 0,
         "frozen_history_len": 0,
         "handles": [],
         "history_len": 0,
+        "history_measurements": [],
         "knowledge": [],
+        "knowledge_budget_warned": false,
+        "knowledge_reference_step": 0,
+        "knowledge_regret": 0,
+        "knowledge_wasted_tokens": 0,
         "last_activity_ms": "0",
         "last_compact_ms": null,
         "messages": [],
@@ -23,7 +29,9 @@
           "system": 0
         },
         "pending_payload_loads": [],
+        "prefix_sent": false,
         "signals": [],
+        "system_measurements": [],
         "task_state": {
           "blocked_on": [],
           "compression_log": [],
@@ -85,9 +93,6 @@
         "lifecycle": "running",
         "pending_effects": [],
         "resolved_config": {
-          "artifact_set_binding": {
-            "artifact_set_digest": "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
-          },
           "budget_grant": null,
           "context_policy": {
             "collapse_old_assistant_narration": true,
@@ -208,7 +213,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:91cd2bfcb63e83744831eb4057aae719b43b25db3e6ecd572e2861dded6a093e",
+    "state_digest": "sha256:ad041c63ee0e6664f37ca5e5053400a1ed61546c475d8215802a0396c90dcea2",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"

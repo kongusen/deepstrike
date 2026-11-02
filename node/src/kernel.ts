@@ -175,11 +175,7 @@ interface KernelModule {
   buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): ModelMessage[]
   parseVerdict(content: string): Verdict
   verdictOutputSchema(extractSkillOnPass: boolean): string
-  verifiableOperationJson(request: string): string
-  evolutionValidateJson(request: string): string
   memoryAuthorityJson(request: string): string
-  contextPrepareJson(request: string): string
-  contextVerifyJson(request: string): string
   estimateTextTokens(text: string): number
 }
 

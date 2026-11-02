@@ -1,5 +1,4 @@
 import { SESSION_EVENT_KINDS as REGISTERED_SESSION_EVENT_KINDS, SESSION_EVENT_REGISTRY } from "./session-event-registry.generated.js"
-import type { ContextPrepared } from "./context.js"
 import { createReadStream } from "node:fs"
 import type { KernelPrimitive } from "./kernel-event-log.js"
 import { access, mkdir, open as openFile } from "node:fs/promises"
@@ -30,7 +29,6 @@ export type SessionEvent =
   // P3-S2 + P4-S1: `effect_id` (G4) + `invocation_id` (P4 §3) join this evidence projection to
   // the journal effect chain; `wire_evidence` (D1) is the sole ProviderWireEvidence bundle.
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
-  | { kind: "context_prepared"; turn: number; effect_id: string; preparation: ContextPrepared }
   | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
   // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload. The kernel-minted
   // effect_id joins this host evidence to the journal effect chain 1:1 (C6); step_seq NEVER
@@ -67,6 +65,15 @@ export type SessionEvent =
   | { kind: "rollbacked"; turn: number; checkpoint_history_len: number; reason?: RollbackReason }
   | { kind: "capability_changed"; turn: number; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
   | { kind: "context_renewed"; turn: number; sprint: number; handoff_ref: string }
+  | {
+      kind: "context_lifecycle_reported"
+      turn: number
+      knowledge_entries: number
+      knowledge_referenced: number
+      regret: number
+      waste_tokens: number
+      cache_loss_tokens: number
+    }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }
   | { kind: "tool_gated"; turn: number; call_id: string; tool: string; reason: string }
@@ -142,11 +149,6 @@ export type SessionEvent =
       agent_id: string
       status: import("../types/agent.js").WorkflowNodeStatus
       termination: string
-      /** W-1: result-borne control signals, persisted so resume replays control flow faithfully —
-       *  a classifier re-prunes its rejected branches, a recorded loop stop is honored. */
-      classify_branch?: string
-      tournament_winner?: string
-      loop_continue?: boolean
       output?: import("../types.js").ModelMessage
     }
   | {

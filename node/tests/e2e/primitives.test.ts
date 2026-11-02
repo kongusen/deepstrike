@@ -1,8 +1,7 @@
 /**
  * Real-model end-to-end for the workflow DAG: the verify_rules verification shape, driving the
- * kernel state machine against a live LLM. (The former standalone tournament / loop-until-done
- * primitives were removed in A#1 in favor of NodeKind::Tournament / NodeKind::Loop, driven through
- * the same workflow executor; their kernel coverage lives in the Rust suite.)
+ * kernel state machine against a live LLM. Loops, branching and tournaments are host control
+ * flow, not DAG node kinds.
  *
  * Requires a provider key. Run with:
  *   set -a; source .env; set +a; npx jest e2e/primitives --testTimeout 300000

@@ -45,36 +45,6 @@ from deepstrike.runtime.kernel_journal import (
   JournalRecordInput,
   KernelJournal,
 )
-from deepstrike.runtime.verifiable_report import (
-    VERIFIABLE_REPORT_SCHEMA,
-    VERIFIABLE_FORK_SCHEMA,
-    ReplayOptions,
-    VerifiableEvidence,
-    VerifiableForkManifest,
-    VerifiableOperation,
-    VerifiableReport,
-    create_verifiable_runtime_adapter,
-    create_native_verifiable_runtime_adapter,
-    VerifyOptions,
-    assert_verifiable_report_schema,
-)
-from deepstrike.runtime.shared_evidence import (
-    EvidenceCursor,
-    EvidenceDiagnostic,
-    EvidenceLink,
-    EvidenceRef,
-    EvidenceRetentionObservation,
-    EvidenceScope,
-    EvidenceSidecar,
-    SessionEvidenceReader,
-    SharedEvidence,
-    SharedEvidenceBuilder,
-    SharedEvidenceFacets,
-    SharedEvidenceIdentity,
-    SharedEvidenceSnapshot,
-    create_shared_evidence,
-    read_session_evidence,
-)
 from deepstrike.runtime.context_policy import (
   DEFAULT_CONTEXT_POLICY,
   PPM_SCALE,
@@ -155,40 +125,14 @@ from deepstrike.runtime.credential_vault import (
 from deepstrike.runtime.process_sandbox_plane import ProcessSandboxPlane
 from deepstrike.runtime.mcp_proxy_plane import McpConnection, McpProxyPlane, McpServerConfig
 from deepstrike.runtime.workflow_replay import WorkflowReplay
-from deepstrike.runtime.evolution import (
-  EVOLUTION_REPORT_SCHEMA,
-  ContextEntryRef,
-  ContextExecutionInput,
-  ContextPlan,
-  ContextPreparationRequest,
-  ContextSelection,
-  ContextState,
-  EvaluationContextBinding,
-  EvaluationRun,
-  EvolutionReport,
-  EvolutionRuntime,
-  EvolutionRuntimeAdapter,
-  EvolutionStore,
-  create_evolution_runtime_adapter,
-  create_native_evolution_runtime_adapter,
-)
 from deepstrike.runtime.remote_vpc_plane import RemoteVpcPlane
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spawn_standalone, default_sub_agent_orchestrator
-from deepstrike.runtime.reducers import builtin_reducers, resolve_reducer
 from deepstrike.runtime.workflow_store import FileWorkflowStore
 from deepstrike.runtime.worktree_plane import (
   GitWorktreeManager,
   WorktreeExecutionPlane,
   WorktreeManager,
-)
-from deepstrike.runtime.workflow_control_flow import (
-  classify_instruction,
-  dependency_outputs_note,
-  extract_classify_branch,
-  extract_judge_winner,
-  judge_goal,
-  loop_instruction,
 )
 # ③ dynamic loop agents: self-pacing rounds over the kernel pacing trap.
 from deepstrike.runtime.loop_driver import (
@@ -228,14 +172,8 @@ from deepstrike.runtime.eval import (
   verdict_output_schema,
 )
 
-from deepstrike.runtime.context import (
-  ContextPrepared, ContextProviderPreparationRequest, ContextPreparationAdapter,
-  create_context_preparation_adapter, create_native_context_preparation_adapter,
-)
 
 __all__ = [
-  "ContextPrepared", "ContextProviderPreparationRequest", "ContextPreparationAdapter",
-  "create_context_preparation_adapter", "create_native_context_preparation_adapter",
 
   "run_agent",
   "run_fanout",
@@ -250,18 +188,10 @@ __all__ = [
   "SchedulerPolicy",
   "PromptBudget",
   "SubAgentHarnessConfig",
-  "builtin_reducers",
-  "resolve_reducer",
   "FileWorkflowStore",
   "WorktreeExecutionPlane",
   "GitWorktreeManager",
   "WorktreeManager",
-  "loop_instruction",
-  "classify_instruction",
-  "dependency_outputs_note",
-  "judge_goal",
-  "extract_classify_branch",
-  "extract_judge_winner",
   "LoopDriver",
   "LoopOutcome",
   "LoopSpec",
@@ -324,32 +254,6 @@ __all__ = [
   "ReactionCheckpointStore",
   "ReactionInProgressError",
   "ReactionRecord",
-  "VERIFIABLE_REPORT_SCHEMA",
-  "VERIFIABLE_FORK_SCHEMA",
-  "VerifiableEvidence",
-  "VerifiableForkManifest",
-  "VerifiableOperation",
-  "VerifiableReport",
-  "create_verifiable_runtime_adapter",
-  "create_native_verifiable_runtime_adapter",
-  "VerifyOptions",
-  "ReplayOptions",
-  "assert_verifiable_report_schema",
-  "EvidenceCursor",
-  "EvidenceDiagnostic",
-  "EvidenceLink",
-  "EvidenceRef",
-  "EvidenceRetentionObservation",
-  "EvidenceScope",
-  "EvidenceSidecar",
-  "SessionEvidenceReader",
-  "SharedEvidence",
-  "SharedEvidenceBuilder",
-  "SharedEvidenceFacets",
-  "SharedEvidenceIdentity",
-  "SharedEvidenceSnapshot",
-  "create_shared_evidence",
-  "read_session_evidence",
   "ReactivePeerSpec",
   "Reaction",
   "ReactorContext",
@@ -385,20 +289,6 @@ __all__ = [
   "McpProxyPlane",
   "McpServerConfig",
   "McpConnection",
-  "EVOLUTION_REPORT_SCHEMA",
-  "ContextEntryRef",
-  "ContextExecutionInput",
-  "ContextPlan",
-  "ContextPreparationRequest",
-  "ContextSelection",
-  "ContextState",
-  "EvaluationContextBinding",
-  "EvaluationRun",
-  "EvolutionReport",
-  "EvolutionRuntime",
-  "EvolutionRuntimeAdapter",
-  "create_evolution_runtime_adapter",
-  "create_native_evolution_runtime_adapter",
   "RemoteVpcPlane",
   "SubAgentOrchestrator",
   "spawn_standalone",

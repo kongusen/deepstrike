@@ -2581,9 +2581,6 @@ fn spawn_sub_agent_suspends_until_completed() {
             final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: 1,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         },
     };
@@ -2881,9 +2878,6 @@ fn agent_process_view_shape_is_pinned_across_spawn_and_join() {
                     final_message: Some(CoreMessage::assistant("done")),
                     turns_used: 2,
                     total_tokens_used: 42,
-                    loop_continue: None,
-                    classify_branch: None,
-                    tournament_winner: None,
                     pace_decision: None,
                 },
             },
@@ -3149,9 +3143,6 @@ fn task_table_tracks_sub_agent_lifecycle() {
                     final_message: Some(CoreMessage::assistant("ok")),
                     turns_used: 1,
                     total_tokens_used: 1,
-                    loop_continue: None,
-                    classify_branch: None,
-                    tournament_winner: None,
                     pace_decision: None,
                 },
             },
@@ -3177,46 +3168,9 @@ fn wf_completed(agent_id: &str) -> crate::types::result::SubAgentResult {
             final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: 1,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         },
     }
-}
-
-/// A workflow completion that signals the loop should stop early ("until done").
-fn wf_completed_stop(agent_id: &str) -> crate::types::result::SubAgentResult {
-    let mut r = wf_completed(agent_id);
-    r.result.loop_continue = Some(false);
-    r
-}
-
-/// A classifier completion that selects a branch label.
-fn wf_completed_branch(agent_id: &str, label: &str) -> crate::types::result::SubAgentResult {
-    let mut r = wf_completed(agent_id);
-    r.result.classify_branch = Some(label.to_string());
-    r
-}
-
-/// A tournament judge completion reporting its winning entrant id.
-fn wf_completed_winner(agent_id: &str, winner: &str) -> crate::types::result::SubAgentResult {
-    let mut r = wf_completed(agent_id);
-    r.result.tournament_winner = Some(winner.to_string());
-    r
-}
-
-/// The spawn descriptors from the most recent `WorkflowBatchSpawned` observation.
-fn last_batch_spawns(
-    obs: &[KernelObservation],
-) -> Vec<crate::orchestration::workflow::WorkflowSpawnInfo> {
-    obs.iter()
-        .rev()
-        .find_map(|o| match o {
-            KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
 }
 
 fn count_spawned(obs: &[KernelObservation]) -> usize {
@@ -4715,332 +4669,6 @@ fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
 }
 
 #[test]
-fn loop_node_reruns_then_unblocks_dependent_via_drive_workflow() {
-    // A#2 Loop node end-to-end through the run-queue executor: a Loop{2} node runs two
-    // iterations (distinct agent ids wf-node0-i0/i1), and its dependent spawns only after the
-    // loop finishes. Proves runtime node addition with zero new ABI (same WorkflowBatchSpawned/
-    // SubAgentCompleted contract).
-    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
-    use crate::types::agent::AgentRole;
-
-    let mut sm = sm();
-    sm.start(RuntimeTask::new("iterate to convergence"));
-    sm.take_observations();
-
-    let spec = WorkflowSpec::new(vec![
-        WorkflowNode::new(RuntimeTask::new("refine"), AgentRole::Implement).with_loop(2),
-        WorkflowNode::new(RuntimeTask::new("finalize"), AgentRole::Implement)
-            .with_depends_on(vec![0]),
-    ]);
-    load_workflow_started(&mut sm, spec);
-
-    // Iteration 0 spawns.
-    assert_eq!(count_spawned(&sm.take_observations()), 1);
-    assert!(sm.agent_process("wf-node0-i0").is_some());
-    assert!(
-        sm.agent_process("wf-node1").is_none(),
-        "dependent waits for the loop"
-    );
-
-    // i0 completes → loop continues → iteration 1 spawns (not the dependent).
-    assert!(matches!(
-        feed_workflow(
-            &mut sm,
-            LoopEvent::SubAgentCompleted {
-                result: wf_completed("wf-node0-i0")
-            }
-        ),
-        LoopAction::AwaitingResume
-    ));
-    assert_eq!(count_spawned(&sm.take_observations()), 1);
-    assert!(
-        sm.agent_process("wf-node0-i1").is_some(),
-        "second iteration spawned"
-    );
-    assert!(sm.agent_process("wf-node1").is_none());
-
-    // i1 completes → loop done (max_iters=2) → the dependent finally spawns.
-    assert!(matches!(
-        feed_workflow(
-            &mut sm,
-            LoopEvent::SubAgentCompleted {
-                result: wf_completed("wf-node0-i1")
-            }
-        ),
-        LoopAction::AwaitingResume
-    ));
-    assert_eq!(count_spawned(&sm.take_observations()), 1);
-    assert!(
-        sm.agent_process("wf-node1").is_some(),
-        "dependent spawns after the loop ends"
-    );
-
-    // dependent completes → workflow finishes, parent resumes.
-    let done = feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node1"),
-        },
-    );
-    assert!(matches!(done, LoopAction::CallLLM { .. }));
-    assert!(!sm.workflow_active());
-}
-
-#[test]
-fn loop_node_stops_early_on_loop_continue_false() {
-    // loop-control "until done": a Loop{5} node normally runs 5 iterations, but an iteration that
-    // reports loop_continue=Some(false) ends the loop early and promotes the dependent.
-    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
-    use crate::types::agent::AgentRole;
-
-    let mut sm = sm();
-    sm.start(RuntimeTask::new("search until no new findings"));
-    sm.take_observations();
-
-    let spec = WorkflowSpec::new(vec![
-        WorkflowNode::new(RuntimeTask::new("probe"), AgentRole::Explore).with_loop(5),
-        WorkflowNode::new(RuntimeTask::new("report"), AgentRole::Plan).with_depends_on(vec![0]),
-    ]);
-    load_workflow_started(&mut sm, spec);
-    assert_eq!(count_spawned(&sm.take_observations()), 1); // i0
-
-    // i0 → continue (no opinion); i1 spawns.
-    feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node0-i0"),
-        },
-    );
-    assert_eq!(count_spawned(&sm.take_observations()), 1); // i1
-    assert!(
-        sm.agent_process("wf-node1").is_none(),
-        "dependent still waiting"
-    );
-
-    // i1 signals "done" (loop_continue=false) at iteration 2 of 5 → loop ends early; dependent spawns.
-    feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed_stop("wf-node0-i1"),
-        },
-    );
-    assert_eq!(count_spawned(&sm.take_observations()), 1);
-    assert!(
-        sm.agent_process("wf-node1").is_some(),
-        "early stop promoted the dependent"
-    );
-    assert!(
-        sm.agent_process("wf-node0-i2").is_none(),
-        "no third iteration ran"
-    );
-
-    let done = feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node1"),
-        },
-    );
-    assert!(matches!(done, LoopAction::CallLLM { .. }));
-    assert!(!sm.workflow_active());
-}
-
-#[test]
-fn classify_node_routes_to_chosen_branch_and_prunes_others() {
-    // A#2 Classify: a classifier node's result selects one branch to run; the other branches'
-    // nodes are pruned (never spawn). Conditional edges in an otherwise static DAG.
-    use crate::orchestration::workflow::{ClassifyBranch, WorkflowNode, WorkflowSpec};
-    use crate::types::agent::AgentRole;
-
-    let mut sm = sm();
-    sm.start(RuntimeTask::new("triage this ticket"));
-    sm.take_observations();
-
-    let spec = WorkflowSpec::new(vec![
-        WorkflowNode::new(RuntimeTask::new("classify ticket"), AgentRole::Plan).with_classify(
-            vec![
-                ClassifyBranch {
-                    label: "bug".into(),
-                    nodes: vec![1],
-                },
-                ClassifyBranch {
-                    label: "feature".into(),
-                    nodes: vec![2],
-                },
-            ],
-        ),
-        WorkflowNode::new(RuntimeTask::new("fix the bug"), AgentRole::Implement)
-            .with_depends_on(vec![0]),
-        WorkflowNode::new(RuntimeTask::new("build the feature"), AgentRole::Implement)
-            .with_depends_on(vec![0]),
-    ]);
-    load_workflow_started(&mut sm, spec);
-    assert_eq!(count_spawned(&sm.take_observations()), 1); // the classifier (wf-node0)
-
-    // Classifier returns "bug" → the bug branch (node 1) runs; the feature branch (node 2) is pruned.
-    feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed_branch("wf-node0", "bug"),
-        },
-    );
-    assert_eq!(count_spawned(&sm.take_observations()), 1);
-    assert!(sm.agent_process("wf-node1").is_some(), "chosen branch runs");
-    assert!(
-        sm.agent_process("wf-node2").is_none(),
-        "other branch pruned"
-    );
-
-    // bug branch completes → workflow done (feature branch was pruned).
-    let done = feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node1"),
-        },
-    );
-    assert!(matches!(done, LoopAction::CallLLM { .. }));
-    assert!(!sm.workflow_active());
-}
-
-#[test]
-fn tournament_node_drives_bracket_end_to_end_via_drive_workflow() {
-    // A#2 Tournament: a controller node spawns no agent of its own — it fans out into 4 entrant
-    // generators, then a single-elimination bracket of pairwise judges (each carrying its
-    // JudgeMatch over the existing WorkflowBatchSpawned contract), and resolves to one champion
-    // before its dependent runs. Exercises the real run-queue executor end-to-end.
-    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
-    use crate::types::agent::AgentRole;
-
-    let mut sm = sm();
-    sm.start(RuntimeTask::new("pick the strongest candidate"));
-    sm.take_observations();
-
-    let spec = WorkflowSpec::new(vec![
-        WorkflowNode::new(RuntimeTask::new("which ad converts best?"), AgentRole::Plan)
-            .with_tournament(vec![
-                RuntimeTask::new("draft ad A"),
-                RuntimeTask::new("draft ad B"),
-                RuntimeTask::new("draft ad C"),
-                RuntimeTask::new("draft ad D"),
-            ]),
-        WorkflowNode::new(RuntimeTask::new("ship the winner"), AgentRole::Implement)
-            .with_depends_on(vec![0]),
-    ]);
-    load_workflow_started(&mut sm, spec);
-
-    // Node 0 = controller, node 1 = the gated dependent ("ship the winner"). Entrant children are
-    // appended after the static spec → wf-node2..5; the controller spawns no agent of its own.
-    let obs = sm.take_observations();
-    assert_eq!(count_spawned(&obs), 4, "four entrant generators");
-    assert!(
-        sm.agent_process("wf-node0").is_none(),
-        "controller spawns no agent of its own"
-    );
-    for id in ["wf-node2", "wf-node3", "wf-node4", "wf-node5"] {
-        assert!(sm.agent_process(id).is_some(), "{id} entrant spawned");
-    }
-    assert!(
-        last_batch_spawns(&obs)
-            .iter()
-            .all(|n| n.judge_match.is_none()),
-        "entrants aren't judges"
-    );
-
-    // Entrants finish → round-1 judges spawn (2 matches), each with its pair as a JudgeMatch.
-    for id in ["wf-node2", "wf-node3", "wf-node4"] {
-        feed_workflow(
-            &mut sm,
-            LoopEvent::SubAgentCompleted {
-                result: wf_completed(id),
-            },
-        );
-        assert_eq!(
-            count_spawned(&sm.take_observations()),
-            0,
-            "no judges until every entrant is in"
-        );
-    }
-    feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node5"),
-        },
-    );
-    let r1 = sm.take_observations();
-    assert_eq!(
-        count_spawned(&r1),
-        2,
-        "two round-1 judges (wf-node6, wf-node7)"
-    );
-    let r1_matches: Vec<_> = last_batch_spawns(&r1)
-        .iter()
-        .filter_map(|n| n.judge_match.clone())
-        .collect();
-    assert_eq!(r1_matches.len(), 2, "each round-1 judge carries a match");
-    assert_eq!(r1_matches[0].left, "wf-node2");
-    assert_eq!(r1_matches[0].right, "wf-node3");
-    assert_eq!(r1_matches[1].left, "wf-node4");
-    assert_eq!(r1_matches[1].right, "wf-node5");
-    assert!(
-        sm.agent_process("wf-node1").is_none(),
-        "dependent waits for the whole bracket"
-    );
-
-    // Judges report winners (entrant 2 and entrant 4 advance) → one final judge spawns.
-    feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed_winner("wf-node6", "wf-node2"),
-        },
-    );
-    assert_eq!(
-        count_spawned(&sm.take_observations()),
-        0,
-        "final waits for both round-1 judges"
-    );
-    feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed_winner("wf-node7", "wf-node4"),
-        },
-    );
-    let r2 = sm.take_observations();
-    assert_eq!(count_spawned(&r2), 1, "one final judge (wf-node8)");
-    let r2_match = last_batch_spawns(&r2)[0]
-        .judge_match
-        .clone()
-        .expect("final judge match");
-    assert_eq!(r2_match.left, "wf-node2");
-    assert_eq!(r2_match.right, "wf-node4");
-
-    // Final judge crowns entrant 4 → controller completes; only now does the dependent run.
-    feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed_winner("wf-node8", "wf-node4"),
-        },
-    );
-    assert_eq!(
-        count_spawned(&sm.take_observations()),
-        1,
-        "dependent spawns after the bracket"
-    );
-    assert!(
-        sm.agent_process("wf-node1").is_some(),
-        "the 'ship the winner' dependent"
-    );
-
-    // Dependent completes → workflow finishes, parent loop resumes.
-    let done = feed_workflow(
-        &mut sm,
-        LoopEvent::SubAgentCompleted {
-            result: wf_completed("wf-node1"),
-        },
-    );
-    assert!(matches!(done, LoopAction::CallLLM { .. }));
-    assert!(!sm.workflow_active());
-}
-
-#[test]
 fn quarantined_node_read_only_is_allowed() {
     // The invariant only bites on write-capable isolation — a quarantined read-only node runs.
     use crate::orchestration::workflow::{NodeTrust, WorkflowNode, WorkflowSpec};
@@ -6437,9 +6065,6 @@ fn spc_005_05_child_completion_returns_unused_tokens_to_the_parents_remaining_po
             final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: 300,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         },
     });
@@ -6515,9 +6140,6 @@ fn spc_005_05_multiple_children_return_budget_independently() {
             final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: used,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         },
     };
@@ -6722,9 +6344,6 @@ fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
             final_message: Some(CoreMessage::assistant("done")),
             turns_used: 1,
             total_tokens_used: 20,
-            loop_continue: None,
-            classify_branch: None,
-            tournament_winner: None,
             pace_decision: None,
         },
     });

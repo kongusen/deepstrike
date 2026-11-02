@@ -50,7 +50,7 @@ Node applications configure an executable Agent through `createAgent`; the facad
 | `skill_lease_turns` | K3: auto-deactivate a skill N turns after activation (toolset re-widens + knowledge pin boundary-swept); None = permanent |
 | `memory_store` | Long-term memory store |
 | `memory_policy` | Validation and retrieval config |
-| `pre_query_memory` | Pre-run memory prefetch hook |
+| `pre_query_memory` | Rewrites the kernel's goal recall (run start and each renewal) into scoped queries |
 | `knowledge_source` | External knowledge source |
 | `memory_provider` | Durable-memory extraction LLM |
 | `memory_summarizer` | Semantic archival summarizer |

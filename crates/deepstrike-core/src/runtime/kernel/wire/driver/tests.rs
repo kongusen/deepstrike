@@ -739,48 +739,6 @@ fn an_agent_root_start_is_one_atomic_input_that_issues_the_model_turn() {
     let EffectKind::CallProvider(call) = &effect.effect else {
         panic!("expected a provider call");
     };
-    let candidate = &call.context_candidate;
-    candidate.state.verify_digest().unwrap();
-    assert_eq!(candidate.operation_id, OPERATION);
-    assert_eq!(candidate.input_sequence, started.step_seq.get());
-    assert_eq!(
-        candidate.step_id,
-        format!("{OPERATION}:step:{}", started.step_seq)
-    );
-    assert_eq!(
-        candidate.state,
-        runtime
-            .driver
-            .engine()
-            .unwrap()
-            .ctx
-            .context_state()
-            .unwrap()
-    );
-    let projection =
-        crate::runtime::kernel::wire::record::canonical_bytes(&(&call.context, &call.tools))
-            .unwrap();
-    assert_eq!(
-        candidate.rendered_snapshot,
-        crate::evolution::ContentDigest::from_bytes(projection.as_slice())
-    );
-    let (plan, input) = candidate
-        .bind(
-            crate::evolution::ContentDigest::from_bytes(b"host-measurement"),
-            crate::evolution::ContentDigest::from_bytes(b"host-route"),
-        )
-        .unwrap();
-    plan.verify(&candidate.state).unwrap();
-    input.verify(&plan).unwrap();
-    let mut changed_context = call.context.clone();
-    changed_context.system_stable.push_str("tampered");
-    let changed_projection =
-        crate::runtime::kernel::wire::record::canonical_bytes(&(&changed_context, &call.tools))
-            .unwrap();
-    assert_ne!(
-        candidate.rendered_snapshot,
-        crate::evolution::ContentDigest::from_bytes(changed_projection.as_slice())
-    );
     let rendered = format!(
         "{}{}",
         call.context.system_stable, call.context.system_knowledge
@@ -2855,6 +2813,8 @@ fn a_memory_query_is_clamped_to_the_operations_retrieval_policy() {
 
 fn recall_of(record_id: &str, content: &str) -> MemoryRecall {
     MemoryRecall {
+        description: String::new(),
+        trust: String::new(),
         record_ref: MemoryRecordRef::new(record_id).unwrap(),
         name: "brief-style".to_string(),
         kind: SyscallMemoryKind::Project,
@@ -3105,6 +3065,8 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
         &query_effect.effect_id,
         EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
             recalls: vec![MemoryRecall {
+                description: String::new(),
+                trust: String::new(),
                 record_ref: MemoryRecordRef::new("rec-1").unwrap(),
                 name: "brief-style".to_string(),
                 kind: SyscallMemoryKind::Project,
@@ -6431,6 +6393,8 @@ fn a_memory_recall_enters_context_before_the_turn_resumes() {
         &effect,
         EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
             recalls: vec![MemoryRecall {
+                description: String::new(),
+                trust: String::new(),
                 record_ref: MemoryRecordRef::new("rec-1").unwrap(),
                 name: "brief-style".to_string(),
                 kind: SyscallMemoryKind::Project,
@@ -6482,6 +6446,8 @@ fn a_memory_recall_journals_the_kernel_derived_lifecycle() {
     ));
     let effect = sole_effect(&queried).effect_id.clone();
     let recall = |record: &str, recall_count: u64, pinned: bool| MemoryRecall {
+        description: String::new(),
+        trust: String::new(),
         record_ref: MemoryRecordRef::new(record).unwrap(),
         name: record.to_string(),
         kind: SyscallMemoryKind::Project,
@@ -10162,14 +10128,10 @@ fn context_optimization_evidence_and_pending_knowledge_survive_checkpoint_restor
         entry.pending.as_ref().unwrap().0.content.as_text(),
         Some("replacement evidence")
     );
-    let policy = crate::evolution::ContentDigest::from_bytes(b"policy");
-    let (expected, _) = before
-        .prepare_candidate(OPERATION.into(), "next-step".into(), 3, policy.clone())
-        .unwrap();
-    let (actual, _) = after
-        .prepare_candidate(OPERATION.into(), "next-step".into(), 3, policy)
-        .unwrap();
-    assert_eq!(expected, actual);
+    let canonical = |ctx: &crate::context::manager::ContextManager| {
+        crate::runtime::kernel::wire::record::canonical_bytes(&ctx.render()).unwrap()
+    };
+    assert_eq!(canonical(before), canonical(after));
 }
 
 /// **Verification 1 (rebase form)** · the same differential over a checkpoint whose logical
@@ -11767,4 +11729,115 @@ fn a_host_catalog_cannot_expose_propose_memory_while_its_feature_is_off() {
         "{:?}",
         call.tools.iter().map(|tool| &tool.name).collect::<Vec<_>>()
     );
+}
+
+fn recall_config() -> WireEnvelope {
+    syscall_config_with(|config| {
+        config.memory_policy.as_mut().unwrap().recall = Some(true);
+    })
+}
+
+/// Plan task 2.1 · with `memory_policy.recall` the run's first effect is the kernel's own recall
+/// for the goal; its hits land as keyed index lines in system knowledge before the first call.
+#[test]
+fn a_recall_policy_recalls_the_goal_before_the_first_provider_call() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&recall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let recall = sole_effect(&started).clone();
+    let EffectKind::QueryMemory(query) = &recall.effect else {
+        panic!("expected the kernel recall, got {:?}", recall.tag());
+    };
+    assert!(matches!(query.query.causation, SyscallCausation::KernelRecall(_)));
+    assert!(!query.query.text.is_empty(), "the goal is the query");
+    assert_eq!(query.requested_k, 4, "the operation's retrieval width");
+
+    let restored = Runtime::restore_with(None, &runtime.journal);
+    assert_eq!(restored.pending_effect_kinds(), vec![EffectKindTag::QueryMemory]);
+
+    let mut hit = recall_of("rec-1", "the full record body");
+    hit.description = "prefers numbered sections".to_string();
+    hit.trust = "host_verified".to_string();
+    let resumed = runtime.submit(&resolved(
+        "in-recalled",
+        1_700_000_002_000,
+        &recall.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls: vec![hit] }),
+    ));
+    let call = sole_effect(&resumed);
+    let EffectKind::CallProvider(call) = &call.effect else {
+        panic!("expected the first provider call, got {:?}", call.tag());
+    };
+    assert!(call.context.system_knowledge.contains(
+        "[MEMORY record_id=rec-1 kind=project trust=host_verified] prefers numbered sections"
+    ));
+    assert!(!call.context.system_knowledge.contains("full record body"), "an index line, not the record");
+    assert!(history_text(&runtime).iter().all(|line| !line.contains("rec-1")));
+    assert!(observation_kinds(&runtime).contains(&"memory_recalled"));
+}
+
+#[test]
+fn a_failed_recall_still_makes_the_first_provider_call() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&recall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let recall = sole_effect(&started).effect_id.clone();
+    let resumed = runtime.submit(&failed(
+        "in-recall-failed",
+        1_700_000_002_000,
+        &recall,
+        HostEffectFailureKind::StorageUnavailable,
+        "the memory store is offline",
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+}
+
+#[test]
+fn without_the_recall_policy_the_first_effect_is_the_provider_call() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    assert_eq!(kinds(&started), vec![EffectKindTag::CallProvider]);
+}
+
+/// Plan task 3.1 · a run started with a dependency output advertises `read_result` and answers a
+/// `dep:` read with the body itself, without a host effect.
+#[test]
+fn a_dependency_output_is_read_in_full_through_read_result() {
+    use super::super::root::DependencyOutput;
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+    let mut start = agent_start("in-start", 1_700_000_001_000);
+    if let KernelInput::StartOperation(start) = &mut start.input {
+        start.initial_context.dependencies = vec![DependencyOutput {
+            agent_id: "wf-node0".to_string(),
+            content: "the whole survey, every finding".to_string(),
+        }];
+    }
+    let started = runtime.submit(&start);
+    let call = sole_effect(&started).clone();
+    let EffectKind::CallProvider(provider) = &call.effect else {
+        panic!("expected a provider call, got {:?}", call.tag());
+    };
+    assert!(provider.tools.iter().any(|tool| tool.name == "read_result"));
+
+    let read = runtime.submit(&provider_result(
+        "in-read",
+        1_700_000_002_000,
+        &call.effect_id,
+        vec![tool_call("c1", "read_result", serde_json::json!({ "call_id": "dep:wf-node0" }))],
+    ));
+    assert_eq!(kinds(&read), vec![EffectKindTag::CallProvider], "no host effect for a dependency read");
+    assert!(history_text(&runtime)
+        .iter()
+        .any(|line| line.contains("[PAYLOAD handle_id=dep:wf-node0]") && line.contains("every finding")));
+
+    let missing = runtime.submit(&provider_result(
+        "in-missing",
+        1_700_000_003_000,
+        &sole_effect(&read).effect_id,
+        vec![tool_call("c2", "read_result", serde_json::json!({ "call_id": "dep:wf-node9" }))],
+    ));
+    assert_eq!(kinds(&missing), vec![EffectKindTag::CallProvider]);
+    assert!(history_text(&runtime).iter().any(|line| line.contains("no dependency output from wf-node9")));
 }

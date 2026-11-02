@@ -99,12 +99,9 @@ export interface KernelWorkflowSpawnNode {
   model_hint?: string
   trust?: string
   output_schema?: Record<string, unknown>
-  reducer?: string
   input_agent_ids?: string[]
   dependency_outputs?: Record<string, string>
-  judge_match?: { left: string; right: string }
-  loop_max_iters?: number
-  classify_labels?: string[]
+  dependency_brief?: string
   token_budget?: number
   max_turns?: number
   max_wall_ms?: number
@@ -138,12 +135,9 @@ export function workflowSpawnNodeFromKernel(node: KernelWorkflowSpawnNode): Work
     ...(node.model_hint !== undefined ? { model_hint: node.model_hint } : {}),
     ...(node.trust !== undefined ? { trust: node.trust } : {}),
     ...(node.output_schema !== undefined ? { output_schema: node.output_schema } : {}),
-    ...(node.reducer !== undefined ? { reducer: node.reducer } : {}),
     ...(node.input_agent_ids !== undefined ? { input_agent_ids: node.input_agent_ids } : {}),
     ...(node.dependency_outputs !== undefined ? { dependency_outputs: node.dependency_outputs } : {}),
-    ...(node.judge_match !== undefined ? { judge_match: node.judge_match } : {}),
-    ...(node.loop_max_iters !== undefined ? { loop_max_iters: node.loop_max_iters } : {}),
-    ...(node.classify_labels !== undefined ? { classify_labels: node.classify_labels } : {}),
+    ...(node.dependency_brief ? { dependency_brief: node.dependency_brief } : {}),
     ...(node.token_budget !== undefined ? { token_budget: node.token_budget } : {}),
     ...(node.max_turns !== undefined ? { max_turns: node.max_turns } : {}),
     ...(node.max_wall_ms !== undefined ? { max_wall_ms: node.max_wall_ms } : {}),
@@ -169,7 +163,7 @@ export function workflowBudgetFromKernel(budget: KernelWorkflowBudget): Workflow
 }
 
 export type KernelRunnerAction =
-  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[]; contextEffect: Record<string, unknown> }
+  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[] }
   | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
   | {
       kind: "request_approval"
@@ -241,6 +235,12 @@ export interface KernelObservation {
   // K1 `knowledge_swept`: keyed entries dropped by a boundary sweep of the knowledge partition.
   removed_keys?: string[]
   tokens_freed?: number
+  // lifecycle_report (plan 4.1): end-of-run context lifecycle metrics.
+  knowledge_entries?: number
+  knowledge_referenced?: number
+  regret?: number
+  waste_tokens?: number
+  cache_loss_tokens?: number
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string

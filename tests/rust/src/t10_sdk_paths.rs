@@ -67,7 +67,6 @@ where
 {
     let mut plane = LocalExecutionPlane::new();
     let mut opts = RuntimeOptions {
-        artifact_set_digest: None,
         provider: Box::new(make_provider()),
         execution_plane: None,
         session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -83,6 +82,7 @@ where
         memory_scope: None,
         system_prompt: None,
         initial_memory: vec![],
+        dependency_outputs: Default::default(),
         skill_dir: None,
         memory_store: None,
         knowledge_source: None,

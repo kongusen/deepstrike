@@ -1,11 +1,9 @@
-// `@deepstrike/sdk/workflow` — multi-agent orchestration: the sub-agent host, reducers, spec builders,
+// `@deepstrike/sdk/workflow` — multi-agent orchestration: the sub-agent host, spec builders,
 // workflow node tools, agent/milestone types, and the collaboration (contract/handoff/mode) layer.
 // The root package exports `runFanout`, `AgentPool`, `WorkflowSpec`/`WorkflowNodeSpec`; the advanced
 // machinery lives here.
 export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "../runtime/sub-agent-orchestrator.js"
 export type { SubAgentRunContext } from "../runtime/sub-agent-orchestrator.js"
-export { builtinReducers, resolveReducer } from "../runtime/reducers.js"
-export type { Reducer, ReducerRegistry, ReducerInput } from "../runtime/reducers.js"
 export { FileWorkflowStore } from "../runtime/workflow-store.js"
 export {
   DynamicWorkflowArtifactCatalog,
@@ -97,7 +95,6 @@ export type {
   WorkflowSpawnInfo,
   WorkflowTaskSpec,
   WorkflowDependencyPolicy,
-  WorkflowContextInclude,
   WorkflowDependencyMode,
   WorkflowContextPolicy,
   WorkflowNodeStatus,

@@ -14,11 +14,8 @@
 | --- | --- |
 | 并行研究 | 独立节点同时运行。 |
 | 有序交接 | `dependsOn` 把上游输出交给下游 Agent。 |
-| 条件分支 | `classify` 选择一个分支。 |
-| 迭代工作 | `loop` 在 `maxIters` 内重复任务。 |
-| 方案竞争 | `tournament` 生成并评判多个方案。 |
+| 分支、迭代、方案竞争 | 由宿主程序（`runDynamicWorkflow`）或模型的 `submit_workflow_nodes` 决定下一步跑什么。 |
 | 可靠数据 | `outputSchema` 校验节点结果。 |
-| 无模型合并 | Reducer 不再调用模型，直接合并输出。 |
 
 工作流是一份可复用的 Agent 团队计划。应用提供 Provider 和工具，runtime 负责让依赖、限制和恢复过程保持明确。
 
@@ -31,7 +28,6 @@ WorkflowSpec
   └── WorkflowNodeSpec[]  # 每个节点 = 一个 sub-agent run
         ├── task / role / isolation
         ├── depends_on[]  # DAG 边
-        ├── loop / classify / tournament / reducer  # 控制流
         └── submit_workflow_nodes / start_workflow  # 运行时扩展
 ```
 
@@ -91,49 +87,13 @@ ver = verify_rules(["rule1", "rule2"], "skeptic summary")
 
 ---
 
-## Level 4：控制流节点
+## Level 4：分支、迭代与竞争
 
-### Loop 节点
+DAG 节点只有一种：运行一次的 agent。分支、循环和锦标赛属于控制流，由宿主决定：
 
-```python
-WorkflowNodeSpec(
-    task="逐项处理清单",
-    role="implement",
-    loop={"max_iters": 5},
-    depends_on=[0],
-)
-```
-
-Agent 可在输出中带 `{"loop_continue": false}` 提前结束。SDK helper：`loop_instruction()`、`extract_loop_continue()`。
-
-### Classify 节点
-
-```python
-WorkflowNodeSpec(
-    task="分类用户意图",
-    role="plan",
-    classify={
-        "branches": [
-            {"label": "bug", "nodes": [1, 2]},
-            {"label": "feature", "nodes": [3]},
-        ]
-    },
-)
-```
-
-Agent 返回 `{"branch": "bug"}` → kernel 运行对应分支，prune 其余。
-
-### Tournament 节点
-
-```python
-WorkflowNodeSpec(
-    task="选择最佳方案",
-    role="verify",
-    tournament={"entrants": ["方案 A 描述", "方案 B 描述"]},
-)
-```
-
-并行生成 entrant → 两两 judge → 选出 winner。
+- **宿主程序**：在 `runDynamicWorkflow()` 的程序里用普通代码写 `if` / `for` / 两两比较，每次 `agent()` 调用都经过 kernel 准入（见下文「Node 动态工作流」）。
+- **模型决定**：节点调用 `submit_workflow_nodes`，只提交它选中的分支或下一轮迭代。
+- **带反馈的重试**：`gen_eval` 模板配合 `AttemptLoop`。
 
 ---
 
@@ -151,18 +111,6 @@ Agent 可在 run 中调用 meta-tools：
 Top-level agent 通过 `start_workflow` 自动切换到新 workflow，完成后恢复原有推理循环。
 
 ---
-
-## Reduce 节点（无 LLM）
-
-```python
-WorkflowNodeSpec(
-    task="合并输出",
-    reducer="union",  # 或自定义 reducer
-    depends_on=[0, 1, 2],
-)
-```
-
-注册自定义 reducer：`RuntimeOptions(reducers={**builtin_reducers(), "my_merge": fn})`
 
 ## Node 动态工作流
 
@@ -208,7 +156,7 @@ const reviews = await runner.runDynamicWorkflow(async ({ args, parallelAgents })
 
 - [WorkflowNodeSpec 参考](../reference/workflow-node-spec)
 - [Sub-Agent 与协作](./sub-agents-and-collaboration)
-- [结构化输出与 Reducer](./structured-output-and-reducers)
+- [结构化输出](./structured-output-and-reducers)
 - [Provider 路由](./provider-routing)
 - [RunGroup 预算](../concepts/run-group-budget)
 - 测试：`python/tests/test_workflow_drive.py`
