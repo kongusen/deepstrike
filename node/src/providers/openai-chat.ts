@@ -189,12 +189,12 @@ function validateCanonicalReplay(
   if (dialect.requireReasoningReplay(prepared) && prepared.degradeMissingReasoningReplay !== true) {
     const missing = input.context.turns.flatMap(message =>
       message.role === "assistant" && message.toolCalls?.length
-      && !(typeof message.providerReplay?.reasoning_content === "string" && message.providerReplay.reasoning_content.trim())
+      && typeof message.providerReplay?.reasoning_content !== "string"
         ? message.toolCalls.map(call => call.id)
         : [],
     )
     if (missing.length) {
-      throw new Error(`${dialect.providerId}/${input.resolved.identity.modelId} replay requires non-empty reasoning_content for assistant tool call turn ${missing.join(", ")}`)
+      throw new Error(`${dialect.providerId}/${input.resolved.identity.modelId} replay requires the reasoning_content the model returned for assistant tool call turn ${missing.join(", ")}`)
     }
   }
 }

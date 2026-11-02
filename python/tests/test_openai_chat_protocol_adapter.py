@@ -84,6 +84,17 @@ def test_adapter_decodes_minimax_complete_replay_and_rejects_malformed_usage() -
         )
 
 
+def test_deepseek_tool_turn_without_reasoning_replays_it_empty() -> None:
+    # DeepSeek sometimes answers a tool-call turn without reasoning. Thinking mode requires the
+    # field on every replayed tool-call turn and accepts it empty.
+    adapter = OpenAIChatAdapter()
+    state = adapter.create_stream_state(_input("deepseek", "deepseek-chat", {}), OPENAI_CHAT_DIALECTS["deepseek"])
+    call = adapter.push_stream_chunk({"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "id": "call_1", "function": {"name": "lookup", "arguments": '{"q":"x"}'}},
+    ]}, "finish_reason": "tool_calls"}]}, state)
+    assert call.replay["reasoning_content"] == ""
+
+
 def test_adapter_assembles_stream_events_usage_and_deepseek_replay() -> None:
     adapter = OpenAIChatAdapter()
     state = adapter.create_stream_state(_input("deepseek", "deepseek-chat", {"expose_reasoning": True}), OPENAI_CHAT_DIALECTS["deepseek"])

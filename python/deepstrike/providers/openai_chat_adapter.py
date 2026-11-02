@@ -190,7 +190,9 @@ class OpenAIChatAdapter:
         if dialect.replay_strategy == "generic_stream":
             return {"protocol": "openai-chat", "reasoning_content": reasoning_content} if phase == "stream" and (tool_calls or reasoning_content) else None
         if dialect.replay_strategy == "deepseek":
-            if not reasoning_content.strip():
+            # A tool-call turn the model answered without reasoning still replays its empty
+            # reasoning: thinking mode requires the field on every tool-call turn and accepts it empty.
+            if not reasoning_content.strip() and not tool_calls:
                 return None
             result: dict[str, Any] = {
                 "provider": dialect.provider_id, "protocol": "openai-chat",

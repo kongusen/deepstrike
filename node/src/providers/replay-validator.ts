@@ -149,7 +149,7 @@ export function patchMissingToolResults(turns: ModelMessage[]): ModelMessage[] {
 
 /**
  * Pure, throw-free assessment: which assistant tool-call turns lack the
- * non-empty reasoning replay a reasoning-requiring provider needs. Lets an
+ * reasoning replay a reasoning-requiring provider needs (possibly empty, as the model returned it). Lets an
  * embedder decide per-candidate whether to keep thinking on, disable it, or
  * skip the candidate — before sending.
  */
@@ -161,8 +161,7 @@ export function assessReasoningReplay(
   for (const message of turns) {
     if (message.role !== "assistant" || !message.toolCalls?.length) continue
     const replay = options.replayForAssistant?.(message)
-    const reasoning = typeof replay?.reasoning_content === "string" ? replay.reasoning_content.trim() : ""
-    if (!reasoning) {
+    if (typeof replay?.reasoning_content !== "string") {
       for (const tc of message.toolCalls) offendingCallIds.push(tc.id)
     }
   }
@@ -175,7 +174,7 @@ function reasoningReplayError(
 ): ProviderReplayValidationError {
   const provider = descriptor ? `${descriptor.provider}/${descriptor.model}` : "provider"
   return new ProviderReplayValidationError(
-    `${provider} replay requires non-empty reasoning_content for assistant tool call turn ${callIds.join(", ")}. ` +
+    `${provider} replay requires the reasoning_content the model returned for assistant tool call turn ${callIds.join(", ")}. ` +
     "Disable thinking, rebuild this history with provider replay, switch to a provider that can replay this turn, " +
     "or pass extensions.degradeMissingReasoningReplay to send a degraded turn.",
   )

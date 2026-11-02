@@ -119,7 +119,7 @@ export class OpenAIChatProvider implements LLMProvider {
     const offendingCallIds = context.turns.flatMap(message => {
       if (message.role !== "assistant" || !message.toolCalls?.length) return []
       const replay = this.peekProviderReplay(message)
-      return typeof replay?.reasoning_content === "string" && replay.reasoning_content.trim()
+      return typeof replay?.reasoning_content === "string"
         ? []
         : message.toolCalls.map(call => call.id)
     })

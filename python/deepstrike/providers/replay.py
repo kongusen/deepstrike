@@ -127,7 +127,7 @@ class ReasoningReplayMixin:
 
     def assess_reasoning(self, context: RenderedContext) -> dict:
         """Raise-free pre-flight check: which assistant tool-call turns in
-        ``context`` lack the non-empty reasoning replay this provider needs."""
+        ``context`` lack the reasoning replay this provider needs."""
         return assess_reasoning_replay(
             context.turns,
             lambda content, tool_calls: self._replay_fields.get(

@@ -104,7 +104,7 @@ def test_validator_accepts_matched_tool_result():
 
 def test_deepseek_reasoning_model_fails_fast_without_reasoning_replay():
     provider = deepseek(api_key="k", model="deepseek-v4-flash")
-    with pytest.raises(ProviderReplayValidationError, match="non-empty reasoning_content"):
+    with pytest.raises(ProviderReplayValidationError, match="requires the reasoning_content the model returned"):
         provider._build_messages(_tool_call_context())
 
 
@@ -122,6 +122,18 @@ def test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text():
     msgs = provider._build_messages(_tool_call_context())
     assistant = next(m for m in msgs if m["role"] == "assistant")
     assert assistant["reasoning_content"] == "thinking"
+
+
+def test_deepseek_replays_the_empty_reasoning_the_model_returned():
+    provider = deepseek(api_key="k", model="deepseek-v4-flash")
+    provider.seed_provider_replay(
+        "calling", [ToolCall(id="c1", name="ping", arguments="{}")],
+        {"protocol": "openai-chat", "reasoning_content": ""},
+    )
+    msgs = provider._build_messages(_tool_call_context())
+    assistant = next(m for m in msgs if m["role"] == "assistant")
+    assert assistant["reasoning_content"] == ""
+
 
 def test_validator_rejects_missing_tool_result():
     provider = deepseek(api_key="k", model="deepseek-chat")

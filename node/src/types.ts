@@ -517,7 +517,7 @@ export interface ProviderTransportTelemetry {
 export interface ReplayabilityAssessment {
   /** True when every reasoning-requiring tool-call turn has replay available. */
   ok: boolean
-  /** Tool-call ids whose turn lacks the required non-empty reasoning replay. */
+  /** Tool-call ids whose turn lacks the reasoning replay the provider requires. */
   offendingCallIds: string[]
 }
 

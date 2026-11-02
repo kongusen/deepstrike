@@ -207,7 +207,8 @@ class OpenAIProvider(ReasoningReplayMixin):
                 self.remember_reasoning_for_turn(content, tool_calls, reasoning.reasoning_content)
             return
         if dialect.replay_strategy == "deepseek":
-            if not reasoning.reasoning_content.strip():
+            # A tool-call turn the model answered without reasoning still replays its empty reasoning.
+            if not reasoning.reasoning_content.strip() and not tool_calls:
                 return
             envelope: dict[str, Any] = {
                 "provider": dialect.provider_id, "protocol": "openai-chat",
