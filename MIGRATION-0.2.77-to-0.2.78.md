@@ -39,6 +39,9 @@ seq. Node, Python, and WASM return them unchanged, with a `kind` outside the `Se
 - The turn-1 `→ focus:` footer repeats only the goal's first paragraph (at most 240 characters),
   not the whole goal. Tests matching the full goal in the footer need to match its first paragraph.
 - The session log gains `context_lifecycle_reported`, written once at the end of each run.
+- A recalled memory index line leaves at the next compaction or renewal boundary once 8 turns
+  pass without it being recalled again or referenced. A host that relied on recall lines staying
+  for the whole run should pin the records it needs (`pinned: true` knowledge).
 - A workflow node's dependency outputs default to `handle`: the brief shows a 600-character preview
   of each output, and the node reads the rest with `read_result(call_id="dep:<agent_id>")`. 0.2.77
   inlined each output up to `maxTokens`. Set `context: { dependencyMode: "full" }` (Node) or

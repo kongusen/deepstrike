@@ -85,9 +85,9 @@ ContextItem {
 
 ### 阶段 1：ContextItem 统一模型（修 Q1、Q3）
 
-- [x] 任务 1.1a（2026-11-02）：新增 `context/item.rs`：`ContextItem`（origin / lease / value）与 origin 默认值表（`ItemOrigin::defaults`，11 种 origin 各有 scope / fidelity / lease / authority）。knowledge 分区的条目改为 `ContextItem`，`KnowledgeEntry` 删除；宿主写入的 knowledge 按 key 定 origin（`skill:` → skill，其余 → reference），kernel recall 为 `memory_recall`，治理提示为 `system`。lease 四种：permanent、until_boundary、turns(n)、single_use，到期后标记为在下一个 boundary 离开（不在缓存代内改写 system[1]）。recall 的 index line 默认 `turns(8)`，从最近一次 recall 或引用起算，`memory(record_id)` 读取算作引用并标记 `expanded`。`lease_remaining_steps` 改为从 lease 计算。checkpoint 的 knowledge slot 带上 origin、lease、离开原因和 value，`retired_items` 记录已离开的 item；0.2.78 的 checkpoint 仍可恢复（`memory:` key 推断为 recall）。未做：`until(event)` lease；scope / fidelity / authority 目前只是表中的描述，尚无行为。
-- [x] 任务 1.1b（2026-11-02，部分）：每条 history 消息带 `ItemTag { id, origin, injected_turn }`，id 按到达顺序分配、不复用，随压缩归档、renewal 携带和 checkpoint（`history_items`、`last_item_id`）保留；0.2.78 checkpoint 中的消息恢复为 id 0。origin 由角色决定（user / assistant / tool_result / system）。handle 仍按 call_id 锚定到 tool_result item，其 residency 即该 item 的 fidelity（Resident = full，Collapsed / External / PagedOut = handle）。`read_result` 读取旧 tool result 或 `dep:` 依赖输出记为 read-back。lifecycle report 的 `history` 按 origin 汇总：进入过 history 的 item 数和 token、结束时仍在 history 的、read-back 次数。
-  - 未做（移到 1.1c 一起做）：`ContextPartitions` 改为 item 表上的渲染视图。压缩管线仍按位置操作 `Partition`，item 标签只是随行；history item 的逐条明细只做了按 origin 汇总（逐条列出会让长任务的报告过大）。
+- [x] 任务 1.1a（2026-11-02）：新增 `context/item.rs`：`ContextItem`（origin / lease / value）与 origin 默认值表（`ItemOrigin::defaults`，11 种 origin 各有 scope / fidelity / lease / authority）。knowledge 分区的条目改为 `ContextItem`，`KnowledgeEntry` 删除；宿主写入的 knowledge 按 key 定 origin（`skill:` → skill，其余 → reference），kernel recall 为 `memory_recall`，治理提示为 `system`。lease 四种：permanent、until_boundary、turns(n)、single_use，到期后标记为在下一个 boundary 离开（不在缓存代内改写 system[1]）。recall 的 index line 默认 `turns(8)`，从最近一次 recall 或引用起算，`memory(record_id)` 读取算作引用并标记 `expanded`。`lease_remaining_steps` 改为从 lease 计算。checkpoint 的 knowledge slot 带上 origin、lease、离开原因和 value，`retired_items` 记录已离开的 item；缺 origin 的 slot 按 key 推断（`memory:` → recall）。未做：`until(event)` lease；scope / fidelity / authority 目前只是表中的描述，尚无行为。
+- [x] 任务 1.1b（2026-11-02，部分）：每条 history 消息带 `ItemTag { id, origin, injected_turn }`，id 按到达顺序分配、不复用，随压缩归档、renewal 携带和 checkpoint（`history_items`、`last_item_id`）保留；缺 `history_items` 的 checkpoint 恢复为 id 0。origin 由角色决定（user / assistant / tool_result / system）。handle 仍按 call_id 锚定到 tool_result item，其 residency 即该 item 的 fidelity（Resident = full，Collapsed / External / PagedOut = handle）。`read_result` 读取旧 tool result 或 `dep:` 依赖输出记为 read-back。lifecycle report 的 `history` 按 origin 汇总：进入过 history 的 item 数和 token、结束时仍在 history 的、read-back 次数。
+  - 未做（0.2.79 完成）：`ContextPartitions` 改为 item 表上的渲染视图。压缩管线仍按位置操作 `Partition`，item 标签只是随行；history item 的逐条明细只做了按 origin 汇总（逐条列出会让长任务的报告过大）。
 - ~~原任务 1.1：kernel 引入 `ContextItem`、item 表和 origin 默认值表~~
   - 验收：`ContextPartitions` 变成 item 表上的渲染视图；`KnowledgeEntry`、history message、handle 都映射为 item，旧类型删除。一张表定义每种 origin 的默认 scope/fidelity/lease/authority（例如 `memory_recall → session / handle(index line) / turns(N) / host`），宿主没有直接写分区的 API。`mm/value.rs` 里一直是 `None` 的 `lease_remaining_steps` 改为从 lease 计算。
   - 验证：现有 renderer 和 compression 测试迁到新模型后通过；每种 lease 有到期测试。
@@ -190,19 +190,19 @@ ContextItem {
 
 ## 交接（2026-11-02）
 
-分支 `feat/context-lifecycle-stage0`。已提交：`cbd7fe96`（阶段 0–3、4.1、6.1）、`382ce943`（确定性基准）。以下改动尚未提交：
+分支 `feat/context-lifecycle-stage0`。以下各项都已提交（`fda3aeb6` 及之后）：
 
 - `orchestration/workflow/mod.rs`：新增 `DependencyContext::readable`，只有被 brief 截掉部分的依赖输出才随 spawn 下发（`dependency_outputs`），完整显示的输出不再提供 `read_result`。测试 `only_a_clipped_output_is_readable`；golden `golden_lifecycle_workflow_root.json` 已重新 bless。
 - `context/renderer.rs`：turn 1 的 `→ focus:` 页脚只重复目标的第一段（最多 240 字符）。之前页脚复制整个 goal，而 goal 后面拼了 dependency brief，导致 brief 每次调用发两遍（24k → 49k）。测试 `the_focus_footer_repeats_only_the_goal_head`。
 - `benchmark/context-lifecycle/live.mjs`：新文件，见任务 4.3 第二步；provider 错误会写进结果的 `error`，不再表现为空答案。
-- 已验证：core 1101 通过，Node 1403 通过。**未跑**：Rust SDK、WASM、Python、`npm run contracts:check`、`npm run test:conformance`、`node scripts/check-sdk-parity.mjs`。提交前补跑，并在 CHANGELOG / MIGRATION 记录这两处行为变化。
+- 已验证：四个 SDK、contracts、parity、conformance 全部通过；CHANGELOG / MIGRATION 已记录。
 
 已知问题：
 
 - ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
 - `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
 
-下一步：见下面的“版本规划”，当前在 0.2.78 的第 1 项。
+下一步：见下面的“版本规划”。0.2.78 等待 CI 通过后合入，接着做 0.2.79。
 
 换设备时的环境准备：
 
@@ -218,17 +218,18 @@ ContextItem {
 
 | 版本 | 内容 | 状态 |
 |------|------|------|
-| 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1 汇总、6.1；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 待合并 |
-| 0.2.79 | 1.1a/1.1b：ContextItem 与 origin 默认值表，knowledge、history、handle 都映射为 item，lease 到期；4.1 逐 item 明细与 recall 命中率 | 已完成（渲染视图移到 0.2.81 的 1.1c） |
+| 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1、6.1；1.1a 与 1.1b 的 item 身份部分；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 待合并 |
+| 0.2.79 | 1.1 收尾，要求完整：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 未开始 |
 | 0.2.80 | 4.3 lab 工具（`deepstrike-lab`）；4.2 引用证据分级与 `RelevanceJudge`，用 lab 对比纯词法版本 | 未开始 |
-| 0.2.81 | 1.1c：`ContextPartitions` 改为 item 表上的渲染视图；item 稳定 id 进入消息 ABI，provider replay 改按 id 作 key（替代按内容作 key，Anthropic native blocks 一并改）；5.1 吸收 provider 改写（与 1.1c 共用一次 ABI 扩展）；6.2 blackboard；6.3 Python、WASM 宿主程序 API | 未开始 |
+| 0.2.81 | 1.1c：item 稳定 id 进入消息 ABI，provider replay 改按 id 作 key（替代按内容作 key，Anthropic native blocks 一并改）；5.1 吸收 provider 改写（与 1.1c 共用一次 ABI 扩展）；6.2 blackboard；6.3 Python、WASM 宿主程序 API | 未开始 |
 
 0.2.78 剩余步骤：
 
 1. ~~重跑三个变体，每组 24 题~~（已完成，结果见 4.3 第二步重跑）。~~默认 edge mode~~：已改为 `handle`，见 MIGRATION。
    附带修复：DeepSeek 不给 reasoning 的 tool call 轮次改为回放空的 `reasoning_content`。
 2. ~~任务 6.3 的 Rust 部分~~（已完成，`34850587`）：workflow 节点作为子 run 在父 runner 的 provider 和 plane 上运行，带依赖输出；模型提交的 `start_workflow` / `submit_workflow_nodes` 参数降为 canonical DAG。未做：信号驱动的抢占监控（Node 的 `monitorWorkflowPreemption`）、节点完成写入会话日志以支持恢复、Rust 侧 `start_workflow` 工具 schema 的导出。
-3. ~~同步删除清单，升版本号到 0.2.78，开 PR~~（已完成）。
+3. ~~同步删除清单，升版本号到 0.2.78，开 PR~~（已完成，PR #4）。
+4. ~~1.1a 与 1.1b 的 item 身份部分并入 0.2.78~~（已完成）。PR #4 的 docs 检查因缺英文版计划和 `memory-candidate-abi` 失败，已补 `docs/en/` 两份。
 
 零散未做项（2.1 plan 变更时召回、3.2 Full 的 token 代价、3.1 的 `fields` 切片、`benchmark-0.2.74` 版本守卫）不单独排期，在碰到相关代码的版本里顺带完成。
 
@@ -239,7 +240,7 @@ ContextItem {
 | ~~`context/execution.rs`、`evolution.rs`、四个 SDK 的 `shared_evidence.*` 和 `evolution.*`~~（已删） | 0.1 |
 | ~~`context_prepared` 事件、`prepare_context_dispatch`、conformance 中的 digest 比对、`EvaluationContextBinding`~~（已删） | 0.1 |
 | ~~`verifiable.rs`、chain_validator、CLI~~（已删，C1/C3 由 restore 自检覆盖） | 0.2 |
-| `KnowledgeEntry` 等旧分区类型（被 item 取代） | 1 |
+| ~~`KnowledgeEntry`~~（已删）；`Partition` 等按位置存储的分区类型（0.2.79 被 item 表取代） | 1 |
 | ~~四个 `prefetchMemory`、三个 `recall-projection.*` 的投影逻辑~~（已删；文件只剩 `memoryFetchRecall` 点查） | 2 |
 | ~~三个 `workflow-control-flow.*`（含 `summarizeDependency`）、边的 `summary` 模式~~（已删；`reference` 模式保留） | 2、3 |
 | ~~`NodeKind::Loop/Classify/Tournament`、`orchestration/tournament.rs`~~（已删，连同 Reduce） | 6 |

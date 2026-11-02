@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.78] - 2026-11-02
+
 ### Added
 
 - The end-of-run `context_lifecycle_reported` event carries `recalled` and `recall_expanded`
@@ -17,20 +19,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `tool_result`, `dependency_output`, …), how many items entered history and their tokens, how many
   were still there at the end, and how often the model read one back with `read_result`.
 - Every history message has a stable item id and origin, kept through compaction, renewal and
-  checkpoints (`history_items`). Messages restored from a 0.2.78 checkpoint have id 0.
-
-### Changed
-
-- Knowledge entries are context items with an origin (`system`, `skill`, `memory_recall`,
-  `reference`, …) whose lease comes from one origin table. A recalled memory index line now leaves
-  at the next compaction or renewal boundary once 8 turns pass without it being recalled again or
-  referenced; reading it with `memory(record_id)` counts as a reference. Pinned and host-seeded
-  knowledge is unaffected. Checkpoints written by 0.2.78 restore unchanged.
-
-## [0.2.78] - 2026-11-02
-
-### Added
-
+  checkpoints (`history_items`).
 - Added a durable file-backed memory candidate ledger for Node, Python, and Rust. It provides
   `(agent_id, candidate_id)` idempotency, conflict receipts, pending-to-terminal resolution,
   crash-recoverable snapshots, and a durable outbox. WASM continues to use a host-injected sink.
@@ -82,6 +71,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Knowledge entries are context items with an origin (`system`, `skill`, `memory_recall`,
+  `reference`, …) whose lease comes from one origin table. A recalled memory index line now leaves
+  at the next compaction or renewal boundary once 8 turns pass without it being recalled again or
+  referenced; reading it with `memory(record_id)` counts as a reference. Pinned and host-seeded
+  knowledge is unaffected.
 - A workflow node's child run holds its dependencies' outputs in its own kernel
   (`initial_context.dependencies`). When the brief clips an output, it says so and the model reads
   the whole output with `read_result(call_id="dep:<agent_id>")`, answered by the kernel without a

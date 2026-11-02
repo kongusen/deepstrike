@@ -16,7 +16,7 @@ pub const RECALL_LEASE_TURNS: u32 = 8;
 
 /// An item's identity within one operation: allocated in arrival order, never reused, carried
 /// through compaction, renewal and checkpoints. `0` marks an item the kernel did not admit itself
-/// (a message restored from a checkpoint that predates item ids).
+/// (a message restored from a checkpoint without item ids).
 pub type ItemId = u64;
 
 /// The identity a history message carries as an item.

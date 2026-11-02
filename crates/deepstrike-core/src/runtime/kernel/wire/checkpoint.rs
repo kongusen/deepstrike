@@ -667,7 +667,7 @@ pub struct ContextVmState {
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub item_turn: u32,
     /// Plan task 1.1b · the item identity of each history message, aligned with the history
-    /// entries of `messages`. Absent in 0.2.78 checkpoints: those messages restore untracked.
+    /// entries of `messages`. Absent ⇒ the messages restore untracked (id 0).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history_items: Vec<ItemTag>,
     /// The last item id handed out, so a restored kernel never reissues one.
@@ -922,7 +922,7 @@ pub struct KnowledgeSlotState {
     /// Rendered in the state turn until the next boundary promotes it into system[1].
     #[serde(default)]
     pub staged: bool,
-    /// Plan task 1.1 · the item's origin. Absent in 0.2.78 checkpoints: a `memory:` key is then a
+    /// Plan task 1.1 · the item's origin. Absent ⇒ a `memory:` key is a
     /// recall and any other key follows [`ItemOrigin::for_host_key`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<ItemOrigin>,
