@@ -685,14 +685,12 @@ pub struct ContextVmState {
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub retired_history_omitted: u32,
     /// Plan task 5.1 · the uncalibrated estimate of the last provider request still waiting for
-    /// its observed count, and the calibration factor in parts per million (absent = identity).
+    /// its observed count, and the recent (estimate, provider count) pairs the calibration is
+    /// fitted on.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub last_request_estimate: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub estimate_calibration_ppm: Option<u32>,
-    /// The estimated tokens the calibration was fitted on (absent = the prior weight).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub estimate_calibration_weight: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub estimate_samples: Vec<[u32; 2]>,
     /// Plan task 1.1c · provider replay state kept with assistant history items.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub item_replays: Vec<ItemReplayState>,
@@ -973,6 +971,10 @@ pub struct KnowledgeSlotState {
     pub expanded: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub paged_in_after_evict: bool,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub strong_refs: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub lexical_refs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

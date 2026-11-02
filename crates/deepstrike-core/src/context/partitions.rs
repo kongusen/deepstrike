@@ -352,6 +352,7 @@ impl KnowledgePartition {
             Some(entry) => {
                 entry.value.expanded = true;
                 entry.value.ref_count = entry.value.ref_count.saturating_add(1);
+                entry.value.strong_refs = entry.value.strong_refs.saturating_add(1);
                 entry.value.last_referenced_turn = Some(turn);
                 if entry.leaving == Some(ItemEnd::Expired) {
                     entry.leaving = None;
@@ -430,33 +431,51 @@ impl KnowledgePartition {
             .map(|entry| &entry.message)
     }
 
-    /// Record references from a journal-derived history message. This is deliberately driven by
-    /// committed input, never by render-time wall clocks. Exact keyed references always count;
-    /// otherwise two shared content terms (one for a one-term entry) are required.
+    /// Record references from a journal-derived history message, graded by evidence (plan task
+    /// 4.2). Strong: a tool call passes the item's key or record id, or the text names the key.
+    /// Lexical, the fallback: the message shares the item's distinctive terms (two, or one for an
+    /// item with a single one) — common words and the kernel's own index-line vocabulary do not
+    /// count. Driven by committed input only, never by a wall clock.
     pub fn observe_references(&mut self, message: &CoreMessage, step: u64) {
         let text = searchable_message_text(message);
-        let input_terms = lexical_terms(&text);
-        if text.is_empty() || input_terms.is_empty() {
+        if text.is_empty() {
             return;
         }
+        let input_terms = distinctive_terms(&text);
         let folded = text.to_lowercase();
+        let arguments: Vec<String> = message
+            .tool_calls
+            .iter()
+            .map(|call| call.arguments.to_string().to_lowercase())
+            .collect();
         let turn = self.turn;
         for entry in &mut self.entries {
             if entry.is_leaving() {
                 continue;
             }
-            let exact_key = entry
-                .key
+            let key = entry.key.as_deref().filter(|key| key.len() >= 3).map(str::to_lowercase);
+            let record = key
                 .as_deref()
-                .filter(|key| key.len() >= 3)
-                .is_some_and(|key| folded.contains(&key.to_lowercase()));
-            let entry_text = searchable_message_text(&entry.message);
-            let entry_terms = lexical_terms(&entry_text);
-            let overlap = entry_terms.intersection(&input_terms).count();
-            let lexical_hit =
-                !entry_terms.is_empty() && overlap >= if entry_terms.len() == 1 { 1 } else { 2 };
-            if exact_key || lexical_hit {
+                .and_then(|key| key.strip_prefix("memory:"))
+                .filter(|id| id.len() >= 3)
+                .map(|id| format!("\"{id}\""));
+            let strong = key.as_deref().is_some_and(|key| {
+                folded.contains(key) || arguments.iter().any(|args| args.contains(key))
+            }) || record
+                .as_deref()
+                .is_some_and(|id| arguments.iter().any(|args| args.contains(id)));
+            let lexical = !strong && {
+                let entry_terms = distinctive_terms(&item_text(&entry.message));
+                let overlap = entry_terms.intersection(&input_terms).count();
+                !entry_terms.is_empty() && overlap >= if entry_terms.len() == 1 { 1 } else { 2 }
+            };
+            if strong || lexical {
                 entry.value.ref_count = entry.value.ref_count.saturating_add(1);
+                if strong {
+                    entry.value.strong_refs = entry.value.strong_refs.saturating_add(1);
+                } else {
+                    entry.value.lexical_refs = entry.value.lexical_refs.saturating_add(1);
+                }
                 entry.value.last_referenced_step = Some(step);
                 entry.value.last_referenced_turn = Some(turn);
             }
@@ -467,7 +486,12 @@ impl KnowledgePartition {
         let entry = self.entries.get(index)?;
         Some(deterministic_retention_score(RetentionFeatures {
             pinned: entry.pinned,
-            use_count: entry.value.ref_count,
+            // A strong reference weighs as four lexical ones.
+            use_count: entry
+                .value
+                .strong_refs
+                .saturating_mul(4)
+                .saturating_add(entry.value.lexical_refs),
             last_used_step: entry.value.last_referenced_step,
             current_step,
             lease_remaining_steps: entry.lease_remaining_turns(self.turn).map(u64::from),
@@ -634,6 +658,40 @@ fn searchable_message_text(message: &CoreMessage) -> String {
         values.push(call.arguments.to_string());
     }
     values.join(" ")
+}
+
+/// An item's own words: a kernel index line's bracketed header (`[MEMORY record_id=… kind=…]`)
+/// is vocabulary every recall shares, not what the item is about.
+fn item_text(message: &CoreMessage) -> String {
+    let text = searchable_message_text(message);
+    match text.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+        Some((_, body)) => body.to_string(),
+        None => text,
+    }
+}
+
+/// Words too common to show that a message is about an item.
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "are", "with", "that", "this", "from", "into", "each", "every", "all",
+    "any", "not", "but", "you", "your", "our", "its", "was", "were", "has", "have", "had", "will",
+    "can", "may", "per", "use", "used", "one", "two", "out", "now", "new", "only", "also", "than",
+    "then", "them", "they", "when", "what", "which", "who", "how", "why", "where", "there",
+    "their", "these", "those", "same", "other", "more", "most", "some", "such", "over", "after",
+    "before", "during", "about", "above", "below", "between", "both", "same", "way", "own",
+];
+
+/// The terms that can tie a message to an item: lexical terms of at least three characters that
+/// are not common words or plain numbers (Han bigrams always count).
+fn distinctive_terms(text: &str) -> std::collections::BTreeSet<String> {
+    lexical_terms(text)
+        .into_iter()
+        .filter(|term| {
+            term.chars().any(is_han)
+                || (term.chars().count() >= 3
+                    && !term.chars().all(|c| c.is_ascii_digit())
+                    && !STOPWORDS.contains(&term.as_str()))
+        })
+        .collect()
 }
 
 fn lexical_terms(text: &str) -> std::collections::BTreeSet<String> {
@@ -896,6 +954,40 @@ mod tests {
         assert_eq!(text_of(&p), vec!["existing", "fresh"]);
         assert_eq!(p.token_count, 7);
         assert!(p.entries[1].pinned);
+    }
+
+    #[test]
+    fn references_are_graded_and_common_words_are_not_evidence() {
+        let mut p = KnowledgePartition::new();
+        let note = |p: &mut KnowledgePartition, key: &str, text: &str| {
+            p.push_entry(Some(key.into()), CoreMessage::system(text), 8, false);
+        };
+        note(&mut p, "initial:0", "Ledger amounts are in US dollars with two decimals.");
+        note(&mut p, "initial:1", "The cafeteria menu changes every Tuesday and Thursday.");
+        note(&mut p, "memory:audit-rule", "[MEMORY record_id=audit-rule kind=project] ledger audit flag rule");
+        note(&mut p, "memory:wifi", "[MEMORY record_id=wifi kind=project] office wifi rotation");
+
+        // A page of the ledger: about ledger amounts, not about the cafeteria, and sharing only
+        // the index-line vocabulary ("memory", "project") with the wifi record.
+        p.observe_references(
+            &CoreMessage::user("[MEMORY record_ref=x kind=project] ledger page 1: the amounts in dollars for every account"),
+            1,
+        );
+        // The model reads a record by id: strong evidence.
+        let mut read = CoreMessage::assistant("");
+        read.tool_calls = vec![crate::types::message::ToolCall {
+            id: "c1".into(),
+            name: "memory".into(),
+            arguments: serde_json::json!({ "record_id": "audit-rule" }),
+        }];
+        p.observe_references(&read, 2);
+
+        let value = |key: &str| p.entries.iter().find(|e| e.key.as_deref() == Some(key)).unwrap().value;
+        assert_eq!((value("initial:0").strong_refs, value("initial:0").lexical_refs), (0, 1));
+        assert_eq!(value("initial:1").ref_count, 0, "common words are not evidence");
+        assert_eq!(value("memory:wifi").ref_count, 0, "index-line vocabulary is not evidence");
+        assert_eq!(value("memory:audit-rule").strong_refs, 1);
+        assert!(p.retention_score(2, 3) > p.retention_score(0, 3), "strong outweighs lexical");
     }
 
     #[test]

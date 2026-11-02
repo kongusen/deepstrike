@@ -143,6 +143,9 @@ pub struct Summary {
     pub estimate_error: Option<f64>,
     /// The worst request's estimate error.
     pub estimate_error_max: Option<f64>,
+    /// Σ|estimated − observed| / Σ observed: the error weighted by request size, which is what
+    /// compaction and renewal decisions feel (a small first request barely matters to them).
+    pub estimate_error_weighted: Option<f64>,
 }
 
 impl Summary {
@@ -163,6 +166,7 @@ impl Summary {
             "compacted_items" => self.compacted_items,
             "estimate_error" => return self.estimate_error,
             "estimate_error_max" => return self.estimate_error_max,
+            "estimate_error_weighted" => return self.estimate_error_weighted,
             _ => return None,
         })
     }
@@ -185,6 +189,7 @@ pub const REPORT_METRICS: &[&str] = &[
     "read_back",
     "compacted_items",
     "estimate_error",
+    "estimate_error_weighted",
 ];
 
 /// Summarize every (scenario, variant) pair, ordered by scenario then variant.
@@ -219,6 +224,16 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
             (estimate.estimated as f64 - estimate.observed as f64).abs() / estimate.observed as f64
         })
         .collect();
+    let counted: Vec<&TokenEstimate> = trials
+        .iter()
+        .flat_map(|trial| trial.token_estimates.iter())
+        .filter(|estimate| estimate.observed > 0)
+        .collect();
+    let observed_total: f64 = counted.iter().map(|e| e.observed as f64).sum();
+    let error_total: f64 = counted
+        .iter()
+        .map(|e| (e.estimated as f64 - e.observed as f64).abs())
+        .sum();
     let succeeded = trials.iter().filter(|trial| trial.success).count() as u64;
     Summary {
         scenario: scenario.to_string(),
@@ -246,6 +261,7 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
         estimate_error: (!errors.is_empty())
             .then(|| errors.iter().sum::<f64>() / errors.len() as f64),
         estimate_error_max: errors.iter().copied().reduce(f64::max),
+        estimate_error_weighted: (observed_total > 0.0).then(|| error_total / observed_total),
     }
 }
 
@@ -254,7 +270,7 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
 pub struct Gate {
     /// Metrics the candidate may not be worse on (direction from [`HIGHER_IS_BETTER`]).
     pub no_worse: Vec<String>,
-    /// Upper bound on the candidate's mean estimate error (0.10 = 10%).
+    /// Upper bound on the candidate's size-weighted estimate error (0.10 = 10%).
     pub max_estimate_error: Option<f64>,
 }
 
@@ -317,14 +333,14 @@ impl Gate {
                 }
             }
             if let Some(bound) = self.max_estimate_error {
-                match cand.estimate_error {
+                match cand.estimate_error_weighted {
                     Some(error) if error > bound => failures.push(fail(
-                        "estimate_error",
+                        "estimate_error_weighted",
                         format!("{:.1}% exceeds {:.1}%", error * 100.0, bound * 100.0),
                     )),
                     Some(_) => {}
                     None => failures.push(fail(
-                        "estimate_error",
+                        "estimate_error_weighted",
                         "no request carried both an estimate and a provider count".to_string(),
                     )),
                 }
@@ -467,6 +483,7 @@ mod tests {
         assert_eq!(base.sent_chars, 2000.0);
         assert_eq!(base.recall_hit_rate, Some(0.5));
         assert!((base.estimate_error.unwrap() - 0.05).abs() < 1e-9);
+        assert!((base.estimate_error_weighted.unwrap() - 0.05).abs() < 1e-9);
     }
 
     #[test]
@@ -484,7 +501,7 @@ mod tests {
         assert_eq!(failures[0].metric, "regret");
 
         let strict = Gate { no_worse: vec![], max_estimate_error: Some(0.01) };
-        assert_eq!(strict.check(&summaries, "base", "cand")[0].metric, "estimate_error");
+        assert_eq!(strict.check(&summaries, "base", "cand")[0].metric, "estimate_error_weighted");
         assert!(!gate.check(&summaries, "base", "missing").is_empty());
     }
 

@@ -350,9 +350,16 @@ pub struct ItemValue {
     /// Turn the item arrived (or was last renewed by a fresh recall or upsert).
     #[serde(default)]
     pub injected_turn: u32,
-    /// Committed history messages that referenced it.
+    /// Committed history messages that referenced it, by any evidence.
     #[serde(default)]
     pub ref_count: u64,
+    /// Plan task 4.2 · references by strong evidence: the model asked for the item
+    /// (`memory(record_id)`), passed its key or record id in a tool call, or named its key.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub strong_refs: u64,
+    /// References by lexical overlap only: the conversation shares the item's distinctive terms.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub lexical_refs: u64,
     /// Reference step (history position) of the last reference; the retention score's recency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_referenced_step: Option<u64>,

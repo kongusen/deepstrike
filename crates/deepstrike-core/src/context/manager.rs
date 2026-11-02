@@ -76,12 +76,8 @@ pub(crate) fn is_exposure_exempt_meta_tool(name: &str) -> bool {
     EXPOSURE_EXEMPT_META_TOOLS.contains(&name)
 }
 
-/// The calibration factor that leaves an estimate unchanged, in parts per million.
-pub const ESTIMATE_CALIBRATION_IDENTITY: u32 = 1_000_000;
-/// The weight (in estimated tokens) the identity calibration starts with.
-pub const ESTIMATE_CALIBRATION_PRIOR_WEIGHT: u32 = 4_000;
-/// The most weight past observations keep against a new one.
-pub const ESTIMATE_CALIBRATION_MAX_WEIGHT: u32 = 60_000;
+/// How many recent (estimate, provider count) pairs the calibration is fitted on.
+pub const ESTIMATE_CALIBRATION_SAMPLES: usize = 8;
 
 /// End-of-run context lifecycle metrics (plan task 4.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -143,10 +139,10 @@ pub struct ContextManager {
     /// parts per million) that brings an estimate to what the provider counted. Both move only on
     /// recorded inputs (the provider's observed count), so replay reproduces them.
     pub(crate) last_request_estimate: u32,
-    pub(crate) estimate_calibration_ppm: u32,
-    /// How many estimated tokens the calibration has been fitted on (capped), so a small request
-    /// moves it a little and a large one more.
-    pub(crate) estimate_calibration_weight: u32,
+    /// The last few (uncalibrated estimate, provider count) pairs. A provider's count differs
+    /// from the kernel's by a roughly fixed overhead (message framing, tool templates) plus a
+    /// proportional tokenizer gap, so the calibration is the least-squares line through them.
+    pub(crate) estimate_samples: std::collections::VecDeque<(u32, u32)>,
     compression: CompressionPipeline,
     pressure: PressureMonitor,
     renewal: RenewalPolicy,
@@ -211,7 +207,9 @@ pub struct ContextManager {
     /// follow it directly, so these wait until the last result lands.
     pub(crate) held_history: Vec<(CoreMessage, u32)>,
     /// Plan task 1.1c · provider replay state kept with assistant history items, by item id.
-    pub(crate) item_replays: std::collections::BTreeMap<ItemId, serde_json::Value>,
+    /// Each with the tokens it adds to a request: replay is sent back with its turn, so it
+    /// occupies the model's context like the turn's own text.
+    pub(crate) item_replays: std::collections::BTreeMap<ItemId, (serde_json::Value, u32)>,
     /// Replay for the assistant message being admitted now (set around one provider completion).
     pub(crate) pending_assistant_replay: Option<serde_json::Value>,
 }
@@ -249,8 +247,7 @@ impl ContextManager {
             plan_tool_enabled: false,
             last_observed_prompt_tokens: None,
             last_request_estimate: 0,
-            estimate_calibration_ppm: ESTIMATE_CALIBRATION_IDENTITY,
-            estimate_calibration_weight: ESTIMATE_CALIBRATION_PRIOR_WEIGHT,
+            estimate_samples: std::collections::VecDeque::new(),
             compression,
             pressure,
             renewal,
@@ -518,33 +515,28 @@ impl ContextManager {
         // A provider sees a selected projection, not the entire resident history. Its smaller
         // count must not suppress compaction while the unselected history still triggers renewal.
         // Calibration may raise the estimate (the provider counts more than the kernel does, as
-        // for CJK text) but never lowers it: a provider or proxy reporting too little must not
-        // delay compaction past the point the kernel's own count calls for.
-        let estimated = self.pressure.pressure(&self.partitions, &self.engine, None)
-            * f64::from(self.estimate_calibration_ppm.max(ESTIMATE_CALIBRATION_IDENTITY))
-            / f64::from(ESTIMATE_CALIBRATION_IDENTITY);
+        // for CJK text or tool templates) but never lowers it: a provider or proxy reporting too
+        // little must not delay compaction past the point the kernel's own count calls for.
+        let max_tokens = f64::from(self.max_tokens.max(1));
+        let raw = self
+            .partitions
+            .total_tokens(&self.engine)
+            .saturating_add(self.replay_tokens());
+        let estimated = if self.max_tokens == 0 {
+            0.0
+        } else {
+            f64::from(self.calibrated(raw).max(raw)) / max_tokens
+        };
         observed.max(estimated)
     }
 
     pub fn set_observed_prompt_tokens(&mut self, tokens: u32) {
         self.last_observed_prompt_tokens = Some(tokens);
-        // Each observation pulls the calibration toward what it shows in proportion to the
-        // request's size: a small request's error is mostly fixed overhead and says little about
-        // a large one. The weight already fitted is capped, so a long run still follows a drift.
-        // A sample is bounded to 1/4..4x of the estimate.
         if self.last_request_estimate > 0 {
-            let estimate = u64::from(self.last_request_estimate);
-            let sample = (u64::from(tokens) * u64::from(ESTIMATE_CALIBRATION_IDENTITY) / estimate)
-                .clamp(
-                    u64::from(ESTIMATE_CALIBRATION_IDENTITY / 4),
-                    u64::from(ESTIMATE_CALIBRATION_IDENTITY) * 4,
-                );
-            let weight = u64::from(self.estimate_calibration_weight);
-            self.estimate_calibration_ppm = ((u64::from(self.estimate_calibration_ppm) * weight
-                + sample * estimate)
-                / (weight + estimate)) as u32;
-            self.estimate_calibration_weight =
-                (weight + estimate).min(u64::from(ESTIMATE_CALIBRATION_MAX_WEIGHT)) as u32;
+            if self.estimate_samples.len() == ESTIMATE_CALIBRATION_SAMPLES {
+                self.estimate_samples.pop_front();
+            }
+            self.estimate_samples.push_back((self.last_request_estimate, tokens));
             self.last_request_estimate = 0;
         }
     }
@@ -556,10 +548,31 @@ impl ContextManager {
         self.calibrated(raw)
     }
 
+    /// `tokens` (an uncalibrated estimate) as the provider would count it: through the
+    /// least-squares line of the recent samples; with one sample (or samples of one size) by
+    /// their mean offset, the gap being mostly fixed overhead; unchanged with none. Integer arithmetic, so replay reproduces
+    /// it; bounded to 1/2..4x of the estimate.
     fn calibrated(&self, tokens: u32) -> u32 {
-        (u64::from(tokens) * u64::from(self.estimate_calibration_ppm)
-            / u64::from(ESTIMATE_CALIBRATION_IDENTITY))
-        .min(u64::from(u32::MAX)) as u32
+        let n = self.estimate_samples.len() as i128;
+        if n == 0 || tokens == 0 {
+            return tokens;
+        }
+        let (mut sx, mut sy, mut sxx, mut sxy) = (0i128, 0i128, 0i128, 0i128);
+        for &(x, y) in &self.estimate_samples {
+            let (x, y) = (i128::from(x), i128::from(y));
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+        }
+        let x = i128::from(tokens);
+        let denominator = n * sxx - sx * sx;
+        let fitted = if n >= 2 && denominator > 0 {
+            (sy * sxx - sx * sxy + x * (n * sxy - sx * sy)) / denominator
+        } else {
+            x + (sy - sx) / n
+        };
+        fitted.clamp(x / 2, x * 4).clamp(0, i128::from(u32::MAX)) as u32
     }
 
     pub fn should_compress(&self) -> PressureAction {
@@ -748,10 +761,16 @@ impl ContextManager {
             self.config.collapse_assistant_narration,
         );
         if !self.item_replays.is_empty() {
+            let replay_tokens: u32 = rendered
+                .turn_items
+                .iter()
+                .filter_map(|id| self.item_replays.get(id).map(|(_, tokens)| *tokens))
+                .sum();
+            rendered.estimated_tokens = rendered.estimated_tokens.saturating_add(replay_tokens);
             rendered.turn_replays = rendered
                 .turn_items
                 .iter()
-                .map(|id| self.item_replays.get(id).cloned())
+                .map(|id| self.item_replays.get(id).map(|(replay, _)| replay.clone()))
                 .collect();
         }
         rendered
@@ -808,7 +827,7 @@ impl ContextManager {
             measurement: super::measurement::TokenMeasurement::for_message(&message, summary_tokens),
             message,
         });
-        self.item_replays.insert(tag.id, replay);
+        self.keep_item_replay(tag.id, replay);
         self.prune_orphaned_handles();
         self.prune_item_replays();
         self.reset_collapse_generation();
@@ -828,6 +847,17 @@ impl ContextManager {
                 handle.residency = Residency::Collapsed;
             }
         }
+    }
+
+    /// Keep `replay` with item `id`, counting what it adds to a request.
+    pub(crate) fn keep_item_replay(&mut self, id: ItemId, replay: serde_json::Value) {
+        let tokens = self.engine.count(&replay.to_string());
+        self.item_replays.insert(id, (replay, tokens));
+    }
+
+    /// Tokens the replay of every item still in history adds to a request.
+    fn replay_tokens(&self) -> u32 {
+        self.item_replays.values().map(|(_, tokens)| *tokens).sum()
     }
 
     /// Drop replay state whose item left history.
@@ -931,7 +961,7 @@ impl ContextManager {
         tally.tokens += u64::from(tokens);
         if tag.origin == ItemOrigin::Assistant {
             if let Some(replay) = self.pending_assistant_replay.take() {
-                self.item_replays.insert(tag.id, replay);
+                self.keep_item_replay(tag.id, replay);
             }
         }
         self.partitions.history.push_tagged(msg, tokens, tag);
@@ -1979,30 +2009,41 @@ mod tests {
     #[test]
     fn the_estimate_calibrates_toward_what_the_provider_counts() {
         let mut mgr = ContextManager::new(100_000);
-        assert_eq!(mgr.note_request_estimate(1_000), 1_000, "uncalibrated at first");
-        // A small request moves the calibration a little.
-        mgr.note_request_estimate(1_000);
-        mgr.set_observed_prompt_tokens(1_300);
-        let after_small = mgr.note_request_estimate(1_000);
-        assert!((1_050..1_100).contains(&after_small), "{after_small}");
-        mgr.set_observed_prompt_tokens(1_300);
-        // Large requests with the same bias bring it close to the truth.
-        for _ in 0..4 {
-            mgr.note_request_estimate(20_000);
-            mgr.set_observed_prompt_tokens(26_000);
+        assert_eq!(mgr.note_request_estimate(600), 600, "uncalibrated before any count");
+        mgr.set_observed_prompt_tokens(810);
+        assert_eq!(mgr.note_request_estimate(1_200), 1_410, "one sample: its offset");
+        mgr.set_observed_prompt_tokens(1_470);
+        // A fixed overhead plus a proportional gap (count = 1.1 x estimate + 150) is fitted
+        // exactly once there are two sizes.
+        for raw in [2_000u32, 2_800] {
+            mgr.note_request_estimate(raw);
+            mgr.set_observed_prompt_tokens(raw * 11 / 10 + 150);
         }
-        let calibrated = mgr.note_request_estimate(1_000);
-        assert!((1_270..=1_300).contains(&calibrated), "{calibrated}");
-        // An observation with no estimate pending (a test, a restore) leaves the factor alone.
-        let before = mgr.estimate_calibration_ppm;
+        assert_eq!(mgr.note_request_estimate(3_600), 4_110);
+        // An observation with no estimate pending (a restore, a test) adds no sample.
+        let samples = mgr.estimate_samples.len();
         mgr.last_request_estimate = 0;
         mgr.set_observed_prompt_tokens(50);
-        assert_eq!(mgr.estimate_calibration_ppm, before);
-        // One wild count moves it at most halfway, and never past 4x.
-        mgr.note_request_estimate(1_000);
-        mgr.set_observed_prompt_tokens(1_000_000);
-        assert!(mgr.estimate_calibration_ppm < 4 * ESTIMATE_CALIBRATION_IDENTITY);
-        assert!(mgr.estimate_calibration_ppm > before);
+        assert_eq!(mgr.estimate_samples.len(), samples);
+        // Only the most recent samples count.
+        for _ in 0..ESTIMATE_CALIBRATION_SAMPLES {
+            mgr.note_request_estimate(1_000);
+            mgr.set_observed_prompt_tokens(1_000);
+        }
+        assert_eq!(mgr.note_request_estimate(5_000), 5_000);
+    }
+
+    #[test]
+    fn replay_sent_back_with_a_turn_counts_toward_the_estimate() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.push_history(CoreMessage::user("question"), 5);
+        let before = (mgr.render().estimated_tokens, mgr.rho());
+        mgr.pending_assistant_replay =
+            Some(serde_json::json!({ "reasoning_content": "step ".repeat(400) }));
+        mgr.push_history(CoreMessage::assistant("answer"), 5);
+        let (estimate, rho) = (mgr.render().estimated_tokens, mgr.rho());
+        assert!(estimate >= before.0 + 5 + 300, "{estimate} vs {}", before.0);
+        assert!(rho > before.1);
     }
 
     #[test]
@@ -2010,10 +2051,10 @@ mod tests {
         let mut mgr = ContextManager::new(1_000);
         mgr.push_history(CoreMessage::user("x".repeat(400)), 400);
         let raw = mgr.pressure.pressure(&mgr.partitions, &mgr.engine, None);
-        mgr.estimate_calibration_ppm = ESTIMATE_CALIBRATION_IDENTITY / 2;
+        mgr.estimate_samples = [(1_000, 500)].into();
         assert!((mgr.rho() - raw).abs() < 1e-9, "a low count does not delay compaction");
-        mgr.estimate_calibration_ppm = ESTIMATE_CALIBRATION_IDENTITY * 2;
-        assert!((mgr.rho() - raw * 2.0).abs() < 1e-9, "an undercount raises pressure");
+        mgr.estimate_samples = [(1_000, 1_200)].into();
+        assert!((mgr.rho() - (raw + 0.2)).abs() < 1e-3, "an undercount raises pressure");
     }
 
     #[test]

@@ -327,6 +327,8 @@ impl CanonicalOperationDriver {
                     last_referenced_turn: entry.value.last_referenced_turn,
                     expanded: entry.value.expanded,
                     paged_in_after_evict: entry.value.paged_in_after_evict,
+                    strong_refs: entry.value.strong_refs,
+                    lexical_refs: entry.value.lexical_refs,
                 })
                 .collect(),
             retired_items: ctx.partitions.knowledge.retired.clone(),
@@ -342,17 +344,16 @@ impl CanonicalOperationDriver {
             item_replays: ctx
                 .item_replays
                 .iter()
-                .map(|(item, replay)| super::super::checkpoint::ItemReplayState {
+                .map(|(item, (replay, _))| super::super::checkpoint::ItemReplayState {
                     item: *item,
                     replay: replay.clone(),
                 })
                 .collect(),
-            estimate_calibration_ppm: (ctx.estimate_calibration_ppm
-                != crate::context::manager::ESTIMATE_CALIBRATION_IDENTITY)
-                .then_some(ctx.estimate_calibration_ppm),
-            estimate_calibration_weight: (ctx.estimate_calibration_weight
-                != crate::context::manager::ESTIMATE_CALIBRATION_PRIOR_WEIGHT)
-                .then_some(ctx.estimate_calibration_weight),
+            estimate_samples: ctx
+                .estimate_samples
+                .iter()
+                .map(|&(estimate, count)| [estimate, count])
+                .collect(),
             held_history: ctx
                 .held_history
                 .iter()

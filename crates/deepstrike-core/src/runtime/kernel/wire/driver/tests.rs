@@ -1950,7 +1950,7 @@ fn provider_replay_travels_with_its_item_through_restore() {
     let checkpoint = runtime.checkpoint().decode().expect("verifies");
     let restored = Runtime::restore_with(Some(&checkpoint), &[]);
     let engine = restored.driver.engine().unwrap();
-    assert_eq!(engine.ctx.item_replays.values().next(), Some(&replay));
+    assert_eq!(engine.ctx.item_replays.values().next().map(|(kept, _)| kept), Some(&replay));
     let rendered = engine.ctx.render();
     assert!(rendered.turn_replays.iter().any(|kept| kept.as_ref() == Some(&replay)));
 }

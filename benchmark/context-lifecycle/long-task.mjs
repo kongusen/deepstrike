@@ -142,12 +142,14 @@ async function runTask(index) {
     await writeFile(process.env.LEDGER_DEBUG, JSON.stringify({ events: recorder.events, lastContext: provider.lastContext }, null, 1))
   }
   const success = answer.replace(/,/g, "").includes(expected)
-  return trialFrom({ scenario: "ledger-audit", variant, task: `${account}#${index}`, success, error, provider, events: recorder.events })
+  const trial = trialFrom({ scenario: "ledger-audit", variant, task: `${account}#${index}`, success, error, provider, events: recorder.events })
+  return { ...trial, expected, answer: answer.slice(-80) }
 }
 
 // Each trial is written as soon as it finishes, so an interrupted run keeps what it measured.
 const trials = []
-for (let index = 0; index < taskCount; index++) {
+const start = Number(arg("--start", "0"))
+for (let index = start; index < start + taskCount; index++) {
   const trial = await runTask(index)
   trials.push(trial)
   await writeTrials(out, [trial])

@@ -1240,6 +1240,8 @@ fn restore_context_vm(
             last_referenced_turn: slot.last_referenced_turn,
             expanded: slot.expanded,
             paged_in_after_evict: slot.paged_in_after_evict,
+            strong_refs: slot.strong_refs,
+            lexical_refs: slot.lexical_refs,
         };
         ctx.partitions.knowledge.token_count += entry.tokens;
         ctx.partitions.knowledge.entries.push(entry);
@@ -1267,18 +1269,15 @@ fn restore_context_vm(
     ctx.partitions.knowledge.turn = state.item_turn;
     ctx.last_item_id = state.last_item_id;
     ctx.retired_history = state.retired_history.iter().copied().collect();
-    ctx.item_replays = state
-        .item_replays
-        .iter()
-        .map(|entry| (entry.item, entry.replay.clone()))
-        .collect();
+    for entry in &state.item_replays {
+        ctx.keep_item_replay(entry.item, entry.replay.clone());
+    }
     ctx.last_request_estimate = state.last_request_estimate;
-    ctx.estimate_calibration_ppm = state
-        .estimate_calibration_ppm
-        .unwrap_or(crate::context::manager::ESTIMATE_CALIBRATION_IDENTITY);
-    ctx.estimate_calibration_weight = state
-        .estimate_calibration_weight
-        .unwrap_or(crate::context::manager::ESTIMATE_CALIBRATION_PRIOR_WEIGHT);
+    ctx.estimate_samples = state
+        .estimate_samples
+        .iter()
+        .map(|&[estimate, count]| (estimate, count))
+        .collect();
     ctx.held_history = state
         .held_history
         .iter()
