@@ -57,6 +57,17 @@ pub struct InternalRenderedContext {
     /// compaction or terminate with `ContextOverflow`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_overflow: Option<ContextBudgetOverflow>,
+    /// Plan task 1.1c · the history item each of `turns` renders, aligned with `turns`; `0` for a
+    /// turn that is no item (the synthetic resume anchor, a message without an id).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_items: Vec<crate::context::item::ItemId>,
+    /// Plan task 5.1 · the kernel's estimate of the request's input tokens: system, knowledge,
+    /// state turn and the selected turns, before tool schemas and calibration are added.
+    #[serde(default)]
+    pub estimated_tokens: u32,
+    /// Plan task 1.1c · the provider replay kept with each turn's item, aligned with `turns`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_replays: Vec<Option<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -519,6 +530,10 @@ pub fn render_projected(
     let before_anchor = turns.len();
     normalize_turn_prefix(&mut turns);
     let anchor_count = turns.len() - before_anchor;
+    let turn_items: Vec<crate::context::item::ItemId> = std::iter::repeat_n(0, anchor_count)
+        .chain(selected_indices.iter().map(|index| partitions.history.tag(*index).id))
+        .collect();
+    debug_assert_eq!(turn_items.len(), turns.len());
     debug_assert!(
         !strict_tool_pairing_is_valid(partitions.history.messages())
             || strict_tool_pairing_is_valid(&turns),
@@ -573,6 +588,9 @@ pub fn render_projected(
         state_turn,
         frozen_prefix_len,
         budget_overflow,
+        turn_items,
+        estimated_tokens: projected_tokens,
+        turn_replays: Vec::new(),
     }
 }
 

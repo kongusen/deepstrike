@@ -31,6 +31,12 @@ export interface ModelMessage {
   /** Multimodal parts (text + image/audio). When present, providers render these
    *  instead of the plain `content` string. */
   contentParts?: ContentPart[]
+  /** The kernel item this rendered turn is (plan task 1.1c): stable across compaction, renewal
+   *  and restore. Absent on messages the kernel did not render. */
+  itemId?: number
+  /** Provider state the kernel keeps with this turn's item (reasoning, native blocks) and renders
+   *  back with it; the runner seeds it into the provider before a call (plan task 1.1c). */
+  providerReplay?: ProviderReplay
 }
 
 export interface ToolCall {
@@ -75,6 +81,9 @@ export interface RenderedContext {
    *  Anthropic pins a deep cache breakpoint here instead of the rolling pair. */
   frozenPrefixLen?: number
   budgetOverflow?: ContextBudgetOverflow
+  /** The kernel's estimate of this request's input tokens, tool schemas included, calibrated
+   *  against what the provider counted for earlier requests (plan task 5.1). */
+  estimatedTokens?: number
 }
 
 export interface ContextBudgetOverflow {
@@ -219,6 +228,12 @@ export interface PromptMeasurement {
   confidence: MeasurementConfidence
 }
 
+/** Server-side context edits a provider reports for one call (plan task 5.1). */
+export interface ProviderContextEdits {
+  compaction?: { throughItem: number; replay: ProviderReplay; summaryTokens: number }
+  clearedToolResults?: string[]
+}
+
 export interface ProviderReplay {
   provider?: string
   protocol: GenerationProtocol
@@ -267,6 +282,10 @@ export interface LLMProvider {
     endpoint?: { id?: string; protocol?: string; baseURL?: string }
   }
   peekProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined
+  /** Plan task 5.1 · what the last call did to the context server-side, for the kernel to absorb:
+   *  a summary of history through `throughItem` (the `itemId` of the last rendered turn it covers)
+   *  and the call ids of tool results it cleared. Read once per completed call. */
+  takeContextEdits?(): ProviderContextEdits | undefined
   seedProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">, replay: ProviderReplay): void
   /** P4-S1 mirror: transport facts of the most recent execution (host evidence only, B7). */
   peekTransportTelemetry?(): ProviderTransportTelemetry | undefined

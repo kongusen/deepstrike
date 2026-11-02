@@ -309,3 +309,4 @@ class RenderedMessage:
   content: str = ""
   tool_calls: list | None = None
   content_parts: list | None = None
+  item_id: int | None = None

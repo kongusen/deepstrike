@@ -598,6 +598,33 @@ class CanonicalRunnerRuntime:
     self._workflow_node_count = len(lowered["nodes"])
     return action
 
+  async def start_dynamic_workflow(self) -> KernelRunnerAction | None:
+    """Plan task 6.3 · open a dynamic workflow root: the host program appends nodes to it."""
+    await self._ensure_configured()
+    action = await self._commit({"kind": "start_operation", "entry": {"kind": "dynamic_workflow"},
+                                 "initial_context": self._initial_context})
+    self._started = True
+    self._workflow_node_count = 0
+    return action
+
+  async def append_workflow_nodes(
+    self, spec: dict[str, Any], plan: dict[str, Any] | None = None,
+  ) -> KernelRunnerAction | None:
+    """Append host-program nodes to the active dynamic workflow root."""
+    await self._ensure_configured()
+    if not self._started:
+      raise RuntimeError("cannot append dynamic workflow nodes before operation start")
+    lowered = self._workflow_spec(spec, allow_host_scheduling_factors=True, node_id_base=self._append_base())
+    return await self._commit({"kind": "host_control", "command": {
+      "kind": "append_workflow_nodes",
+      "nodes": lowered["nodes"],
+      **({"plan": plan} if plan else {}),
+    }})
+
+  async def complete_dynamic_workflow(self) -> KernelRunnerAction | None:
+    """Close the dynamic workflow root so the kernel commits its terminal."""
+    return await self._commit({"kind": "host_control", "command": {"kind": "complete_dynamic_workflow"}})
+
   def _append_base(self) -> int | str:
     """Positional id base for anonymous appended nodes: the known DAG size, or a batch-scoped
     prefix that cannot collide with anything already declared when the size is unknown."""
@@ -625,6 +652,11 @@ class CanonicalRunnerRuntime:
            if event.get("observed_output_tokens") is not None else {}),
         **({"stop_reason": self._provider_stop_reason(event.get("stop_reason"))}
            if self._provider_stop_reason(event.get("stop_reason")) else {}),
+        # Plan task 5.1 · what the provider did to the context server-side.
+        **({"provider_compaction": event["provider_compaction"]}
+           if isinstance(event.get("provider_compaction"), dict) else {}),
+        **({"cleared_tool_results": [str(c) for c in event["cleared_tool_results"]]}
+           if event.get("cleared_tool_results") else {}),
       }})
       # The host's view advances only once the kernel committed the turn: a refused input must
       # leave the host exactly where the kernel still is.
@@ -1425,6 +1457,7 @@ class CanonicalRunnerRuntime:
                              append_base,
                            )}
                           for c in raw.get("tool_calls") or []]} if raw.get("tool_calls") else {}),
+      **({"replay": raw["replay"]} if isinstance(raw.get("replay"), dict) else {}),
     }
 
   def _provider_tool_arguments(self, name: str, arguments: dict[str, Any], append_base: int | str) -> dict[str, Any]:

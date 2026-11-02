@@ -120,6 +120,18 @@ export class DynamicWorkflowProcessExecutor {
             respond(request, await context.parallelAgents(requests, (_, index) => requests[index]))
             return
           }
+          if (request.method === "blackboard_put") {
+            respond(request, await context.blackboard.put(String(payload.key ?? ""), payload.value, payload.options as never))
+            return
+          }
+          if (request.method === "blackboard_get") {
+            respond(request, context.blackboard.get(String(payload.key ?? "")))
+            return
+          }
+          if (request.method === "blackboard_delete") {
+            respond(request, await context.blackboard.delete(String(payload.key ?? "")))
+            return
+          }
           if (request.method === "log") {
             context.log(String(payload.message ?? ""), payload.fields as Record<string, unknown> | undefined)
             respond(request, true)
@@ -198,6 +210,11 @@ input.on("line", async line => {
       pipeline: async (items, worker) => { const out = []; for (let index = 0; index < items.length; index++) out.push(await worker(items[index], index)); return out; },
       phase,
       log: (message, fields) => rpc("log", { message, fields }),
+      blackboard: Object.freeze({
+        put: (key, value, options) => rpc("blackboard_put", { key, value, options }),
+        get: key => rpc("blackboard_get", { key }),
+        delete: key => rpc("blackboard_delete", { key }),
+      }),
     }));
     const source = message.script.source;
     if (/(?:^|[^\w$])(require|import|export|process|globalThis|global|Buffer|Deno|fetch|WebSocket|child_process|eval|Function|Date|performance|Math\.random)(?:[^\w$]|$)/.test(source)) throw new Error("dynamic workflow source uses forbidden capability");

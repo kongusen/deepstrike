@@ -272,6 +272,7 @@ def _message_from_kernel(raw: dict[str, Any]) -> ModelMessage:
       for c in raw.get("tool_calls", []) or []
     ],
     content_parts=content_parts,
+    item_id=raw["item_id"] if isinstance(raw.get("item_id"), int) else None,
   )
 
 
@@ -288,6 +289,11 @@ def _context_from_kernel(raw: dict[str, Any]) -> RenderedContext:
     turns=[_message_from_kernel(m) for m in raw.get("turns", []) or []],
     state_turn=_message_from_kernel(state_raw) if state_raw else None,
     frozen_prefix_len=int(frozen_raw) if isinstance(frozen_raw, (int, float)) else None,
+    estimated_tokens=int(raw.get("estimated_tokens") or raw.get("estimatedTokens") or 0) or None,
+    turn_replays=[
+      m.get("replay") if isinstance(m.get("replay"), dict) else None
+      for m in raw.get("turns", []) or []
+    ] if any(isinstance(m.get("replay"), dict) for m in raw.get("turns", []) or []) else None,
     budget_overflow=ContextBudgetOverflow(
       kind=str(overflow_raw.get("kind") or ""),
       required_tokens=int(overflow_raw.get("required_tokens") or overflow_raw.get("requiredTokens") or 0),

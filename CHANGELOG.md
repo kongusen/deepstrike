@@ -6,6 +6,52 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.80] - 2026-11-03
+
+### Added
+
+- Every rendered turn carries the id of its kernel item (`item_id`; `itemId` / `item_id` on SDK
+  messages), and the rendered request carries the kernel's token estimate (`estimated_tokens`;
+  `estimatedTokens` / `estimated_tokens` on `RenderedContext`), tool schemas included and calibrated
+  against the provider's counts of earlier requests. Calibration may raise the pressure estimate
+  but never lowers it.
+- Provider replay state (reasoning content, Anthropic native blocks) is kept by the kernel with the
+  assistant turn's item and rendered back with it, so it survives narration collapse, compaction,
+  renewal and restore. All four SDKs send it with the completion and prefer it to their
+  content-keyed stores.
+- `crates/deepstrike-lab` and the `ledger-audit` / `fan-out` live benchmarks (plan task 4.3):
+  `deepstrike-lab report` compares variants per scenario, `deepstrike-lab gate` checks a candidate
+  against a baseline (no-worse metrics, size-weighted estimate error).
+- The kernel absorbs provider-side context edits as facts: `provider_compaction` (a summary through
+  an item, its replay and size) replaces the covered history with one `provider_summary` item, and
+  `cleared_tool_results` render as handles. All SDKs pass them through from an optional provider
+  `takeContextEdits` hook; no bundled provider reports them yet.
+- Dynamic workflow blackboard (plan task 6.2): `ctx.blackboard.put/get/delete` writes keyed
+  `blackboard:<key>` items on the workflow's operation that every agent spawned afterwards starts
+  with, whatever its context inheritance; phase-scoped entries leave when their phase ends.
+- Dynamic workflows in Python (`RuntimeRunner.run_dynamic_workflow`), WASM
+  (`runDynamicWorkflow`) and Rust (`run_dynamic_workflow`) with the Node vocabulary (plan task
+  6.3). Replay of saved runs and the sandboxed script executors remain Node-only.
+
+### Changed
+
+- Knowledge references are graded (plan task 4.2): strong evidence (`memory(record_id)`, the key
+  or record id in tool arguments, the key named) and lexical overlap of distinctive terms only.
+  Common words and the kernel's index-line header no longer count, so unrelated notes are no longer
+  reported as used and `waste_tokens` reports them.
+- The token estimate is calibrated by the least-squares line through the last eight (estimate,
+  provider count) pairs, and replay sent back with a turn counts toward the estimate and pressure;
+  long runs compact earlier, because the kernel no longer undercounts what the model sees.
+
+### Fixed
+
+- Rust workflow children did not receive the parent knowledge the kernel chose for them
+  (`inherited_knowledge`); they now do.
+
+- A memory search the model issued in the same turn as a host tool could put its hits between
+  that turn's tool results; OpenAI-compatible providers then rejected the next request
+  ("assistant tool_calls with no tool result"). The hits now follow the batch's last result.
+
 ## [0.2.79] - 2026-11-02
 
 ### Added

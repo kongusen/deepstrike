@@ -220,6 +220,19 @@ from deepstrike.collaboration import (
     CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
 )
 
+from deepstrike.runtime.dynamic_workflow import (
+    DynamicWorkflowAgentOptions,
+    DynamicWorkflowAgentRequest,
+    DynamicWorkflowAgentResult,
+    DynamicWorkflowBlackboard,
+    DynamicWorkflowContext,
+    DynamicWorkflowLimitError,
+    DynamicWorkflowLimits,
+    DynamicWorkflowProgress,
+    DynamicWorkflowRun,
+    agent_task,
+)
+
 __all__ = [
     "MemoryRetrievalPolicy",
     "MemoryWritePolicy",
@@ -392,6 +405,9 @@ __all__ = [
     "HandoffArtifact", "HandoffBus", "ContractOutcomeInput",
     "CreatorVerifierMode", "OrchestrationMode", "CreatorVerifierMetrics",
     # Workflow DAG drive (W0-ABI)
+    "DynamicWorkflowAgentOptions", "DynamicWorkflowAgentRequest", "DynamicWorkflowAgentResult",
+    "DynamicWorkflowBlackboard", "DynamicWorkflowContext", "DynamicWorkflowLimitError",
+    "DynamicWorkflowLimits", "DynamicWorkflowProgress", "DynamicWorkflowRun", "agent_task",
     "WorkflowSpec", "WorkflowNodeSpec", "WorkflowSpawnInfo", "WorkflowDependencyPolicy",
     "WorkflowNodeStatus", "WorkflowNodeOutcome", "WorkflowOutcome", "ControlRequestRejection", "workflow_spec_to_kernel",
     "workflow_node_spec_to_kernel", "submit_workflow_nodes_tool", "start_workflow_tool",

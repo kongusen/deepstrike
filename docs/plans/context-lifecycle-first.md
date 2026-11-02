@@ -145,12 +145,23 @@ ContextItem {
     recall 的命中率（被 `memory(record_id)` 展开的比例）和 waste 也在这份报告里统计。
   - 文件：新增 `context/lifecycle_report.rs`；SDK 的 `on_turn_metrics` 增加汇总
 
-- [ ] 任务 4.2：引用证据与相关性判断
+- [x] 任务 4.2（2026-11-03，部分）：引用证据分三级——强（`memory(record_id)`、tool 参数中出现 key 或记录 id、正文点名 key）与词法（只算特征词：去掉常见词与 index line 头部）；`ItemValue` 记 `strong_refs` / `lexical_refs`，保留打分强引用按 4 倍计。未做：模型版 `RelevanceJudge`（effect）——现有两个基准都不触发 knowledge 预算淘汰，lab 无法证明其价值，待有预算吃紧的场景再做。
+- ~~原任务 4.2：引用证据与相关性判断~~
   - 验收：引用证据按强度分三级：模型显式调用 handle 或 `memory(record_id)` > tool call 参数里出现 item 的 key > 词法重叠。`RelevanceJudge` 有词法（兜底）和模型两种实现，模型实现是一个 effect，按批次打分，只在 pressure 超过阈值时触发；结果作为 fact 写入 `value.judged_relevance`（D1）。utility 打分和 knowledge 淘汰都读这个值。
   - 验证：在固定的长任务基准上，regret 和 waste 不高于纯词法版本，成功率不降。
   - 文件：`context/utility.rs`、`context/partitions.rs`、新增 `context/relevance.rs`
 
-- [ ] 任务 4.3：离线调参
+- [x] 任务 4.3（2026-11-03）：`crates/deepstrike-lab`（`report` / `gate`）与两个实测基准（`long-task.mjs` ledger-audit、`live.mjs` fan-out），trial 逐行写入，记录成功、成本、kernel 估算与同次调用的 provider 计数、lifecycle report。
+  0.2.80 结果（2026-11-03，DeepSeek `deepseek-flash`，基线为 0.2.79 + memory 修复 `30e93db5`，`benchmark/context-lifecycle/results/`）：
+
+  | 场景 | 变体 | 正确 | 输入 token / 题 | 估算误差（按请求大小加权） |
+  |------|------|------|------------------|----------------------------|
+  | ledger-audit | 0.2.79 → 0.2.80 | 11/12 → 11/12 | 52.4k → 56.5k | 11.6% → 0.7% |
+  | fan-out full | 0.2.79 → 0.2.80 | 12/12 → 12/12 | 24.3k → 24.0k | 8.4% → 4.7% |
+  | fan-out handle | 0.2.79 → 0.2.80 | 12/12 → 12/12 | 10.1k → 12.5k | 8.0% → 7.4% |
+
+  三组 gate（正确率不降、加权估算误差 ≤10%）全部通过。ledger 压缩归档的 item 从 4.1 增到 15.5：replay（reasoning）现在计入压力，此前 kernel 少算了模型实际看到的内容。waste 从 2 升到 68 token 是计数规则变化（无关条目不再被常见词算作已引用），不与基线比较。测量教训：计量包装器若不转发 provider 的其它方法，replay 与 descriptor 都会丢失，测到的不是真实路径（已修复，早期结果作废）。
+- ~~原任务 4.3：离线调参~~
   - 第一步（2026-11-02）：`benchmark/context-lifecycle/run.mjs` 用脚本化 provider 驱动真实 kernel，对比两个 checkout 渲染出的上下文（不测任务成功率）。相对基线 `5b5308d3`：长任务 prefix 复用 0.761→0.785，cache 下的 knowledge 改写 2→0，输入总量不变；fan-out→synthesize 在 `handle` 模式下首个调用 48.5k→4.5k 字符（−91%），且能用 `read_result` 读全文。3.2 的继承默认值在此场景不可见（workflow root 没有父 transcript）。任务成功率需要真实 provider 跑。
   - 第二步（2026-11-02）：`benchmark/context-lifecycle/live.mjs` 用真实模型测 fan-out→synthesize 的答题正确率。三个 explore 节点直接返回固定的 16k 字符报告（不调模型），只有 synthesize 调真实 provider；12 道题，访问码分别位于 600 字符预览内、8k 截断内、截断外。`--provider deepseek` 读 `.env` 的 `DEEPSEEK_*`（`openai` 读 `OPENAI_*`；yinli.one 的 key 返回 401，暂不可用），`--repo` 指向基线 worktree。DeepSeek `deepseek-flash` 结果（修复下文两处问题后）：
 
@@ -175,7 +186,8 @@ ContextItem {
 
 ### 阶段 5：统一上下文权威（修 Q5）
 
-- [ ] 任务 5.1：吸收 provider 对上下文的改写
+- [x] 任务 5.1（2026-11-03，kernel 侧）：消息 ABI 加 `item_id` 与不透明 `replay`（kernel 随 item 保存 reasoning / native blocks 并渲染回去，四端 SDK 发送与优先使用）；渲染请求带 `estimated_tokens`（含 tool schema 与 replay，按最近 8 次估算/实测做最小二乘校准，只抬高不压低压力）；`ProviderCompleted` 加 `provider_compaction`（覆盖到某 item 的摘要换成一个 `provider_summary` item）与 `cleared_tool_results`（渲染为 handle），四端 SDK 经可选的 `takeContextEdits` 透传。未做：Anthropic provider 上报这两类 fact（无 Anthropic key，无法实测三种 compaction 流程）。
+- ~~原任务 5.1：吸收 provider 对上下文的改写~~
   - 核实（2026-11-01）：kernel 消息 ABI 只有纯文本，compaction/thinking 等原生 block 留在宿主 provider 内，所以“用 provider_summary item 替换被覆盖的 history”需要先给 `ProviderMessage`/`LogicalMessage` 加不透明 block，并改四个 SDK 的两种 compaction。只改 renewal 判据没有收益：renderer 在预算外丢最旧 history，与 renewal 阈值（0.98）几乎同时发生。此任务依赖 1.1 和这项 ABI 扩展。
   - 验收：provider 返回 compaction block 时，kernel 收到 `ProviderCompacted{covered_range, summary_tokens}` fact，把被覆盖的 history item 替换为一个 `provider_summary` item（`authority = provider`，携带原生 block）。`clear_tool_uses` 同理，作为 fact 回填后对应 item 的 fidelity 降为 handle。之后 pressure、utility、renewal 都基于模型实际可见的内容计算。
   - 验证：开启 compaction 的长任务中，kernel 估算的输入 token 与实测 usage 偏差 <10%；renewal 不再提前触发。
@@ -188,11 +200,13 @@ ContextItem {
   - 验收：删除 `NodeKind::Loop/Classify/Tournament`、`orchestration/tournament.rs` 及 scheduler 中的 re-arm、prune、bracket 逻辑；kernel 只剩 `Spawn` 和 `Reduce`。Classify 改用模型运行时提交（`mod.rs:86` 的注释已推荐这种写法），Loop 和 Tournament 改用宿主程序。迁移文档给出三种节点的改写示例，不提供同名模板。
   - 文件：`orchestration/workflow/mod.rs`、`run.rs`、`scheduler/state_machine/workflow.rs`
 
-- [ ] 任务 6.2：编排程序的共享状态写成 item
+- [x] 任务 6.2（2026-11-03）：`ctx.blackboard.put/get/delete`；条目为操作上的 `blackboard:<key>` item（origin `blackboard`，scope `workflow`：此后派生的 agent 不论 context inheritance 都继承），phase 级条目在 phase 结束时移除。四端 SDK 均支持。
+- ~~原任务 6.2：编排程序的共享状态写成 item~~
   - 验收：跨 phase 共享的数据通过 `blackboard.put(key, value, {scope, lease})` 写成 item，子 agent 按 scope 可见；不再靠闭包变量拼进 prompt。
   - 文件：`node/src/workflow/dynamic.ts`
 
-- [ ] 任务 6.3：补齐 SDK
+- [x] 任务 6.3（2026-11-03）：Python `run_dynamic_workflow`、WASM `runDynamicWorkflow`、Rust `run_dynamic_workflow`，与 Node 词汇一致；Rust 的 workflow 驱动循环抽成 `drive_workflow` 并补上子 run 的 `inherited_knowledge`。已保存运行的重放与沙箱脚本执行器仍只有 Node。
+- ~~原任务 6.3：补齐 SDK~~
   - 验收：宿主程序 API 按 Python、Rust、WASM 的顺序移植，接口与 Node 一致。重放沿用 `DynamicWorkflowReplayFact` 作为已记录输入（D1），不需要跨 SDK 字节一致。
 
 ## 交接（2026-11-02）
@@ -209,7 +223,7 @@ ContextItem {
 - ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
 - `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
 
-下一步：见下面的“版本规划”。0.2.78 已合入 main；0.2.79 在分支 `feat/context-items-0.2.79` 上完成，待升版本号、开 PR。
+下一步：0.2.78、0.2.79 已发布。0.2.80 在分支 `feat/0.2.80` 上完成，待升版本号、开 PR。
 
 换设备时的环境准备：
 
@@ -227,7 +241,7 @@ ContextItem {
 |------|------|------|
 | 0.2.78 | 已合入 main（PR #4）；原分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1、6.1；1.1a 与 1.1b 的 item 身份部分；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 已合入 main |
 | 0.2.79 | 1.1 收尾：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 已完成，分支 `feat/context-items-0.2.79`，待发布 |
-| 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级与 `RelevanceJudge`；6.2 blackboard；6.3 Python、WASM 宿主程序 API。只写一份 `MIGRATION-0.2.79-to-0.2.80.md` | 未开始 |
+| 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已完成，分支 `feat/0.2.80`，待发布（暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 
 0.2.80 内部顺序（lab 先于被衡量的改动，否则分不清指标变化来自哪一项）：
 

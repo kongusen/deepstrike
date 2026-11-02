@@ -1,6 +1,6 @@
 {
   "id": "workflow.kernel-to-host.workflowBudgetFromKernel",
-  "version": "0.2.79",
+  "version": "0.2.80",
   "protocol": {
     "family": "kernel-to-host",
     "direction": "decode",

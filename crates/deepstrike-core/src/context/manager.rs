@@ -76,6 +76,9 @@ pub(crate) fn is_exposure_exempt_meta_tool(name: &str) -> bool {
     EXPOSURE_EXEMPT_META_TOOLS.contains(&name)
 }
 
+/// How many recent (estimate, provider count) pairs the calibration is fitted on.
+pub const ESTIMATE_CALIBRATION_SAMPLES: usize = 8;
+
 /// End-of-run context lifecycle metrics (plan task 4.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LifecycleMetrics {
@@ -132,6 +135,14 @@ pub struct ContextManager {
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
     last_observed_prompt_tokens: Option<u32>,
+    /// Plan task 5.1 · the uncalibrated estimate of the last provider request, and the factor (in
+    /// parts per million) that brings an estimate to what the provider counted. Both move only on
+    /// recorded inputs (the provider's observed count), so replay reproduces them.
+    pub(crate) last_request_estimate: u32,
+    /// The last few (uncalibrated estimate, provider count) pairs. A provider's count differs
+    /// from the kernel's by a roughly fixed overhead (message framing, tool templates) plus a
+    /// proportional tokenizer gap, so the calibration is the least-squares line through them.
+    pub(crate) estimate_samples: std::collections::VecDeque<(u32, u32)>,
     compression: CompressionPipeline,
     pressure: PressureMonitor,
     renewal: RenewalPolicy,
@@ -191,6 +202,16 @@ pub struct ContextManager {
     pub(crate) retired_history: std::collections::VecDeque<HistoryItemRecord>,
     /// Retired history items dropped from `retired_history` by the cap.
     pub(crate) retired_history_omitted: u32,
+    /// Messages that arrived while the history tail still waited for tool results (a memory hit
+    /// resolving before a sibling tool in the same batch). A provider requires a call's results to
+    /// follow it directly, so these wait until the last result lands.
+    pub(crate) held_history: Vec<(CoreMessage, u32)>,
+    /// Plan task 1.1c · provider replay state kept with assistant history items, by item id.
+    /// Each with the tokens it adds to a request: replay is sent back with its turn, so it
+    /// occupies the model's context like the turn's own text.
+    pub(crate) item_replays: std::collections::BTreeMap<ItemId, (serde_json::Value, u32)>,
+    /// Replay for the assistant message being admitted now (set around one provider completion).
+    pub(crate) pending_assistant_replay: Option<serde_json::Value>,
 }
 
 impl ContextManager {
@@ -225,6 +246,8 @@ impl ContextManager {
             knowledge_enabled: false,
             plan_tool_enabled: false,
             last_observed_prompt_tokens: None,
+            last_request_estimate: 0,
+            estimate_samples: std::collections::VecDeque::new(),
             compression,
             pressure,
             renewal,
@@ -245,6 +268,9 @@ impl ContextManager {
             history_tally: std::collections::BTreeMap::new(),
             retired_history: std::collections::VecDeque::new(),
             retired_history_omitted: 0,
+            held_history: Vec::new(),
+            item_replays: std::collections::BTreeMap::new(),
+            pending_assistant_replay: None,
         }
     }
 
@@ -488,11 +514,65 @@ impl ContextManager {
         );
         // A provider sees a selected projection, not the entire resident history. Its smaller
         // count must not suppress compaction while the unselected history still triggers renewal.
-        observed.max(self.pressure.pressure(&self.partitions, &self.engine, None))
+        // Calibration may raise the estimate (the provider counts more than the kernel does, as
+        // for CJK text or tool templates) but never lowers it: a provider or proxy reporting too
+        // little must not delay compaction past the point the kernel's own count calls for.
+        let max_tokens = f64::from(self.max_tokens.max(1));
+        let raw = self
+            .partitions
+            .total_tokens(&self.engine)
+            .saturating_add(self.replay_tokens());
+        let estimated = if self.max_tokens == 0 {
+            0.0
+        } else {
+            f64::from(self.calibrated(raw).max(raw)) / max_tokens
+        };
+        observed.max(estimated)
     }
 
     pub fn set_observed_prompt_tokens(&mut self, tokens: u32) {
         self.last_observed_prompt_tokens = Some(tokens);
+        if self.last_request_estimate > 0 {
+            if self.estimate_samples.len() == ESTIMATE_CALIBRATION_SAMPLES {
+                self.estimate_samples.pop_front();
+            }
+            self.estimate_samples.push_back((self.last_request_estimate, tokens));
+            self.last_request_estimate = 0;
+        }
+    }
+
+    /// Remember `raw`, the uncalibrated estimate of the request about to be sent, and return it
+    /// calibrated.
+    pub fn note_request_estimate(&mut self, raw: u32) -> u32 {
+        self.last_request_estimate = raw;
+        self.calibrated(raw)
+    }
+
+    /// `tokens` (an uncalibrated estimate) as the provider would count it: through the
+    /// least-squares line of the recent samples; with one sample (or samples of one size) by
+    /// their mean offset, the gap being mostly fixed overhead; unchanged with none. Integer arithmetic, so replay reproduces
+    /// it; bounded to 1/2..4x of the estimate.
+    fn calibrated(&self, tokens: u32) -> u32 {
+        let n = self.estimate_samples.len() as i128;
+        if n == 0 || tokens == 0 {
+            return tokens;
+        }
+        let (mut sx, mut sy, mut sxx, mut sxy) = (0i128, 0i128, 0i128, 0i128);
+        for &(x, y) in &self.estimate_samples {
+            let (x, y) = (i128::from(x), i128::from(y));
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+        }
+        let x = i128::from(tokens);
+        let denominator = n * sxx - sx * sx;
+        let fitted = if n >= 2 && denominator > 0 {
+            (sy * sxx - sx * sxy + x * (n * sxy - sx * sy)) / denominator
+        } else {
+            x + (sy - sx) / n
+        };
+        fitted.clamp(x / 2, x * 4).clamp(0, i128::from(u32::MAX)) as u32
     }
 
     pub fn should_compress(&self) -> PressureAction {
@@ -587,6 +667,7 @@ impl ContextManager {
         // Archived messages have left history — drop their now-orphaned handles (bounds the table).
         if !archived.is_empty() {
             self.prune_orphaned_handles();
+            self.prune_item_replays();
             // Compaction rewrote the history prefix — start a fresh collapse generation so
             // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
             self.reset_collapse_generation();
@@ -650,6 +731,7 @@ impl ContextManager {
         // History was rebuilt wholesale — drop handles anchored to messages it no longer carries,
         // and start a fresh collapse generation (P0-C) since the whole prefix changed.
         self.prune_orphaned_handles();
+        self.prune_item_replays();
         self.reset_collapse_generation();
         // K1: renewal is a boundary — apply deferred knowledge upserts/removals now.
         self.sweep_knowledge_at_boundary();
@@ -669,7 +751,7 @@ impl ContextManager {
     }
 
     pub fn render(&self) -> InternalRenderedContext {
-        super::renderer::render_projected(
+        let mut rendered = super::renderer::render_projected(
             &self.partitions,
             self.available_input_tokens(),
             &self.engine,
@@ -677,12 +759,174 @@ impl ContextManager {
             &self.handles,
             self.frozen_history_len,
             self.config.collapse_assistant_narration,
-        )
+        );
+        if !self.item_replays.is_empty() {
+            let replay_tokens: u32 = rendered
+                .turn_items
+                .iter()
+                .filter_map(|id| self.item_replays.get(id).map(|(_, tokens)| *tokens))
+                .sum();
+            rendered.estimated_tokens = rendered.estimated_tokens.saturating_add(replay_tokens);
+            rendered.turn_replays = rendered
+                .turn_items
+                .iter()
+                .map(|id| self.item_replays.get(id).map(|(replay, _)| replay.clone()))
+                .collect();
+        }
+        rendered
     }
 
     // ── History / Knowledge ───────────────────────────────────────────────────
 
+    /// Plan task 5.1 · the provider summarized history through item `through` server-side. The
+    /// covered items leave as compacted (extended to the end of a tool transaction, never split),
+    /// and one `provider_summary` item heads history in their place, rendering `replay` (the
+    /// provider's block) — so pressure, renewal and the next render see what the model sees.
+    /// Returns whether `through` named a history item.
+    pub fn absorb_provider_compaction(
+        &mut self,
+        through: ItemId,
+        replay: serde_json::Value,
+        summary_tokens: u32,
+    ) -> bool {
+        let history = &self.partitions.history;
+        let Some(position) = history.tags().iter().position(|tag| tag.id == through) else {
+            return false;
+        };
+        let end = super::units::unit_boundaries(history.messages())
+            .into_iter()
+            .find(|unit| unit.contains(&position))
+            .map_or(position + 1, |unit| unit.end);
+        let covered_tokens: u32 = (0..end)
+            .map(|index| history.measured_tokens(index, &self.engine))
+            .sum();
+        let retained = history.token_count().saturating_sub(covered_tokens);
+        let covered: std::collections::BTreeSet<usize> = (0..end).collect();
+        let rows = self.partitions.history.take_rows(&covered, retained);
+        for row in &rows {
+            let record = HistoryItemRecord::of(
+                row.tag,
+                row.measurement.tokens,
+                row.tag.fidelity,
+                Some(ItemEnd::Compacted),
+            );
+            self.retire_history_item(record);
+        }
+        self.last_item_id += 1;
+        let tag = ItemTag::new(
+            self.last_item_id,
+            ItemOrigin::ProviderSummary,
+            self.partitions.knowledge.turn,
+        );
+        let message = CoreMessage::assistant("[earlier conversation summarized by the provider]");
+        let tally = self.tally(ItemOrigin::ProviderSummary);
+        tally.items += 1;
+        tally.tokens += u64::from(summary_tokens);
+        self.partitions.history.prepend_row(super::partitions::PartitionRow {
+            tag,
+            measurement: super::measurement::TokenMeasurement::for_message(&message, summary_tokens),
+            message,
+        });
+        self.keep_item_replay(tag.id, replay);
+        self.prune_orphaned_handles();
+        self.prune_item_replays();
+        self.reset_collapse_generation();
+        self.sweep_knowledge_at_boundary();
+        self.frozen_history_len = self.partitions.history.len();
+        true
+    }
+
+    /// Plan task 5.1 · the provider cleared these tool results server-side: render them as
+    /// handles, as the model now sees them.
+    pub fn absorb_cleared_tool_results<'a>(&mut self, call_ids: impl IntoIterator<Item = &'a str>) {
+        let cleared: std::collections::HashSet<&str> = call_ids.into_iter().collect();
+        for handle in self.handles.tool_result_handles_mut() {
+            if handle.source.as_deref().is_some_and(|source| cleared.contains(source))
+                && matches!(handle.residency, Residency::Resident)
+            {
+                handle.residency = Residency::Collapsed;
+            }
+        }
+    }
+
+    /// Keep `replay` with item `id`, counting what it adds to a request.
+    pub(crate) fn keep_item_replay(&mut self, id: ItemId, replay: serde_json::Value) {
+        let tokens = self.engine.count(&replay.to_string());
+        self.item_replays.insert(id, (replay, tokens));
+    }
+
+    /// Tokens the replay of every item still in history adds to a request.
+    fn replay_tokens(&self) -> u32 {
+        self.item_replays.values().map(|(_, tokens)| *tokens).sum()
+    }
+
+    /// Drop replay state whose item left history.
+    fn prune_item_replays(&mut self) {
+        if self.item_replays.is_empty() {
+            return;
+        }
+        let live: std::collections::HashSet<ItemId> =
+            self.partitions.history.tags().iter().map(|tag| tag.id).collect();
+        self.item_replays.retain(|id, _| live.contains(id));
+    }
+
+    /// Append `msg` to history after the tool results the last assistant turn still waits for.
+    /// Used for content an effect delivers mid-batch (a memory hit that resolves before a sibling
+    /// tool): placed now, it would split the batch's results, which a provider rejects.
+    pub fn push_history_after_tool_results(&mut self, msg: CoreMessage, tokens: u32) {
+        if self.awaits_tool_results() {
+            self.held_history.push((msg, tokens));
+        } else {
+            self.push_history(msg, tokens);
+        }
+    }
+
+    /// Append whatever is still held, whether or not the batch completed. Called before a provider
+    /// call, so held content is never lost to a batch whose results never all arrived.
+    pub fn release_held_history(&mut self) {
+        for (held, tokens) in std::mem::take(&mut self.held_history) {
+            self.admit_history(held, tokens);
+        }
+    }
+
     pub fn push_history(&mut self, msg: CoreMessage, tokens: u32) {
+        let is_tool = msg.role == crate::types::message::Role::Tool;
+        self.admit_history(msg, tokens);
+        if is_tool && !self.held_history.is_empty() && !self.awaits_tool_results() {
+            for (held, tokens) in std::mem::take(&mut self.held_history) {
+                self.admit_history(held, tokens);
+            }
+        }
+    }
+
+    /// Whether the last assistant message in history asked for a call whose result is not in
+    /// history yet.
+    fn awaits_tool_results(&self) -> bool {
+        let mut answered = std::collections::HashSet::new();
+        for message in self.partitions.history.messages().iter().rev() {
+            match message.role {
+                crate::types::message::Role::Tool => {
+                    if let Content::Parts(parts) = &message.content {
+                        for part in parts {
+                            if let ContentPart::ToolResult { call_id, .. } = part {
+                                answered.insert(call_id.as_str());
+                            }
+                        }
+                    }
+                }
+                crate::types::message::Role::Assistant => {
+                    return message
+                        .tool_calls
+                        .iter()
+                        .any(|call| !answered.contains(call.id.as_str()));
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    fn admit_history(&mut self, msg: CoreMessage, tokens: u32) {
         self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
         self.partitions
             .knowledge
@@ -715,11 +959,18 @@ impl ContextManager {
         let tally = self.tally(tag.origin);
         tally.items += 1;
         tally.tokens += u64::from(tokens);
+        if tag.origin == ItemOrigin::Assistant {
+            if let Some(replay) = self.pending_assistant_replay.take() {
+                self.keep_item_replay(tag.id, replay);
+            }
+        }
         self.partitions.history.push_tagged(msg, tokens, tag);
     }
 
     /// Drop history from `len` on (a rolled-back turn); its items leave as removed.
     pub fn truncate_history(&mut self, len: usize) {
+        // Held messages belong to the turn being rolled back.
+        self.held_history.clear();
         for index in len..self.partitions.history.len() {
             let tag = self.partitions.history.tag(index);
             let tokens = self.partitions.history.measured_tokens(index, &self.engine);
@@ -732,6 +983,7 @@ impl ContextManager {
             ));
         }
         self.partitions.history.truncate(len);
+        self.prune_item_replays();
     }
 
     fn retire_history_item(&mut self, record: HistoryItemRecord) {
@@ -1752,6 +2004,102 @@ mod tests {
         assert_eq!(metrics.history_items.len(), HISTORY_ITEM_DETAIL_CAP);
         assert_eq!(metrics.history_items_omitted, 10);
         assert_eq!(metrics.history_items.last().unwrap().id, (HISTORY_ITEM_DETAIL_CAP + 10) as u64);
+    }
+
+    #[test]
+    fn the_estimate_calibrates_toward_what_the_provider_counts() {
+        let mut mgr = ContextManager::new(100_000);
+        assert_eq!(mgr.note_request_estimate(600), 600, "uncalibrated before any count");
+        mgr.set_observed_prompt_tokens(810);
+        assert_eq!(mgr.note_request_estimate(1_200), 1_410, "one sample: its offset");
+        mgr.set_observed_prompt_tokens(1_470);
+        // A fixed overhead plus a proportional gap (count = 1.1 x estimate + 150) is fitted
+        // exactly once there are two sizes.
+        for raw in [2_000u32, 2_800] {
+            mgr.note_request_estimate(raw);
+            mgr.set_observed_prompt_tokens(raw * 11 / 10 + 150);
+        }
+        assert_eq!(mgr.note_request_estimate(3_600), 4_110);
+        // An observation with no estimate pending (a restore, a test) adds no sample.
+        let samples = mgr.estimate_samples.len();
+        mgr.last_request_estimate = 0;
+        mgr.set_observed_prompt_tokens(50);
+        assert_eq!(mgr.estimate_samples.len(), samples);
+        // Only the most recent samples count.
+        for _ in 0..ESTIMATE_CALIBRATION_SAMPLES {
+            mgr.note_request_estimate(1_000);
+            mgr.set_observed_prompt_tokens(1_000);
+        }
+        assert_eq!(mgr.note_request_estimate(5_000), 5_000);
+    }
+
+    #[test]
+    fn replay_sent_back_with_a_turn_counts_toward_the_estimate() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.push_history(CoreMessage::user("question"), 5);
+        let before = (mgr.render().estimated_tokens, mgr.rho());
+        mgr.pending_assistant_replay =
+            Some(serde_json::json!({ "reasoning_content": "step ".repeat(400) }));
+        mgr.push_history(CoreMessage::assistant("answer"), 5);
+        let (estimate, rho) = (mgr.render().estimated_tokens, mgr.rho());
+        assert!(estimate >= before.0 + 5 + 300, "{estimate} vs {}", before.0);
+        assert!(rho > before.1);
+    }
+
+    #[test]
+    fn calibration_raises_pressure_but_never_lowers_it() {
+        let mut mgr = ContextManager::new(1_000);
+        mgr.push_history(CoreMessage::user("x".repeat(400)), 400);
+        let raw = mgr.pressure.pressure(&mgr.partitions, &mgr.engine, None);
+        mgr.estimate_samples = [(1_000, 500)].into();
+        assert!((mgr.rho() - raw).abs() < 1e-9, "a low count does not delay compaction");
+        mgr.estimate_samples = [(1_000, 1_200)].into();
+        assert!((mgr.rho() - (raw + 0.2)).abs() < 1e-3, "an undercount raises pressure");
+    }
+
+    #[test]
+    fn a_provider_summary_replaces_the_items_it_covered() {
+        use crate::types::message::ToolCall;
+        let mut mgr = ContextManager::new(100_000);
+        mgr.push_history(CoreMessage::user("question"), 50);
+        let mut call = CoreMessage::assistant("reading");
+        call.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
+        }];
+        mgr.push_history(call, 20);
+        mgr.push_history(tool_result_msg("c1", &"body ".repeat(200)), 400);
+        mgr.push_history(CoreMessage::user("next question"), 10);
+        let (assistant, tool) = (mgr.partitions.history.tag(1).id, mgr.partitions.history.tag(2).id);
+
+        let block = serde_json::json!({ "protocol": "anthropic-messages", "native_blocks": [{ "type": "compaction" }] });
+        // Covering through the call extends to its result: a transaction is never split.
+        assert!(mgr.absorb_provider_compaction(assistant, block.clone(), 30));
+        let tags = mgr.partitions.history.tags();
+        assert_eq!(tags[0].origin, ItemOrigin::ProviderSummary);
+        assert_eq!(tags.len(), 2, "summary + the uncovered question");
+        assert!(tags.iter().all(|tag| tag.id != tool));
+        assert_eq!(mgr.partitions.history.token_count(), 30 + 10);
+        assert!(mgr.handles.residency_for_source("c1").is_none(), "the covered result's handle left");
+
+        let rendered = mgr.render();
+        let summary = rendered.turn_items.iter().position(|id| *id == tags[0].id).unwrap();
+        assert_eq!(rendered.turn_replays[summary], Some(block));
+        let ends: Vec<_> = mgr.lifecycle_metrics().history_items.iter().map(|item| item.end).collect();
+        assert_eq!(ends.iter().filter(|end| **end == Some(ItemEnd::Compacted)).count(), 3);
+        assert!(!mgr.absorb_provider_compaction(9_999, serde_json::json!({}), 1), "unknown item");
+    }
+
+    #[test]
+    fn tool_results_the_provider_cleared_render_as_handles() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.push_history(tool_result_msg("c1", "first"), 5);
+        mgr.push_history(tool_result_msg("c2", "second"), 5);
+        mgr.absorb_cleared_tool_results(["c1"]);
+        assert_eq!(mgr.handles.residency_for_source("c1"), Some(&Residency::Collapsed));
+        assert_eq!(mgr.handles.residency_for_source("c2"), Some(&Residency::Resident));
+        assert_eq!(mgr.history_fidelity(0), crate::context::item::Fidelity::Handle);
     }
 
     #[test]

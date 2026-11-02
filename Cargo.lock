@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-core"
-version = "0.2.79"
+version = "0.2.80"
 dependencies = [
  "compact_str",
  "deepstrike-tokenizer",
@@ -306,8 +306,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "deepstrike-lab"
+version = "0.2.80"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "deepstrike-node"
-version = "0.2.79"
+version = "0.2.80"
 dependencies = [
  "compact_str",
  "deepstrike-core",
@@ -319,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-py"
-version = "0.2.79"
+version = "0.2.80"
 dependencies = [
  "compact_str",
  "deepstrike-core",
@@ -330,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-sdk"
-version = "0.2.79"
+version = "0.2.80"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -368,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-tokenizer"
-version = "0.2.79"
+version = "0.2.80"
 dependencies = [
  "pretty_assertions",
  "tiktoken-rs",
@@ -376,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-wasm"
-version = "0.2.79"
+version = "0.2.80"
 dependencies = [
  "compact_str",
  "deepstrike-core",

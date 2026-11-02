@@ -1903,6 +1903,8 @@ impl LoopStateMachine {
         // Calling the provider is definitionally "running" — the single funnel for entering the
         // Running lifecycle (covers start, resume, signal-driven turns, budget final-call).
         self.set_lifecycle(TaskLifecycle::Running, None);
+        // Content held for a tool batch that never completed still reaches the model.
+        self.ctx.release_held_history();
 
         // Plan task 2.1 · a recall owed at run start or after a renewal goes out before the
         // provider call, so its hits are in system knowledge before that knowledge is cached.
@@ -2005,6 +2007,7 @@ impl LoopStateMachine {
             self.provider_tools()
         };
         self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
+        let context = self.estimate_request(context, &tools);
         *action = LoopAction::CallLLM { context, tools };
     }
 
@@ -2175,7 +2178,23 @@ impl LoopStateMachine {
     ) -> LoopAction {
         self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
         self.ctx.mark_prefix_sent();
+        let context = self.estimate_request(context, &tools);
         LoopAction::CallLLM { context, tools }
+    }
+
+    /// Plan task 5.1 · complete the render's estimate with the tool schemas the request carries,
+    /// remember it for calibration, and report it calibrated.
+    fn estimate_request(
+        &mut self,
+        mut context: crate::context::renderer::InternalRenderedContext,
+        tools: &[ToolSchema],
+    ) -> crate::context::renderer::InternalRenderedContext {
+        let tool_tokens = serde_json::to_string(tools)
+            .map(|schemas| self.ctx.engine.count(&schemas))
+            .unwrap_or(0);
+        let raw = context.estimated_tokens.saturating_add(tool_tokens);
+        context.estimated_tokens = self.ctx.note_request_estimate(raw);
+        context
     }
 
     /// Canonical checkpoint projection of the most recently advertised tool surface.

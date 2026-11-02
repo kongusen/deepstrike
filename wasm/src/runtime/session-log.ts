@@ -48,7 +48,7 @@ export interface ContextOriginTally {
 /** One knowledge item's lifecycle in a `context_lifecycle_reported` event (plan task 4.1). */
 export interface ContextItemRecord {
   key?: string
-  origin: "system" | "skill" | "memory_recall" | "reference" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary"
+  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary"
   tokens: number
   value: {
     injected_turn: number

@@ -2,68 +2,30 @@
 // Live check for plan task 3.1: does a short dependency preview cost answer quality?
 //
 //   node benchmark/context-lifecycle/live.mjs [--repo <checkout>] [--mode full|handle] [--tasks N]
-//                                             [--provider openai|deepseek]
+//        [--provider openai|deepseek] [--variant <name>] [--out trials.jsonl]
 //
 // Three explore nodes return fixed 16k-character survey reports without calling a model; only the
-// synthesize node runs on the real provider from `.env` (OPENAI_* or DEEPSEEK_*). Each task asks for one access
-// code that sits inside the 600-character preview, inside the 8,000-character clip, or beyond it.
-// The answer is graded by exact match. Prints JSON; never prints a key.
+// synthesize node runs on the real provider from `.env` (OPENAI_* or DEEPSEEK_*). Each task asks for
+// one access code that sits inside the 600-character preview, inside the 8,000-character clip, or
+// beyond it. The answer is graded by exact match. Writes one trial per task for `deepstrike-lab`
+// (scenario `fan-out`; the variant defaults to the mode); never prints a key.
 
-import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
-import { pathToFileURL } from "node:url"
+import { MeteredProvider, here, loadEnv, parseArgs, realProvider, recordingSessionLog, redact, sdk, trialFrom, writeTrials } from "./trial.mjs"
 
-const args = process.argv.slice(2)
-const arg = (name, fallback) => (args.includes(name) ? args[args.indexOf(name) + 1] : fallback)
-const here = new URL("../..", import.meta.url).pathname
+const arg = parseArgs()
 const repo = resolve(arg("--repo", here))
 const mode = arg("--mode", "full")
 const taskCount = Number(arg("--tasks", "10"))
-const providerName = arg("--provider", "openai")
+const variant = arg("--variant", mode)
+const out = arg("--out")
 
-for (const line of (await readFile(resolve(here, ".env"), "utf8")).split(/\r?\n/)) {
-  const match = line.trim().match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
-  if (match && !(match[1] in process.env)) process.env[match[1]] = match[2].trim().replace(/^("|')(.*)\1$/, "$2")
-}
-
-const dist = file => import(pathToFileURL(resolve(repo, "node/dist", file)).href)
-const root = await dist("index.js")
+await loadEnv()
+const dist = sdk(repo)
 const { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } = await dist("advanced/public.js")
 const { defaultSubAgentOrchestrator } = await dist("workflow/public.js")
-
-const retry = { maxRetries: 2, baseDelay: 1000 }
-const model = providerName === "deepseek" ? process.env.DEEPSEEK_MODEL ?? "deepseek-chat" : process.env.OPENAI_MODEL ?? "gpt-4o-mini"
-const inner = providerName === "deepseek"
-  ? (await dist("providers/public.js")).deepseek({
-    apiKey: process.env.DEEPSEEK_API_KEY,
-    model,
-    ...(process.env.DEEPSEEK_BASE_URL ? { baseURL: process.env.DEEPSEEK_BASE_URL } : {}),
-    retry,
-  })
-  : new root.OpenAIProvider({
-    apiKey: process.env.OPENAI_API_KEY,
-    model,
-    ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}),
-    retry,
-  })
-const redact = text => String(text).replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]").replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[REDACTED]").slice(0, 240)
-
-// The proxy does not report usage reliably, so the cost measure is what each call sends.
-// Provider failures are recorded here, since the workflow turns them into an empty answer.
-let sentChars = 0
-let calls = 0
-let lastProviderError
-const sent = context => JSON.stringify([context.systemStable ?? context.systemText ?? "", context.systemKnowledge ?? "", context.turns ?? [], context.stateTurn ?? ""]).length
-const provider = {
-  async complete(context, ...rest) {
-    sentChars += sent(context); calls += 1
-    try { return await inner.complete(context, ...rest) } catch (cause) { lastProviderError = redact(cause?.message ?? cause); throw cause }
-  },
-  async *stream(context, ...rest) {
-    sentChars += sent(context); calls += 1
-    try { yield* inner.stream(context, ...rest) } catch (cause) { lastProviderError = redact(cause?.message ?? cause); throw cause }
-  },
-}
+const { provider: inner, model } = await realProvider(dist, arg("--provider", "openai"))
+const provider = new MeteredProvider(inner)
 
 // ── fixtures ───────────────────────────────────────────────────────────────────────────────────
 
@@ -84,9 +46,8 @@ const TASKS = Array.from({ length: taskCount }, (_, i) => {
 // ── one task ───────────────────────────────────────────────────────────────────────────────────
 
 async function runTask(task) {
-  const charsBefore = sentChars
-  const callsBefore = calls
-  lastProviderError = undefined
+  provider.reset()
+  const recorder = recordingSessionLog(new InMemorySessionLog())
   let answer = ""
   let termination
   const orchestrator = {
@@ -107,7 +68,7 @@ async function runTask(task) {
   }
   const runner = new RuntimeRunner({
     provider,
-    sessionLog: new InMemorySessionLog(),
+    sessionLog: recorder.log,
     executionPlane: new LocalExecutionPlane(),
     maxTokens: 64_000,
     maxTurns: 6,
@@ -115,7 +76,6 @@ async function runTask(task) {
     subAgentOrchestrator: orchestrator,
   })
   const question = `Answer from the three survey reports: what is the access code of station ${task.area}-${String(task.row).padStart(3, "0")}? Reply with the code only.`
-  const started = Date.now()
   let error
   try {
     await runner.runWorkflow({
@@ -123,43 +83,30 @@ async function runTask(task) {
         { task: "survey area-1", role: "explore", isolation: "read_only", contextInheritance: "system_only" },
         { task: "survey area-2", role: "explore", isolation: "read_only", contextInheritance: "system_only" },
         { task: "survey area-3", role: "explore", isolation: "read_only", contextInheritance: "system_only" },
-        { task: question, role: "plan", dependsOn: [0, 1, 2], ...(mode === "handle" ? { context: { dependencyMode: "handle" } } : {}) },
+        { task: question, role: "plan", dependsOn: [0, 1, 2], context: { dependencyMode: mode } },
       ],
     }, { sessionId: `live-${task.id}` })
   } catch (cause) {
     error = redact(cause?.message ?? cause)
   }
-  error ??= lastProviderError ?? (termination && termination !== "completed" ? `termination: ${termination}` : undefined)
-  return {
-    id: task.id,
-    depth: task.depth,
-    correct: answer.includes(task.expected),
-    answer: answer.slice(0, 160),
-    sentChars: sentChars - charsBefore,
-    calls: calls - callsBefore,
-    ms: Date.now() - started,
-    ...(error ? { error } : {}),
-  }
+  error ??= provider.lastError ?? (termination && termination !== "completed" ? `termination: ${termination}` : undefined)
+  return trialFrom({
+    scenario: "fan-out",
+    variant,
+    task: `${task.id}-${task.depth}`,
+    success: answer.includes(task.expected),
+    error,
+    provider,
+    events: recorder.events,
+  })
 }
 
-const results = []
-for (const task of TASKS) results.push(await runTask(task))
-const byDepth = {}
-for (const result of results) {
-  const bucket = (byDepth[result.depth] ??= { correct: 0, total: 0, sentChars: 0 })
-  bucket.total += 1
-  bucket.sentChars += result.sentChars
-  if (result.correct) bucket.correct += 1
+// Each trial is written as soon as it finishes, so an interrupted run keeps what it measured.
+const trials = []
+for (const task of TASKS) {
+  const trial = await runTask(task)
+  trials.push(trial)
+  await writeTrials(out, [trial])
+  console.error(`${trial.task}: ${trial.success ? "correct" : "wrong"} ${trial.cost.calls} calls ${trial.cost.sent_chars} chars${trial.error ? ` (${trial.error})` : ""}`)
 }
-console.log(JSON.stringify({
-  repo,
-  mode,
-  provider: providerName,
-  model,
-  correct: results.filter(result => result.correct).length,
-  total: results.length,
-  sentChars: results.reduce((sum, result) => sum + result.sentChars, 0),
-  calls: results.reduce((sum, result) => sum + result.calls, 0),
-  byDepth,
-  results,
-}, null, 2))
+console.error(`${variant} on ${model}: ${trials.filter(trial => trial.success).length}/${trials.length} correct`)

@@ -1,0 +1,217 @@
+// Shared helpers for the context-lifecycle benchmarks (plan task 4.3): load a provider from `.env`,
+// meter what each call sends, record every session event, and turn one task run into a trial line
+// for `deepstrike-lab` (`cargo run -p deepstrike-lab -- report <file>`).
+//
+// A trial: { scenario, variant, task, success, error?, cost, token_estimates, lifecycle }.
+// Keys are never printed: provider errors are redacted before they are recorded.
+
+import { appendFile, readFile } from "node:fs/promises"
+import { resolve } from "node:path"
+import { pathToFileURL } from "node:url"
+
+export const here = new URL("../..", import.meta.url).pathname
+
+export function parseArgs(argv = process.argv.slice(2)) {
+  return (name, fallback) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : fallback)
+}
+
+export async function loadEnv() {
+  for (const line of (await readFile(resolve(here, ".env"), "utf8")).split(/\r?\n/)) {
+    const match = line.trim().match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+    if (match && !(match[1] in process.env)) process.env[match[1]] = match[2].trim().replace(/^("|')(.*)\1$/, "$2")
+  }
+}
+
+/** Import a module from a checkout's built Node SDK. */
+export function sdk(repo) {
+  return file => import(pathToFileURL(resolve(repo, "node/dist", file)).href)
+}
+
+export const redact = text => String(text)
+  .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+  .replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[REDACTED]")
+  .slice(0, 240)
+
+/** The real provider named by `--provider` (deepseek or openai), configured from `.env`. */
+export async function realProvider(dist, name) {
+  const retry = { maxRetries: 2, baseDelay: 1000 }
+  if (name === "deepseek") {
+    const model = process.env.DEEPSEEK_MODEL ?? "deepseek-chat"
+    return {
+      model,
+      provider: (await dist("providers/public.js")).deepseek({
+        apiKey: process.env.DEEPSEEK_API_KEY,
+        model,
+        ...(process.env.DEEPSEEK_BASE_URL ? { baseURL: process.env.DEEPSEEK_BASE_URL } : {}),
+        retry,
+      }),
+    }
+  }
+  const root = await dist("index.js")
+  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini"
+  return {
+    model,
+    provider: new root.OpenAIProvider({
+      apiKey: process.env.OPENAI_API_KEY,
+      model,
+      ...(process.env.OPENAI_BASE_URL ? { baseURL: process.env.OPENAI_BASE_URL } : {}),
+      retry,
+    }),
+  }
+}
+
+/** Wraps a provider to count the characters each call sends and keep the last error. Every other
+ *  member (replay, descriptor, context edits, …) reaches the real provider unchanged: a wrapper
+ *  that hid them would change what the runner and kernel do, not just measure it. */
+export class MeteredProvider {
+  constructor(inner) {
+    this.inner = inner
+    this.reset()
+    return new Proxy(this, {
+      get(target, property, receiver) {
+        if (property === "prepareRequest" && !inner.prepareRequest) return undefined
+        if (property in target) return Reflect.get(target, property, receiver)
+        const value = inner[property]
+        return typeof value === "function" ? value.bind(inner) : value
+      },
+    })
+  }
+  reset() {
+    this.callEstimates = []
+    this.trace = []
+    this.sentChars = 0
+    this.calls = 0
+    this.lastError = undefined
+  }
+  measure(context) {
+    this.calls += 1
+    if (process.env.TRIAL_TRACE) {
+      const replays = (context.turns ?? []).filter(turn => turn.providerReplay)
+      ;(this.trace ??= []).push({
+        estimate: context.estimatedTokens,
+        system: (context.systemStable ?? context.systemText ?? "").length,
+        knowledge: (context.systemKnowledge ?? "").length,
+        turns: (context.turns ?? []).length,
+        historyChars: JSON.stringify(context.turns ?? []).length,
+        stateChars: JSON.stringify(context.stateTurn ?? "").length,
+        replayTurns: replays.length,
+        replayChars: replays.reduce((sum, turn) => sum + JSON.stringify(turn.providerReplay).length, 0),
+        assistantToolTurns: (context.turns ?? []).filter(turn => turn.role === "assistant" && turn.toolCalls?.length).length,
+      })
+    }
+    this.sentChars += JSON.stringify([
+      context.systemStable ?? context.systemText ?? "",
+      context.systemKnowledge ?? "",
+      context.turns ?? [],
+      context.stateTurn ?? "",
+    ]).length
+  }
+  async complete(context, ...rest) {
+    this.measure(context)
+    try { return await this.inner.complete(context, ...rest) } catch (cause) { this.lastError = redact(cause?.message ?? cause); throw cause }
+  }
+  async *stream(context, ...rest) {
+    yield* this.metered(context, () => this.inner.stream(context, ...rest))
+  }
+  /** Present only when the real provider prepares its own requests: the runner then streams the
+   *  prepared request, so that is where the metering goes. */
+  prepareRequest(context, tools, options, state) {
+    if (!this.inner.prepareRequest) return undefined
+    const prepared = this.inner.prepareRequest(context, tools, options, state)
+    const meter = this
+    return new Proxy(prepared, {
+      get(target, property) {
+        if (property === "stream") return signal => meter.metered(context, () => target.stream(signal))
+        const value = target[property]
+        return typeof value === "function" ? value.bind(target) : value
+      },
+    })
+  }
+  async *metered(context, open) {
+    this.measure(context)
+    this.lastContext = context
+    try {
+      for await (const event of open()) {
+        // The provider's count of this very request, paired with the kernel's estimate of it.
+        if (event.type === "usage" && event.inputTokens && typeof context.estimatedTokens === "number") {
+          this.callEstimates.push({ estimated: context.estimatedTokens, observed: event.inputTokens })
+        }
+        yield event
+      }
+    } catch (cause) { this.lastError = redact(cause?.message ?? cause); throw cause }
+  }
+}
+
+/** A session log that also keeps every event it was given, across sessions (a workflow's nodes
+ *  write to their own sessions). */
+export function recordingSessionLog(inner) {
+  const events = []
+  return {
+    events,
+    log: new Proxy(inner, {
+      get(target, property) {
+        if (property === "append") {
+          return async (sessionId, event) => {
+            events.push(event)
+            return target.append(sessionId, event)
+          }
+        }
+        const value = target[property]
+        return typeof value === "function" ? value.bind(target) : value
+      },
+    }),
+  }
+}
+
+/** One trial line from a task run's recorded session events. */
+export function trialFrom({ scenario, variant, task, success, error, provider, events }) {
+  const attempts = events.filter(event => event.kind === "provider_attempt")
+  const usage = attempts.map(attempt => attempt.usage).filter(Boolean)
+  const sum = key => usage.reduce((total, entry) => total + (Number(entry[key]) || 0), 0)
+  const observedByEffect = new Map(attempts
+    .filter(attempt => attempt.usage?.inputTokens)
+    .map(attempt => [attempt.effect_id, attempt.usage.inputTokens]))
+  // Prefer the kernel's estimate, paired with the provider's count of the same call; a checkout
+  // that does not send one falls back to the SDK's pre-call measurement, paired by effect id.
+  const tokenEstimates = provider.callEstimates.length > 0
+    ? provider.callEstimates
+    : firstMeasurements(events)
+      .filter(event => observedByEffect.has(event.effect_id))
+      .map(event => ({ estimated: event.measurement.inputTokens, observed: observedByEffect.get(event.effect_id) }))
+  return {
+    scenario,
+    variant,
+    task,
+    success,
+    ...(error ? { error } : {}),
+    cost: {
+      sent_chars: provider.sentChars,
+      calls: provider.calls,
+      input_tokens: sum("inputTokens"),
+      output_tokens: sum("outputTokens"),
+      cache_read_tokens: sum("cacheReadInputTokens"),
+    },
+    token_estimates: tokenEstimates,
+    ...(provider.trace?.length ? { trace: provider.trace } : {}),
+    lifecycle: events.filter(event => event.kind === "context_lifecycle_reported"),
+  }
+}
+
+/** The pre-call measurement of each provider effect. The SDK records a second, post-call
+ *  `prompt_measured` that repeats the provider's own count; pairing that one would read as a
+ *  perfect estimate. */
+function firstMeasurements(events) {
+  const seen = new Set()
+  return events.filter(event => {
+    if (event.kind !== "prompt_measured" || seen.has(event.effect_id)) return false
+    seen.add(event.effect_id)
+    return true
+  })
+}
+
+/** Append trials to `--out` as JSON Lines, or print them when no file is given. */
+export async function writeTrials(out, trials) {
+  const text = trials.map(trial => JSON.stringify(trial)).join("\n") + "\n"
+  if (out) await appendFile(resolve(out), text)
+  else process.stdout.write(text)
+}

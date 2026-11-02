@@ -1240,6 +1240,8 @@ fn restore_context_vm(
             last_referenced_turn: slot.last_referenced_turn,
             expanded: slot.expanded,
             paged_in_after_evict: slot.paged_in_after_evict,
+            strong_refs: slot.strong_refs,
+            lexical_refs: slot.lexical_refs,
         };
         ctx.partitions.knowledge.token_count += entry.tokens;
         ctx.partitions.knowledge.entries.push(entry);
@@ -1267,6 +1269,23 @@ fn restore_context_vm(
     ctx.partitions.knowledge.turn = state.item_turn;
     ctx.last_item_id = state.last_item_id;
     ctx.retired_history = state.retired_history.iter().copied().collect();
+    for entry in &state.item_replays {
+        ctx.keep_item_replay(entry.item, entry.replay.clone());
+    }
+    ctx.last_request_estimate = state.last_request_estimate;
+    ctx.estimate_samples = state
+        .estimate_samples
+        .iter()
+        .map(|&[estimate, count]| (estimate, count))
+        .collect();
+    ctx.held_history = state
+        .held_history
+        .iter()
+        .map(|entry| {
+            restore_message(&entry.role, &entry.body, &entry.tool_calls)
+                .map(|message| (message, entry.tokens))
+        })
+        .collect::<Result<_, _>>()?;
     ctx.retired_history_omitted = state.retired_history_omitted;
     ctx.history_tally = state
         .history_tally
@@ -2519,9 +2538,24 @@ fn rendered_context(
     WireRenderedContext {
         system_stable: context.system_stable.clone(),
         system_knowledge: context.system_knowledge.clone(),
-        turns: context.turns.iter().map(provider_message).collect(),
+        turns: context
+            .turns
+            .iter()
+            .enumerate()
+            .map(|(index, message)| ProviderMessage {
+                item_id: context.turn_items.get(index).copied().filter(|id| *id != 0),
+                replay: context
+                    .turn_replays
+                    .get(index)
+                    .cloned()
+                    .flatten()
+                    .and_then(|replay| super::scalar::BoundedJson::new(replay).ok()),
+                ..provider_message(message)
+            })
+            .collect(),
         state_turn: context.state_turn.as_ref().map(provider_message),
         frozen_prefix_len: context.frozen_prefix_len.map(|len| len as u32),
+        estimated_tokens: context.estimated_tokens,
     }
 }
 
@@ -2551,6 +2585,8 @@ fn provider_message(message: &CoreMessage) -> ProviderMessage {
         tool_call_id: tool_call_id.and_then(|call_id| super::scalar::CallId::new(call_id).ok()),
         is_error,
         tokens: None,
+        item_id: None,
+        replay: None,
     }
 }
 

@@ -560,10 +560,14 @@ fn provider_result(
                                 tool_call_id: None,
                                 is_error: false,
                                 tokens: None,
+                                item_id: None,
+                                replay: None,
                             },
                             observed_input_tokens: None,
                             observed_output_tokens: None,
                             stop_reason: None,
+                            provider_compaction: None,
+                            cleared_tool_results: Vec::new(),
                         },
                     ),
                 }),
@@ -1196,6 +1200,49 @@ fn a_full_inheritance_launch_carries_the_knowledge_its_scope_allows() {
     assert_eq!(
         metadata["inherited_knowledge"],
         json!([{ "content": "the house style forbids bullet lists", "key": "style", "tokens": 4, "pinned": true }]),
+    );
+}
+
+#[test]
+fn a_blackboard_entry_reaches_every_spawned_agent_whatever_its_inheritance() {
+    let mut spec = two_node_spec();
+    spec.nodes[0].run_spec = Some(LogicalAgentSpec {
+        context_inheritance: Some(WireContextInheritance::SystemOnly),
+        ..LogicalAgentSpec::new("collect the sources")
+    });
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    let started = runtime.submit(&envelope(
+        "in-start",
+        1_700_000_001_000,
+        KernelInput::StartOperation(StartOperation {
+            entry: RootEntry::Workflow(RootWorkflowEntry { spec }),
+            initial_context: InitialContext {
+                knowledge: vec![
+                    super::super::root::KnowledgeEntry {
+                        content: "sources must be primary".to_string(),
+                        key: Some("blackboard:criteria".to_string()),
+                        tokens: Some(4),
+                        pinned: false,
+                    },
+                    super::super::root::KnowledgeEntry {
+                        content: "parent-only reference".to_string(),
+                        key: Some("notes".to_string()),
+                        tokens: Some(3),
+                        pinned: false,
+                    },
+                ],
+                ..InitialContext::default()
+            },
+        }),
+    ));
+    let EffectKind::SpawnTasks(spawn) = &sole_effect(&started).effect else {
+        panic!("expected a task spawn");
+    };
+    let metadata = serde_json::to_value(&spawn.tasks[0].spec.metadata).unwrap();
+    assert_eq!(
+        metadata["inherited_knowledge"],
+        json!([{ "content": "sources must be primary", "key": "blackboard:criteria", "tokens": 4 }]),
     );
 }
 
@@ -1912,6 +1959,43 @@ fn agent_awaiting_provider() -> (Runtime, EffectId) {
         "the turn must actually expose the meta-tool the model is about to call"
     );
     (runtime, effect.effect_id.clone())
+}
+
+#[test]
+fn provider_replay_travels_with_its_item_through_restore() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let mut answer = provider_result(
+        "in-plan",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("call-1", "update_plan", json!({ "progress": "read page one" }))],
+    );
+    let replay = json!({ "protocol": "openai-chat", "reasoning_content": "first I plan" });
+    let KernelInput::ResolveEffect(resolve) = &mut answer.input else { unreachable!() };
+    let EffectOutcome::Succeeded(succeeded) = &mut resolve.outcome else { unreachable!() };
+    let EffectSuccess::Provider(success) = &mut succeeded.result else { unreachable!() };
+    let ProviderOutcome::Completed(completed) = &mut success.outcome else { unreachable!() };
+    completed.message.replay = Some(super::super::scalar::BoundedJson::new(replay.clone()).unwrap());
+
+    let next = runtime.submit(&answer);
+    let rendered_replay = |effect: &KernelEffect| {
+        let EffectKind::CallProvider(call) = &effect.effect else {
+            panic!("expected a provider call");
+        };
+        call.context
+            .turns
+            .iter()
+            .find(|turn| !turn.tool_calls.is_empty())
+            .map(|turn| (turn.item_id.is_some(), turn.replay.as_ref().map(|r| r.get().clone())))
+    };
+    assert_eq!(rendered_replay(sole_effect(&next)), Some((true, Some(replay.clone()))));
+
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+    let engine = restored.driver.engine().unwrap();
+    assert_eq!(engine.ctx.item_replays.values().next().map(|(kept, _)| kept), Some(&replay));
+    let rendered = engine.ctx.render();
+    assert!(rendered.turn_replays.iter().any(|kept| kept.as_ref() == Some(&replay)));
 }
 
 #[test]
@@ -3124,15 +3208,18 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
     );
     let tools_effect = tools_effect.clone();
     assert!(
-        history_text(&runtime)
+        !history_text(&runtime)
             .iter()
             .any(|line| line.contains("prefers numbered sections")),
-        "the recall is in the context the resumed turn renders"
+        "the recall waits for call-2's result: placed now, it would split the batch's results"
     );
+    // A crash between the two effects restores the held recall with everything else.
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
 
     // (3) resolving the tool batch resumes the loop; the next provider call renders a context
     //     that carries both the recall and the tool result
-    let resumed = runtime.submit(&payloads_resolved(
+    let tool_results = payloads_resolved(
         "in-tools",
         1_700_000_004_000,
         &tools_effect.effect_id,
@@ -3145,17 +3232,24 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
                 disposition: ToolResultDisposition::Recoverable,
             },
         })],
-    ));
+    );
+    let resumed = runtime.submit(&tool_results);
+    restored.submit(&tool_results);
+    assert_eq!(history_text(&restored), history_text(&runtime));
     assert_eq!(
         kinds(&resumed),
         vec![EffectKindTag::CallProvider],
         "results plus recalls are in, so the loop calls the provider again"
     );
-    let text = history_text(&runtime).join("\n");
+    let lines = history_text(&runtime);
+    let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
     assert!(
-        text.contains("prefers numbered sections") && text.contains("kpi: 12%"),
-        "the resumed context carries the recall and the tool result"
+        position("kpi: 12%") < position("prefers numbered sections")
+            && position("prefers numbered sections").is_some(),
+        "the recall follows the batch's last result: {lines:?}"
     );
+    let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
+    assert!(crate::context::units::strict_tool_pairing_is_valid(history.messages()));
 }
 
 // -----------------------------------------------------------------------------------------
@@ -4443,10 +4537,14 @@ fn provider_answer(id: &str, at: u64, effect: &EffectId, text: &str) -> WireEnve
                     tool_call_id: None,
                     is_error: false,
                     tokens: None,
+                    item_id: None,
+                    replay: None,
                 },
                 observed_input_tokens: None,
                 observed_output_tokens: None,
                 stop_reason: Some(ProviderStopReason::EndTurn),
+                provider_compaction: None,
+                cleared_tool_results: Vec::new(),
             }),
         }),
     )

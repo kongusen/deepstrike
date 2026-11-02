@@ -563,6 +563,9 @@ mod tests {
             system_stable: "system rules".into(),
             system_knowledge: String::new(),
             budget_overflow: None,
+            turn_items: Vec::new(),
+            estimated_tokens: 0,
+            turn_replays: Vec::new(),
             turns: vec![
                 CoreMessage::user("What is the weather?"),
                 CoreMessage {
@@ -617,6 +620,9 @@ mod tests {
             state_turn: Some(CoreMessage::user("[TASK STATE] goal: g\n\nProceed.")),
             frozen_prefix_len: None,
             budget_overflow: None,
+            turn_items: Vec::new(),
+            estimated_tokens: 0,
+            turn_replays: Vec::new(),
         };
         let msgs = context_to_openai(&context);
         // [system][history][state] — history is the stable cacheable prefix, state last.

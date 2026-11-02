@@ -67,6 +67,9 @@ pub async fn judge(
         turns,
         frozen_prefix_len: None,
         budget_overflow: None,
+        turn_items: Vec::new(),
+        estimated_tokens: 0,
+        turn_replays: Vec::new(),
     };
 
     let mut text = String::new();

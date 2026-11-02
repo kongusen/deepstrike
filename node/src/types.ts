@@ -73,6 +73,12 @@ export interface ModelMessage {
   /** Structured multimodal content. When present, takes precedence over `content` for provider calls. */
   contentParts?: ContentPart[]
   toolCalls?: ToolCall[]
+  /** The kernel item this rendered turn is (plan task 1.1c): stable across compaction, renewal
+   *  and restore. Absent on messages the kernel did not render. */
+  itemId?: number
+  /** Provider state the kernel keeps with this turn's item (reasoning, native blocks) and renders
+   *  back with it; providers prefer it to their own content-keyed store (plan task 1.1c). */
+  providerReplay?: ProviderReplay
 }
 
 /** Stored durable representation. It references the semantic message without becoming a second content authority. */
@@ -473,6 +479,12 @@ export interface NativeContextTiers {
 }
 
 /** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */
+/** Server-side context edits a provider reports for one call (plan task 5.1). */
+export interface ProviderContextEdits {
+  compaction?: { throughItem: number; replay: ProviderReplay; summaryTokens: number }
+  clearedToolResults?: string[]
+}
+
 export interface ProviderReplay {
   provider?: string
   protocol: GenerationProtocol
@@ -548,6 +560,9 @@ export interface RenderedContext {
    */
   frozenPrefixLen?: number
   budgetOverflow?: ContextBudgetOverflow
+  /** The kernel's estimate of this request's input tokens, tool schemas included, calibrated
+   *  against what the provider counted for earlier requests (plan task 5.1). */
+  estimatedTokens?: number
 }
 
 export interface ContextBudgetOverflow {
@@ -588,6 +603,10 @@ export interface LLMProvider {
   runtimePolicy?(): RuntimePolicy
   /** Read provider-native replay fields captured after the most recent assistant turn. */
   peekProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined
+  /** Plan task 5.1 · what the last call did to the context server-side, for the kernel to absorb:
+   *  a summary of history through `throughItem` (the `itemId` of the last rendered turn it covers)
+   *  and the call ids of tool results it cleared. Read once per completed call. */
+  takeContextEdits?(): ProviderContextEdits | undefined
   /**
    * P4-S1: read the transport facts captured during the most recent execution (HTTP rung count,
    * wire response id). Optional — a provider without it simply omits the telemetry and the

@@ -698,6 +698,8 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): ModelMessage {
       isError: raw.is_error === true,
     }]
   }
+  if (typeof raw.item_id === "number") message.itemId = raw.item_id
+  if (raw.replay && typeof raw.replay === "object") message.providerReplay = raw.replay as ModelMessage["providerReplay"]
   return message
 }
 
@@ -712,5 +714,7 @@ export function renderedContextToSdk(raw: Record<string, unknown>): RenderedCont
   }
   if (rawStateTurn) ctx.stateTurn = kernelMessageToSdk(rawStateTurn)
   if (typeof frozenLen === "number") ctx.frozenPrefixLen = frozenLen
+  const estimated = raw.estimated_tokens ?? raw.estimatedTokens
+  if (typeof estimated === "number" && estimated > 0) ctx.estimatedTokens = estimated
   return ctx
 }

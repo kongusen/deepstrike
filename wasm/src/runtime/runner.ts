@@ -34,6 +34,13 @@ import {
 } from "./canonical-kernel-step.js"
 import type { KernelJournal } from "./kernel-journal.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
+import {
+  DynamicWorkflowContextImpl,
+  type DynamicWorkflowContext,
+  type DynamicWorkflowHost,
+  type DynamicWorkflowLimits,
+  type DynamicWorkflowRun,
+} from "./dynamic-workflow.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 import { decodeDurableContent, decodeDurableToolResult, durableBlocksToToolOutput, toolOutputBlocksToDurable } from "./durable-content.js"
 import { formatToolError } from "../tools/errors.js"
@@ -1388,6 +1395,11 @@ export class RuntimeRunner {
         // I5: the kernel itself withholds statically denied tools (`hide_denied_tools`) and renders
         // the denial note — the host sends exactly the context and surface the kernel committed.
         const context = action.context
+        // Plan task 1.1c · the kernel keeps provider replay with each turn's item; hand it to the
+        // provider keyed by the turn exactly as rendered, so its own lookup finds it.
+        for (const turn of context.turns) {
+          if (turn.providerReplay) this.opts.provider.seedProviderReplay?.(turn, turn.providerReplay)
+        }
         const tools = action.tools
         let turnTokens = 0
         let turnInputTokens = 0
@@ -1590,6 +1602,20 @@ export class RuntimeRunner {
         // P4-S1: land the attempt evidence BEFORE the kernel resolution commits — the record
         // describes the transport fact, which exists regardless of what the kernel decides next.
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
+        // Plan task 1.1c · the kernel keeps the replay with the turn's item from here on.
+        if (providerReplay !== undefined) {
+          providerEvent.message = { ...(providerEvent.message as Record<string, unknown>), replay: providerReplay }
+        }
+        // Plan task 5.1 · server-side context edits become facts the kernel absorbs.
+        const contextEdits = this.opts.provider.takeContextEdits?.()
+        if (contextEdits?.compaction) {
+          providerEvent.provider_compaction = {
+            through_item: contextEdits.compaction.throughItem,
+            replay: contextEdits.compaction.replay,
+            summary_tokens: contextEdits.compaction.summaryTokens,
+          }
+        }
+        if (contextEdits?.clearedToolResults?.length) providerEvent.cleared_tool_results = contextEdits.clearedToolResults
         const wireEvidence = {
           protocol: this.providerRoute.protocol,
           request_fingerprint: providerPlan.fingerprint,
@@ -2329,6 +2355,89 @@ export class RuntimeRunner {
         this.abortController = null
         this.pendingObservations = []
       }
+    }
+  }
+
+  /**
+   * Plan task 6.3 · run a host program that decides which agents to run as it goes. Each
+   * `agent` / `parallelAgents` call is admitted by the kernel onto this operation's dynamic
+   * workflow root and driven to its typed outcome before the call returns; submissions and
+   * blackboard writes reach the kernel one at a time, in program order. Requires a standalone runner.
+   */
+  async runDynamicWorkflow<TArgs extends Record<string, unknown>, T>(
+    program: (context: DynamicWorkflowContext<TArgs>) => Promise<T> | T,
+    opts: { sessionId?: string; runId?: string; args?: TArgs; limits?: DynamicWorkflowLimits } = {},
+  ): Promise<DynamicWorkflowRun<T>> {
+    if (this.activeKernel || this.currentSessionId) {
+      throw new Error("dynamic workflows require a standalone RuntimeRunner")
+    }
+    const sessionId = opts.sessionId ?? `dw-${crypto.randomUUID()}`
+    const runId = opts.runId ?? crypto.randomUUID()
+    try {
+      await this.opts.sessionLog.append(sessionId, {
+        kind: "run_started",
+        run_id: runId,
+        goal: "dynamic-workflow",
+        criteria: [],
+        ...(this.opts.agentId ? { agent_id: this.opts.agentId } : {}),
+        route: this.providerRoute,
+      })
+      const runtime = await this.initializeWorkflowKernel(sessionId, runId)
+      await runtime.startDynamicWorkflow()
+      runtime.drainHostObservations()
+      let tail: Promise<unknown> = Promise.resolve()
+      const exclusive = <R>(work: () => Promise<R>): Promise<R> => {
+        const next = tail.then(work)
+        tail = next.catch(() => undefined)
+        return next
+      }
+      const host: DynamicWorkflowHost = {
+        runWorkflow: (spec, plan) => exclusive(async () => {
+          const start = this.pendingObservations.length
+          const action = await runtime.appendWorkflowNodes(workflowSpecToKernel(spec), plan)
+          this.pendingObservations.push(...runtime.drainHostObservations())
+          const observations = this.pendingObservations.slice(start)
+          const rejected = observations.find(o => o.kind === "control_request_rejected") as { reason?: string } | undefined
+          if (!action || rejected) {
+            return { nodeOutcomes: [], outputs: {}, rejection: { operation: "submit_workflow_nodes", reason: rejected?.reason ?? "the kernel admitted no nodes" } } as WorkflowOutcome
+          }
+          const submitted = observations.find(o => o.kind === "workflow_nodes_submitted") as { base?: number } | undefined
+          const base = Number.isInteger(submitted?.base) ? submitted!.base! : 0
+          const outcome = await this.driveWorkflow(action, observations, sessionId, runtime, new Map())
+          // The kernel names appended nodes by position (wf-node<base+i>); the program by its own ids.
+          const toHost = new Map(spec.nodes.map((node, index) => [`wf-node${base + index}`, node.nodeId ?? `wf-node${base + index}`]))
+          return {
+            ...outcome,
+            nodeOutcomes: outcome.nodeOutcomes.map(node => ({ ...node, nodeId: toHost.get(node.nodeId) ?? node.nodeId })),
+            outputs: Object.fromEntries(Object.entries(outcome.outputs).map(([id, output]) => [toHost.get(id) ?? id, output])),
+          }
+        }),
+        // Plan task 6.2 · a keyed kernel item on this operation; agents spawned later inherit it.
+        writeBlackboard: (key, content) => exclusive(async () => {
+          await this.commitKernelApply(runtime, this.pendingObservations, content === undefined
+            ? { kind: "remove_knowledge", key: `blackboard:${key}` }
+            : { kind: "add_knowledge_message", key: `blackboard:${key}`, content, tokens: Math.max(1, Math.ceil(content.length / 4)) })
+        }),
+      }
+      const context = new DynamicWorkflowContextImpl<TArgs>(host, runId, (opts.args ?? {}) as TArgs, opts.limits)
+      const value = await program(context)
+      const closing = await exclusive(async () => {
+        const action = await runtime.completeDynamicWorkflow()
+        this.pendingObservations.push(...runtime.drainHostObservations())
+        return action
+      })
+      const terminal = closing ?? runtime.resumeAction()
+      if (!terminal || terminal.kind !== "done") {
+        throw new Error("dynamic workflow close did not produce a terminal kernel action")
+      }
+      await this.appendObservations(sessionId, runtime, 0)
+      return { runId, value, progress: context.progress }
+    } finally {
+      this.rejectPendingControl("the run ended before the control command was applied")
+      this.activeKernel = null
+      this.currentSessionId = null
+      this.abortController = null
+      this.pendingObservations = []
     }
   }
 

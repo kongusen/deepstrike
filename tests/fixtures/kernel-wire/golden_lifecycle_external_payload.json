@@ -1,7 +1,7 @@
 {
   "description": "The §7.10 external-payload arc (Task 13): configure → agent start → a provider turn calling one host tool → an **external** tool result → the model's `read_result` page-in → the loaded body. Read the records: the persisted body appears in exactly one place on this whole chain — the `payload_loaded` outcome the host sent when the kernel asked for it. It is in no effect the kernel published and in no accepted input the kernel did not ask for, which is what §25.10 means by \"large bodies do not enter the journal\". What the kernel holds instead is the reference: an opaque `payload_ref` it never interprets, a digest it checks the restored body against, and a bounded preview that is the only part to occupy context.",
   "genesis_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
-  "head_digest": "sha256:658d36e8af89748f10343ea735e517ef5e4a40818c03685f06bc8fe8fc68b0e2",
+  "head_digest": "sha256:16bfdb29fabeced42dbd52a2e3ea07e565b4c1dbd5dd9e53ae286900440fe2d6",
   "links": [
     {
       "envelope": {
@@ -151,8 +151,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
-        "record_digest": "sha256:969a66fdbefc0ac135132349c93e944b9a74d90f35e46182a6b731a3515970ec",
-        "step_digest": "sha256:c72277f45ca6a7c874e5753623a578e3858c1227da6b85c62c4bba18e63c3eb5",
+        "record_digest": "sha256:65f8aa14bfd98b249d360c94583dc875dfc15530b0f5b1556ee0c400ba412d73",
+        "step_digest": "sha256:67ce43c3b28b30e80322643ce891aef627e1df72e9f4eba884ee90d93f611ab6",
         "step_seq": "1"
       },
       "step": {
@@ -162,6 +162,7 @@
               "causation_input_id": "in-start",
               "effect": {
                 "context": {
+                  "estimated_tokens": 283,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
                     "role": "user"
@@ -169,6 +170,7 @@
                   "turns": [
                     {
                       "content": "Proceed with the task described in [TASK STATE].",
+                      "item_id": 1,
                       "role": "user"
                     }
                   ]
@@ -288,8 +290,8 @@
         "input_digest": "sha256:8d01c323dcb5b9059957a498afed825d767f916cc919abce37f8e9317a2b53bd",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:969a66fdbefc0ac135132349c93e944b9a74d90f35e46182a6b731a3515970ec",
-        "record_digest": "sha256:3e10025df6ba811673c7c14a4e0933a94c4cce79a96c72a73398cbabc5ac553e",
+        "previous_record_digest": "sha256:65f8aa14bfd98b249d360c94583dc875dfc15530b0f5b1556ee0c400ba412d73",
+        "record_digest": "sha256:ff642b54baabdb7835a74e3a0aafd282b03abed0f4ac11990aba78e84149bd83",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -357,9 +359,9 @@
         "input_digest": "sha256:333a77d94e1856e4e8fe04050213046abe753c7d9959bd4bbb7134d4564d1018",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:3e10025df6ba811673c7c14a4e0933a94c4cce79a96c72a73398cbabc5ac553e",
-        "record_digest": "sha256:ff8a448f1e7201449d13c85a3d91b9a77c70efdf71b06d802f0d4a27ed09b92b",
-        "step_digest": "sha256:bf7aee0fc505b642442b476f2961752c830669572747cb67b84bb936f5afa5d7",
+        "previous_record_digest": "sha256:ff642b54baabdb7835a74e3a0aafd282b03abed0f4ac11990aba78e84149bd83",
+        "record_digest": "sha256:b37b30bb09f10816ef095d81a7ec27f37407bda3e47c5eaa6f4e669a12dd6fd4",
+        "step_digest": "sha256:102fdff41fcc4dd05a7d4877f21311a3a3d5009b9d49eb3a7da2ddbaaec85d7e",
         "step_seq": "3"
       },
       "step": {
@@ -369,6 +371,7 @@
               "causation_input_id": "in-results",
               "effect": {
                 "context": {
+                  "estimated_tokens": 439,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                     "role": "user"
@@ -376,10 +379,12 @@
                   "turns": [
                     {
                       "content": "Proceed with the task described in [TASK STATE].",
+                      "item_id": 1,
                       "role": "user"
                     },
                     {
                       "content": "",
+                      "item_id": 2,
                       "role": "assistant",
                       "tool_calls": [
                         {
@@ -393,6 +398,7 @@
                     },
                     {
                       "content": "the full report body, far la…",
+                      "item_id": 3,
                       "role": "tool",
                       "tool_call_id": "call-1"
                     }
@@ -555,8 +561,8 @@
         "input_digest": "sha256:332d904efa8994ee2aa9c68acbc12ea3279ac07fa3d630e465a258266f3bf1cc",
         "input_id": "in-read",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:ff8a448f1e7201449d13c85a3d91b9a77c70efdf71b06d802f0d4a27ed09b92b",
-        "record_digest": "sha256:4577d888df71a716240ab310fe74db605e85e0a71a4915e1aba9beef769d0640",
+        "previous_record_digest": "sha256:b37b30bb09f10816ef095d81a7ec27f37407bda3e47c5eaa6f4e669a12dd6fd4",
+        "record_digest": "sha256:293cfe93af8e94d01c1ff5651cde5773ff4342a52f0812f613455577110bb876",
         "step_digest": "sha256:133a194cd855dc754907fc7174ca3da970c5c7ecfd3f86e180165afded54d338",
         "step_seq": "4"
       },
@@ -612,9 +618,9 @@
         "input_digest": "sha256:bfbf740950a71e6ccf181a3b3b64e189b27db28d79189d814fc7a7e02cbcb904",
         "input_id": "in-loaded",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:4577d888df71a716240ab310fe74db605e85e0a71a4915e1aba9beef769d0640",
-        "record_digest": "sha256:658d36e8af89748f10343ea735e517ef5e4a40818c03685f06bc8fe8fc68b0e2",
-        "step_digest": "sha256:2e1f507a4d4c3db9902159a95342f80c57e9a8fba210a698dfb462594b9c3682",
+        "previous_record_digest": "sha256:293cfe93af8e94d01c1ff5651cde5773ff4342a52f0812f613455577110bb876",
+        "record_digest": "sha256:16bfdb29fabeced42dbd52a2e3ea07e565b4c1dbd5dd9e53ae286900440fe2d6",
+        "step_digest": "sha256:2acf1b5b917128419da98750094c25b8f01584976c027247f45835f137fea2fc",
         "step_seq": "5"
       },
       "step": {
@@ -624,6 +630,7 @@
               "causation_input_id": "in-loaded",
               "effect": {
                 "context": {
+                  "estimated_tokens": 339,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                     "role": "user"
@@ -631,10 +638,12 @@
                   "turns": [
                     {
                       "content": "Proceed with the task described in [TASK STATE].",
+                      "item_id": 1,
                       "role": "user"
                     },
                     {
                       "content": "",
+                      "item_id": 2,
                       "role": "assistant",
                       "tool_calls": [
                         {
@@ -648,11 +657,13 @@
                     },
                     {
                       "content": "the full report body, far la…",
+                      "item_id": 3,
                       "role": "tool",
                       "tool_call_id": "call-1"
                     },
                     {
                       "content": "",
+                      "item_id": 4,
                       "role": "assistant",
                       "tool_calls": [
                         {
@@ -666,11 +677,13 @@
                     },
                     {
                       "content": "page-in requested",
+                      "item_id": 5,
                       "role": "tool",
                       "tool_call_id": "call-2"
                     },
                     {
                       "content": "[PAYLOAD handle_id=call-1]\nthe full report body, far larger than this operation keeps resident, repeated so it clears the inline threshold by a comfortable margin",
+                      "item_id": 6,
                       "role": "user"
                     }
                   ]

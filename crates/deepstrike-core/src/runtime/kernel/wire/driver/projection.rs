@@ -327,6 +327,8 @@ impl CanonicalOperationDriver {
                     last_referenced_turn: entry.value.last_referenced_turn,
                     expanded: entry.value.expanded,
                     paged_in_after_evict: entry.value.paged_in_after_evict,
+                    strong_refs: entry.value.strong_refs,
+                    lexical_refs: entry.value.lexical_refs,
                 })
                 .collect(),
             retired_items: ctx.partitions.knowledge.retired.clone(),
@@ -338,6 +340,27 @@ impl CanonicalOperationDriver {
             history_tally: ctx.history_tally.values().copied().collect(),
             retired_history: ctx.retired_history.iter().copied().collect(),
             retired_history_omitted: ctx.retired_history_omitted,
+            last_request_estimate: ctx.last_request_estimate,
+            item_replays: ctx
+                .item_replays
+                .iter()
+                .map(|(item, (replay, _))| super::super::checkpoint::ItemReplayState {
+                    item: *item,
+                    replay: replay.clone(),
+                })
+                .collect(),
+            estimate_samples: ctx
+                .estimate_samples
+                .iter()
+                .map(|&(estimate, count)| [estimate, count])
+                .collect(),
+            held_history: ctx
+                .held_history
+                .iter()
+                .map(|(message, tokens)| {
+                    self.project_message(MessagePartition::History, message, *tokens)
+                })
+                .collect(),
             signals: ctx.partitions.signals.clone(),
             messages: ctx
                 .partitions

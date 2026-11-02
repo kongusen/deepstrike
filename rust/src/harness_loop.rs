@@ -782,5 +782,8 @@ fn rendered_context_from_messages(messages: Vec<CoreMessage>) -> InternalRendere
         state_turn: None,
         frozen_prefix_len: None,
         budget_overflow: None,
+        turn_items: Vec::new(),
+        estimated_tokens: 0,
+        turn_replays: Vec::new(),
     }
 }
