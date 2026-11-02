@@ -1,12 +1,12 @@
-# Migration from 0.2.77 to 0.3.0
+# Migration from 0.2.77 to 0.2.78
 
-0.3.0 removes the context evidence layer and the Evolution Runtime. There is no compatibility
+0.2.78 removes the context evidence layer and the Evolution Runtime. There is no compatibility
 layer. This file grows as later stages of the
 [context-lifecycle-first plan](./docs/plans/context-lifecycle-first.md) land.
 
 ## Stored state
 
-Journals and checkpoints written by 0.2.77 cannot be restored by 0.3.0. Provider-call effects no
+Journals and checkpoints written by 0.2.77 cannot be restored by 0.2.78. Provider-call effects no
 longer carry `context_candidate`; checkpoints no longer carry `state_generation`, and workflow node
 state no longer carries `kind` or `iterations_completed`. These types reject unknown fields. Finish
 or abandon in-flight operations before upgrading.
@@ -25,7 +25,7 @@ seq. Node, Python, and WASM return them unchanged, with a `kind` outside the `Se
   look for it in system knowledge right after the push need to look in the state turn.
 - Checkpoints carry new context fields (`prefix_sent`, `cache_invalidated_tokens`,
   `evicted_knowledge_keys`, `knowledge_regret`, `knowledge_wasted_tokens`, and `staged` on each
-  knowledge slot). They default when absent, but 0.2.77 cannot read checkpoints written by 0.3.0.
+  knowledge slot). They default when absent, but 0.2.77 cannot read checkpoints written by 0.2.78.
 - Memory recall is issued by the kernel. The first effect of a run with a memory store and scope
   is a `query_memory` whose `causation.kind` is `kernel_recall`; a custom host that executes
   effects itself must answer it like any memory query. `memory_query_result` hits should carry the

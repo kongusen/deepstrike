@@ -1,6 +1,8 @@
 # 上下文优先：DeepStrike 架构转向实施计划
 
-> 修订 2026-11-01：确认允许破坏式更新。被取代的机制直接删除，不保留插件、兼容层或同名模板；迁移说明统一写进 `MIGRATION-0.2.77-to-0.3.0.md`。
+> 修订 2026-11-01：确认允许破坏式更新。被取代的机制直接删除，不保留插件、兼容层或同名模板；迁移说明按版本写进 `MIGRATION-0.2.77-to-0.2.78.md` 等文件。
+>
+> 修订 2026-11-02：不跳到 0.3.0，本计划分四个版本 0.2.78–0.2.81 发布，见“版本规划”。
 
 ## 概览
 
@@ -188,12 +190,7 @@ ContextItem {
 - ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
 - `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
 
-下一步（按顺序）：
-
-1. ~~补跑上面未跑的测试，提交未提交的改动和 `live.mjs`~~（已完成：Rust SDK、WASM、Python、contracts、conformance、parity 均通过）。
-2. ~~修 DeepSeek replay 问题~~（已修），重跑 `live.mjs --provider deepseek --tasks 12` 的三个变体（基线 full、分支 full、分支 handle），据此决定默认 edge mode 是否改为 `handle`（任务 3.1 的未做项）。
-3. 任务 6.3 的 Rust 部分：Rust runner 目前所有 workflow spawn 都会失败，先补 Rust workflow 编排，再按 Python、WASM 顺序补宿主程序 API。
-4. 任务 1.1（ContextItem），之后是 4.1 的逐 item 明细、4.2、4.3 的 lab 工具、5.1（被 1.1 和 ABI 扩展阻塞）、6.2。
+下一步：见下面的“版本规划”，当前在 0.2.78 的第 1 项。
 
 换设备时的环境准备：
 
@@ -202,6 +199,25 @@ ContextItem {
 - `.env` 不在仓库里，需要 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`（本次用 `deepseek-flash`）。
 - WASM 测试要求 rustup 工具链在 PATH 上；Python 测试用独立 venv（仓库自带的 venv 不可用）。
 - golden 变化时用 `BLESS_KERNEL_RECORD_FIXTURES=1 cargo test -p deepstrike-core --lib <测试名>` 重新生成。
+
+## 版本规划（2026-11-02）
+
+不跳到 0.3.0。每个版本一个分支、一个 PR，合入后发布；每个有破坏性变化的版本单独写 `MIGRATION-<上一版>-to-<本版>.md`。
+
+| 版本 | 内容 | 状态 |
+|------|------|------|
+| 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1 汇总、6.1；replay 修复；默认 edge mode；Rust workflow 编排 | 进行中 |
+| 0.2.79 | 1.1a/1.1b：ContextItem 与 origin 默认值表，knowledge、history、handle 都映射为 item，lease 到期；4.1 逐 item 明细与 recall 命中率 | 未开始 |
+| 0.2.80 | 4.3 lab 工具（`deepstrike-lab`）；4.2 引用证据分级与 `RelevanceJudge`，用 lab 对比纯词法版本 | 未开始 |
+| 0.2.81 | 1.1c：item 稳定 id 进入消息 ABI，provider replay 改按 id 作 key（替代按内容作 key，Anthropic native blocks 一并改）；5.1 吸收 provider 改写（与 1.1c 共用一次 ABI 扩展）；6.2 blackboard；6.3 Python、WASM 宿主程序 API | 未开始 |
+
+0.2.78 剩余步骤：
+
+1. 重建基线 worktree，重跑 `live.mjs --provider deepseek` 的三个变体（基线 full、分支 full、分支 handle），每组 24 题，据此决定默认 edge mode（3.1 未做项）。
+2. 任务 6.3 的 Rust 部分：Rust runner 目前所有 workflow spawn 都会失败，补 Rust workflow 编排。
+3. 同步删除清单，升版本号到 0.2.78，开 PR。
+
+零散未做项（2.1 plan 变更时召回、3.2 Full 的 token 代价、3.1 的 `fields` 切片、`benchmark-0.2.74` 版本守卫）不单独排期，在碰到相关代码的版本里顺带完成。
 
 ## 删除清单
 
