@@ -143,10 +143,10 @@ fn resume_after_preload_emits_call_llm_without_duplicate_user() {
         CoreMessage::user("prior goal"),
         CoreMessage::assistant("partial"),
     ]);
-    let history_len = sm.ctx.partitions.history.messages.len();
+    let history_len = sm.ctx.partitions.history.len();
     let action = sm.resume_after_preload();
     assert!(matches!(action, LoopAction::CallLLM { .. }));
-    assert_eq!(sm.ctx.partitions.history.messages.len(), history_len);
+    assert_eq!(sm.ctx.partitions.history.len(), history_len);
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn llm_response_without_tools_terminates_and_saves_to_history() {
     assert!(matches!(action, LoopAction::Done { .. }));
     assert!(sm.is_terminal());
     // Final response is committed to history
-    let history = &sm.ctx.partitions.history.messages;
+    let history = sm.ctx.partitions.history.messages();
     assert!(
         history
             .iter()
@@ -234,7 +234,7 @@ fn critical_signal_goes_to_signals_not_history() {
     use crate::types::signal::{SignalSource, SignalType, Urgency};
     let mut sm = sm();
     sm.start(RuntimeTask::new("test"));
-    let history_len_before = sm.ctx.partitions.history.messages.len();
+    let history_len_before = sm.ctx.partitions.history.len();
 
     let sig = RuntimeSignal::new(
         SignalSource::Gateway,
@@ -262,7 +262,7 @@ fn critical_signal_goes_to_signals_not_history() {
             .iter()
             .any(|directive| directive.contains("fire"))
     );
-    assert_eq!(sm.ctx.partitions.history.messages.len(), history_len_before);
+    assert_eq!(sm.ctx.partitions.history.len(), history_len_before);
 }
 
 #[test]
@@ -1256,7 +1256,7 @@ fn assistant_calling(calls: Vec<ToolCall>) -> CoreMessage {
 }
 
 fn history_contains(sm: &LoopStateMachine, needle: &str) -> bool {
-    sm.ctx.partitions.history.messages.iter().any(|m| {
+    sm.ctx.partitions.history.messages().iter().any(|m| {
         matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
             p,
             ContentPart::ToolResult { output, .. } if output.contains(needle)
@@ -1372,7 +1372,7 @@ fn history_tool_result_count(sm: &LoopStateMachine, needle: &str) -> usize {
     sm.ctx
         .partitions
         .history
-        .messages
+        .messages()
         .iter()
         .filter_map(|m| match &m.content {
             Content::Parts(parts) => Some(parts),
@@ -1568,7 +1568,7 @@ fn dispatch_gate_denies_task_tools_before_the_first_call_llm() {
         message: assistant_calling(vec![call("c1", "anything")]),
     });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
-    assert!(sm.ctx.partitions.history.messages.iter().any(|message| {
+    assert!(sm.ctx.partitions.history.messages().iter().any(|message| {
         matches!(&message.content, Content::Parts(parts) if parts.iter().any(|part| {
             matches!(part, ContentPart::ToolResult { call_id, is_error: true, .. } if call_id == "c1")
         }))
@@ -1993,7 +1993,7 @@ fn preload_history_and_drain_new_messages() {
         CoreMessage::assistant("Hi! I remember."),
     ];
     sm.preload_history(prior.clone());
-    assert_eq!(sm.ctx.partitions.history.messages.len(), 2);
+    assert_eq!(sm.ctx.partitions.history.len(), 2);
 
     // Start a new turn
     sm.start(RuntimeTask::new("What did I say before?"));
@@ -2055,7 +2055,7 @@ fn tool_result_content_parts_preserved_as_json() {
         .ctx
         .partitions
         .history
-        .messages
+        .messages()
         .iter()
         .filter(|m| matches!(m.role, crate::types::message::Role::Tool))
         .collect();
@@ -2387,7 +2387,7 @@ fn governance_deny_commits_error_result_without_rollback() {
     sm.start(RuntimeTask::new("fix the bug"));
     let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(gov_call("call_w", "write_file"));
-    let history_before = sm.ctx.partitions.history.messages.len();
+    let history_before = sm.ctx.partitions.history.len();
 
     let action = sm.feed(LoopEvent::LLMResponse { message: msg });
 
@@ -2402,7 +2402,7 @@ fn governance_deny_commits_error_result_without_rollback() {
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "governance denial must not roll the turn back"
     );
-    let history = &sm.ctx.partitions.history.messages;
+    let history = sm.ctx.partitions.history.messages();
     assert!(
         history.len() >= history_before + 2,
         "assistant attempt + denial result must be committed"
@@ -2456,7 +2456,7 @@ fn governance_deny_executes_allowed_siblings() {
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "merged denial must not roll the committed turn back"
     );
-    let history = &sm.ctx.partitions.history.messages;
+    let history = sm.ctx.partitions.history.messages();
     let has = |id: &str| {
         history.iter().any(|m| match &m.content {
             Content::Parts(parts) => parts
@@ -2793,13 +2793,13 @@ fn tool_measurement_is_consumed_once_and_unmatched_evidence_does_not_leak() {
         "missing evidence must not fabricate or reuse usage"
     );
     let history = &sm.ctx.partitions.history;
-    assert_eq!(history.measurements[1].tokens, 37);
+    assert_eq!(history.measurements()[1].tokens, 37);
     assert_eq!(
-        history.measurements[2].tokens,
-        sm.ctx.engine.count_message(&history.messages[2])
+        history.measurements()[2].tokens,
+        sm.ctx.engine.count_message(&history.messages()[2])
     );
     assert!(
-        serde_json::to_value(&history.messages[1])
+        serde_json::to_value(&history.messages()[1])
             .unwrap()
             .get("token_count")
             .is_none()
@@ -3077,7 +3077,7 @@ fn large_tool_result_continues_inline_without_a_host_persistence_effect() {
         .ctx
         .partitions
         .history
-        .messages
+        .messages()
         .iter()
         .flat_map(|message| match &message.content {
             Content::Parts(parts) => Some(parts),
@@ -4794,7 +4794,7 @@ fn fatal_tool_error_commits_as_visible_error_result() {
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "fatal tool errors commit as visible error results, not rollbacks"
     );
-    let error_visible = sm.ctx.partitions.history.messages.iter().any(|m| {
+    let error_visible = sm.ctx.partitions.history.messages().iter().any(|m| {
         matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
             p,
             ContentPart::ToolResult { output, is_error: true, .. } if output.contains("disk corrupt")
@@ -4823,7 +4823,7 @@ fn tool_batch_timeout_commits_timeout_error_results() {
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "a tool-batch timeout commits error results, not a rollback"
     );
-    let timeout_visible = sm.ctx.partitions.history.messages.iter().any(|m| {
+    let timeout_visible = sm.ctx.partitions.history.messages().iter().any(|m| {
         matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
             p,
             ContentPart::ToolResult { call_id, output, is_error: true, .. }
@@ -4988,7 +4988,7 @@ fn repeat_fuse_denies_at_threshold_and_feeds_directive_back() {
             .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
         "deny rung commits the attempt — no rollback"
     );
-    let directive_visible = sm.ctx.partitions.history.messages.iter().any(|m| {
+    let directive_visible = sm.ctx.partitions.history.messages().iter().any(|m| {
         matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
             p,
             ContentPart::ToolResult { output, is_error: true, .. }
@@ -5309,7 +5309,7 @@ fn pace_with_sibling_tool_calls_leaves_no_orphan_pairs() {
     );
 
     // Every tool_use id in history must have a matching tool_result.
-    let history = &sm.ctx.partitions.history.messages;
+    let history = sm.ctx.partitions.history.messages();
     let call_ids: Vec<String> = history
         .iter()
         .flat_map(|m| m.tool_calls.iter().map(|c| c.id.to_string()))

@@ -220,7 +220,7 @@ fn recoverable_tool_error_does_not_rollback() {
         sm.ctx
             .partitions
             .history
-            .messages
+            .messages()
             .iter()
             .any(|m| m.role == Role::Tool)
     );
@@ -242,7 +242,7 @@ fn fatal_tool_error_commits_with_visible_reason() {
             }],
         },
     });
-    assert_eq!(sm.ctx.partitions.history.messages.len(), 2);
+    assert_eq!(sm.ctx.partitions.history.len(), 2);
 
     let action = sm.feed(LoopEvent::ToolResults {
         results: vec![ToolResult {
@@ -258,9 +258,9 @@ fn fatal_tool_error_commits_with_visible_reason() {
     assert!(matches!(action, LoopAction::CallLLM { .. }));
     // Trained convention: the failed attempt and its error stay visible in history
     // (assistant tool_use + error tool result), and the turn completes — no rollback.
-    assert_eq!(sm.ctx.partitions.history.messages.len(), 3);
+    assert_eq!(sm.ctx.partitions.history.len(), 3);
     assert_eq!(sm.turn, 1);
-    assert!(sm.ctx.partitions.history.messages.iter().any(|m| {
+    assert!(sm.ctx.partitions.history.messages().iter().any(|m| {
         matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
             p,
             ContentPart::ToolResult { output, is_error: true, .. }

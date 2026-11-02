@@ -60,7 +60,7 @@ fn recoverable_error_preserves_history() {
     sm.start(RuntimeTask::new("test"));
     sm.feed(make_llm_response_with_tool_call("c1", "write_file"));
 
-    let history_before = sm.ctx.partitions.history.messages.len();
+    let history_before = sm.ctx.partitions.history.len();
 
     sm.feed(LoopEvent::ToolResults {
         results: vec![ToolResult {
@@ -75,7 +75,7 @@ fn recoverable_error_preserves_history() {
 
     // Turn incremented, no rollback
     assert_eq!(sm.turn, 1);
-    assert!(sm.ctx.partitions.history.messages.len() > history_before);
+    assert!(sm.ctx.partitions.history.len() > history_before);
     let obs = sm.take_observations();
     assert!(
         !obs.iter()
@@ -116,7 +116,7 @@ fn fatal_error_kind_commits_as_visible_error_result() {
     sm.start(RuntimeTask::new("test"));
     sm.feed(make_llm_response_with_tool_call("c1", "write_file"));
 
-    let history_at_checkpoint = sm.ctx.partitions.history.messages.len();
+    let history_at_checkpoint = sm.ctx.partitions.history.len();
 
     sm.feed(LoopEvent::ToolResults {
         results: vec![ToolResult {
@@ -131,7 +131,7 @@ fn fatal_error_kind_commits_as_visible_error_result() {
 
     // The failed attempt stays in history (models adapt to errors they can see) and the turn
     // completes — no rollback.
-    assert!(sm.ctx.partitions.history.messages.len() > history_at_checkpoint);
+    assert!(sm.ctx.partitions.history.len() > history_at_checkpoint);
     assert_eq!(sm.turn, 1);
     let obs = sm.take_observations();
     let rolled = obs

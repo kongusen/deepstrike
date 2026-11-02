@@ -223,8 +223,8 @@ impl CanonicalOperationDriver {
         };
         let ctx = &engine.ctx;
         ContextVmState {
-            system_measurements: ctx.partitions.system.measurements.clone(),
-            history_measurements: ctx.partitions.history.measurements.clone(),
+            system_measurements: ctx.partitions.system.measurements().to_vec(),
+            history_measurements: ctx.partitions.history.measurements().to_vec(),
             knowledge_reference_step: ctx.knowledge_checkpoint_state().0,
             knowledge_budget_warned: ctx.knowledge_checkpoint_state().1,
             prefix_sent: ctx.cache_checkpoint_state().0,
@@ -330,7 +330,7 @@ impl CanonicalOperationDriver {
                 .collect(),
             retired_items: ctx.partitions.knowledge.retired.clone(),
             item_turn: ctx.partitions.knowledge.turn,
-            history_items: (0..ctx.partitions.history.messages.len())
+            history_items: (0..ctx.partitions.history.len())
                 .map(|index| ctx.partitions.history.tag(index))
                 .collect(),
             last_item_id: ctx.last_item_id,
@@ -339,7 +339,7 @@ impl CanonicalOperationDriver {
             messages: ctx
                 .partitions
                 .system
-                .messages
+                .messages()
                 .iter()
                 .enumerate()
                 .map(|(index, message)| {
@@ -348,20 +348,20 @@ impl CanonicalOperationDriver {
                         message,
                         ctx.partitions
                             .system
-                            .measurements
+                            .measurements()
                             .get(index)
                             .map(|measurement| measurement.tokens)
                             .unwrap_or_else(|| ctx.engine.count_message(message)),
                     )
                 })
-                .chain(ctx.partitions.history.messages.iter().enumerate().map(
+                .chain(ctx.partitions.history.messages().iter().enumerate().map(
                     |(index, message)| {
                         self.project_message(
                             MessagePartition::History,
                             message,
                             ctx.partitions
                                 .history
-                                .measurements
+                                .measurements()
                                 .get(index)
                                 .map(|measurement| measurement.tokens)
                                 .unwrap_or_else(|| ctx.engine.count_message(message)),
@@ -371,11 +371,11 @@ impl CanonicalOperationDriver {
                 .collect(),
             task_state: project_task_state(&ctx.partitions.task_state),
             partition_tokens: PartitionTokenState {
-                system: ctx.partitions.system.token_count,
+                system: ctx.partitions.system.token_count(),
                 knowledge: ctx.partitions.knowledge.token_count,
-                history: ctx.partitions.history.token_count,
+                history: ctx.partitions.history.token_count(),
             },
-            history_len: ctx.partitions.history.messages.len() as u32,
+            history_len: ctx.partitions.history.len() as u32,
             frozen_history_len: ctx.frozen_history_len() as u32,
             last_activity_ms: WireU64::new(ctx.last_activity_ms),
             last_compact_ms: ctx.last_compact_ms.map(WireU64::new),

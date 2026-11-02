@@ -61,7 +61,7 @@ fn resolved_context_policy_reaches_the_semantic_engine() {
     }
     engine.ctx.renew();
     assert_eq!(
-        engine.ctx.partitions.history.messages.len(),
+        engine.ctx.partitions.history.len(),
         4,
         "the renewal component must use the installed 40% policy rather than its 5% default"
     );
@@ -2969,7 +2969,7 @@ fn parallel_memory_queries_reuse_or_refuse_without_terminating_the_turn() {
             .ctx
             .partitions
             .history
-            .messages;
+            .messages();
         let result = history.iter().find_map(|message| {
             let Content::Parts(parts) = &message.content else {
                 return None;
@@ -3614,7 +3614,7 @@ fn an_external_tool_result_lands_as_a_preview_and_an_external_handle() {
         "§7.10 rule 3 · the P3 handle is where the reference lives"
     );
 
-    let rendered = serde_json::to_string(&engine.ctx.partitions.history.messages).unwrap();
+    let rendered = serde_json::to_string(engine.ctx.partitions.history.messages()).unwrap();
     assert!(
         rendered.contains("the full report body, far la"),
         "the preview is what occupies working context"
@@ -3840,7 +3840,7 @@ fn a_page_in_of_an_external_payload_loads_and_verifies_the_body() {
         Some(&Residency::Resident),
         "§25.9 · the handle is the fact, and it says the body came home"
     );
-    let rendered = serde_json::to_string(&engine.ctx.partitions.history.messages).unwrap();
+    let rendered = serde_json::to_string(engine.ctx.partitions.history.messages()).unwrap();
     assert!(
         rendered.contains("clears the inline threshold"),
         "the model reads the body it asked for"
@@ -4542,7 +4542,7 @@ fn history_text(runtime: &Runtime) -> Vec<String> {
                 .ctx
                 .partitions
                 .history
-                .messages
+                .messages()
                 .iter()
                 .map(|message| format!("{:?}:{}", message.role, message_text(message)))
                 .collect()
@@ -4704,7 +4704,7 @@ fn a_syscall_only_turn_continues_with_another_provider_call() {
             .ctx
             .partitions
             .history
-            .messages
+            .messages()
             .iter()
             .any(|message| message.tool_calls.len() == 2),
         "the model reads back the turn it actually emitted"
@@ -5139,7 +5139,7 @@ fn tool_result_call_ids(runtime: &Runtime) -> Vec<String> {
                 .ctx
                 .partitions
                 .history
-                .messages
+                .messages()
                 .iter()
                 .flat_map(|message| match &message.content {
                     Content::Parts(parts) => parts
@@ -5232,7 +5232,7 @@ fn an_externalised_fatal_stops_the_batch_exactly_as_an_inline_one_does() {
             .ctx
             .partitions
             .history
-            .messages
+            .messages()
             .iter()
             .any(
                 |message| matches!(&message.content, Content::Parts(parts) if parts
@@ -10102,11 +10102,11 @@ fn context_optimization_evidence_and_pending_knowledge_survive_checkpoint_restor
             7,
             true,
         );
-        ctx.partitions.history.measurements[0].source =
+        ctx.partitions.history.measurement_mut(0).source =
             crate::context::measurement::MeasurementSource::LocalExact {
                 tokenizer: "checkpoint-estimator".into(),
             };
-        ctx.partitions.history.measurements[0].confidence =
+        ctx.partitions.history.measurement_mut(0).confidence =
             crate::context::measurement::MeasurementConfidence::Exact;
     }
     let checkpoint = runtime.checkpoint().decode().unwrap();
@@ -10114,8 +10114,8 @@ fn context_optimization_evidence_and_pending_knowledge_survive_checkpoint_restor
     let before = &runtime.driver.engine().unwrap().ctx;
     let after = &restored.driver.engine().unwrap().ctx;
     assert_eq!(
-        before.partitions.history.measurements,
-        after.partitions.history.measurements
+        before.partitions.history.measurements(),
+        after.partitions.history.measurements()
     );
     assert_eq!(
         before.knowledge_checkpoint_state(),
@@ -10355,7 +10355,7 @@ fn a_structured_inline_tool_result_survives_checkpoint_restore() {
         .ctx
         .partitions
         .history
-        .messages
+        .messages()
         .iter()
         .find_map(|message| match &message.content {
             Content::Parts(parts) => parts.iter().find_map(|part| match part {
@@ -10428,7 +10428,7 @@ fn structured_tool_result_is_explicitly_downgraded_when_micro_compacted() {
     partitions.history.push(message, 3_000);
     let engine = ContextTokenEngine::char_approx();
     MicroCompactor.compress(&mut partitions, 0, 0, 0, &engine);
-    let Content::Parts(parts) = &partitions.history.messages[0].content else {
+    let Content::Parts(parts) = &partitions.history.messages()[0].content else {
         panic!("tool message remains structured")
     };
     let [
@@ -11532,7 +11532,7 @@ fn tool_result_for(runtime: &Runtime, call_id: &str) -> Option<(String, bool)> {
         .ctx
         .partitions
         .history
-        .messages
+        .messages()
         .iter()
         .find_map(|message| {
             let Content::Parts(parts) = &message.content else {
@@ -11687,7 +11687,7 @@ fn parallel_memory_proposals_reuse_or_refuse_without_terminating_the_turn() {
             .ctx
             .partitions
             .history
-            .messages;
+            .messages();
         assert!(crate::context::units::strict_tool_pairing_is_valid(history));
 
         let resumed = runtime.submit(&resolved(
@@ -11837,7 +11837,7 @@ fn the_lifecycle_report_counts_which_recalls_the_model_read() {
     // Plan task 1.1b · history messages are items with ids that survive a restore too.
     let tags = |runtime: &Runtime| {
         let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
-        (0..history.messages.len()).map(|index| history.tag(index)).collect::<Vec<_>>()
+        (0..history.len()).map(|index| history.tag(index)).collect::<Vec<_>>()
     };
     let live = tags(&runtime);
     assert!(live.iter().all(|tag| tag.id > 0));

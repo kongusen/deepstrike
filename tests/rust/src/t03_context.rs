@@ -42,9 +42,9 @@ fn compress_reduces_history_token_count() {
     for i in 0..20 {
         mgr.push_history(CoreMessage::user(format!("history message number {i}")), 40);
     }
-    let before = mgr.partitions.history.token_count;
+    let before = mgr.partitions.history.token_count();
     mgr.compress(PressureAction::AutoCompact);
-    assert!(mgr.partitions.history.token_count < before);
+    assert!(mgr.partitions.history.token_count() < before);
 }
 
 #[test]
@@ -193,9 +193,9 @@ fn toggle_memory_on_off() {
 #[test]
 fn push_history_updates_token_count() {
     let mut mgr = ContextManager::new(10_000);
-    assert_eq!(mgr.partitions.history.token_count, 0);
+    assert_eq!(mgr.partitions.history.token_count(), 0);
     mgr.push_history(CoreMessage::user("hello"), 50);
-    assert_eq!(mgr.partitions.history.token_count, 50);
+    assert_eq!(mgr.partitions.history.token_count(), 50);
 }
 
 #[test]

@@ -338,7 +338,7 @@ impl ContextManager {
         let live: std::collections::HashSet<CompactString> = self
             .partitions
             .history
-            .messages
+            .messages()
             .iter()
             .flat_map(|m| match &m.content {
                 Content::Parts(parts) => parts
@@ -495,14 +495,15 @@ impl ContextManager {
         target_tokens: u32,
         now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
-        let result = self.compression.compress(
+        let (saved, summary, archived, cache_at) = self.compression.compress(
             &mut self.partitions,
             action,
             self.max_tokens,
             target_tokens,
             &self.engine,
         );
-        if result.0 > 0 || !result.2.is_empty() {
+        let archived: Vec<CoreMessage> = archived.into_iter().map(|row| row.message).collect();
+        if saved > 0 || !archived.is_empty() {
             // The measurement describes the request before this rewrite, not the new context.
             self.last_observed_prompt_tokens = None;
         }
@@ -510,7 +511,7 @@ impl ContextManager {
             self.last_compact_ms = Some(ts);
         }
         // Archived messages have left history — drop their now-orphaned handles (bounds the table).
-        if !result.2.is_empty() {
+        if !archived.is_empty() {
             self.prune_orphaned_handles();
             // Compaction rewrote the history prefix — start a fresh collapse generation so
             // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
@@ -525,10 +526,10 @@ impl ContextManager {
         // leaves `[0..frozen]` byte-stable, so the deep cache survives the compaction and the boundary
         // holds — strictly more precise than the old `archived`-keyed reset, which missed an early
         // in-place Snip and needlessly re-anchored after a prefix-safe pass.
-        if result.3.is_some() {
-            self.frozen_history_len = self.partitions.history.messages.len();
+        if cache_at.is_some() {
+            self.frozen_history_len = self.partitions.history.len();
         }
-        result
+        (saved, summary, archived, cache_at)
     }
 
     /// W1-1 收口: the truthful compaction parameters the planner stamps into the [`EvictionPlan`],
@@ -563,7 +564,7 @@ impl ContextManager {
         // K1: renewal is a boundary — apply deferred knowledge upserts/removals now.
         self.sweep_knowledge_at_boundary();
         // P1-E: the renewed history is the new frozen base.
-        self.frozen_history_len = self.partitions.history.messages.len();
+        self.frozen_history_len = self.partitions.history.len();
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
@@ -617,11 +618,11 @@ impl ContextManager {
             }
         }
         self.last_item_id += 1;
-        let tag = ItemTag {
-            id: self.last_item_id,
-            origin: ItemOrigin::of_message(&msg),
-            injected_turn: self.partitions.knowledge.turn,
-        };
+        let tag = ItemTag::new(
+            self.last_item_id,
+            ItemOrigin::of_message(&msg),
+            self.partitions.knowledge.turn,
+        );
         let tally = self.tally(tag.origin);
         tally.items += 1;
         tally.tokens += u64::from(tokens);
@@ -774,7 +775,7 @@ impl ContextManager {
         });
         let mut history = self.history_tally.clone();
         let partition = &self.partitions.history;
-        for index in 0..partition.messages.len() {
+        for index in 0..partition.len() {
             let tag = partition.tag(index);
             if let Some(tally) = history.get_mut(&tag.origin) {
                 tally.resident_items += 1;
@@ -827,7 +828,7 @@ impl ContextManager {
         if let Some(entry) = knowledge.entries.last_mut() {
             entry.staged = true;
         }
-        let history = self.partitions.history.token_count;
+        let history = self.partitions.history.token_count();
         if self.partitions.knowledge.staged_tokens().saturating_mul(4) >= history {
             self.partitions.knowledge.promote_staged();
             self.cache_invalidated_tokens += u64::from(history);
@@ -836,7 +837,7 @@ impl ContextManager {
     }
 
     pub fn restore_frozen_history_len(&mut self, len: usize) -> bool {
-        if len > self.partitions.history.messages.len() {
+        if len > self.partitions.history.len() {
             return false;
         }
         self.frozen_history_len = len;
@@ -1487,12 +1488,12 @@ mod tests {
         mgr.note_read_back("dep:wf-node0");
 
         mgr.renew();
-        let carried: Vec<_> = (0..mgr.partitions.history.messages.len())
+        let carried: Vec<_> = (0..mgr.partitions.history.len())
             .map(|i| mgr.partitions.history.tag(i).id)
             .collect();
         assert!(carried.iter().all(|id| *id > 0), "renewal carries identity: {carried:?}");
         mgr.push_history(CoreMessage::user("next"), 3);
-        let last = mgr.partitions.history.messages.len() - 1;
+        let last = mgr.partitions.history.len() - 1;
         assert_eq!(mgr.partitions.history.tag(last).id, 4, "ids are never reused");
 
         let history = mgr.lifecycle_metrics().history;
@@ -1671,10 +1672,10 @@ mod tests {
             mgr.push_history(CoreMessage::user("history msg"), 50);
         }
         let knowledge_before = mgr.partitions.knowledge.token_count;
-        let history_before = mgr.partitions.history.token_count;
+        let history_before = mgr.partitions.history.token_count();
         mgr.compress(PressureAction::AutoCompact);
         assert_eq!(mgr.partitions.knowledge.token_count, knowledge_before);
-        assert!(mgr.partitions.history.token_count < history_before);
+        assert!(mgr.partitions.history.token_count() < history_before);
     }
 
     #[test]
@@ -2158,7 +2159,7 @@ mod tests {
         assert_eq!(mgr.handles.all().len(), 2);
 
         // Simulate compaction archiving the oldest tool-result message out of history.
-        mgr.partitions.history.messages.remove(0);
+        mgr.partitions.history.remove(0);
         mgr.prune_orphaned_handles();
 
         // The handle for the evicted message is gone; the live one is retained.
@@ -2187,7 +2188,7 @@ mod tests {
         let live_tool_results = mgr
             .partitions
             .history
-            .messages
+            .messages()
             .iter()
             .filter(|m| {
                 matches!(&m.content, Content::Parts(p)

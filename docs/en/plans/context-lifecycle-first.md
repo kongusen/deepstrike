@@ -150,10 +150,17 @@ all follow this rule.
   PagedOut = handle). `read_result` on an earlier tool result or a `dep:` dependency output counts
   as a read-back. The lifecycle report's `history` tallies by origin: items and tokens that entered
   history, those still there at the end, and read-backs.
-  - Not done (finished in 0.2.79): `ContextPartitions` as a render view over the item table. The
-    compression pipeline still operates on `Partition` by position and the item tags only travel
-    alongside; history items are reported as a per-origin tally, not item by item (listing every
-    item would make the report of a long run too large).
+  - 0.2.79 first item (2026-11-02): the system[0] and history `Partition` is an item table. Each
+    row is one item (its `ItemTag`, rendered message and host measurement), stored by column with
+    private fields and written only row by row; the renderer and the compression planners read the
+    message column as a read-only slice. Compaction acts on items: an item snip or micro rewrites in
+    place keeps its id and records the new `excerpt` fidelity (the checkpoint's `history_items`
+    writes the field only when it is not full); collapse and auto take whole rows out, and the
+    archived result carries the item tags. Fixed along the way: rollback used to truncate only the
+    message column, leaving measurements, tags and the token count misaligned; it now truncates
+    whole rows.
+  - Not done (a later 0.2.79 item): per-item history detail (history is reported as a per-origin
+    tally; listing every item needs a cap or the report of a long run grows too large).
 - ~~Original task 1.1: introduce `ContextItem`, the item table and the origin table in the kernel~~
   - Acceptance: `ContextPartitions` becomes a render view over the item table; `KnowledgeEntry`,
     history messages and handles all map to items and the old types are deleted. One table defines
@@ -420,7 +427,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | Release | Content | Status |
 |---------|---------|--------|
 | 0.2.78 | Current branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Awaiting merge |
-| 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Not started |
+| 0.2.79 | Finish 1.1 completely: ~~`ContextPartitions` as a render view over the item table, with the compression pipeline operating on items~~ (done); the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | In progress, branch `feat/context-items-0.2.79` |
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence and `RelevanceJudge`; 6.2 blackboard; 6.3 Python and WASM host program APIs. One `MIGRATION-0.2.79-to-0.2.80.md` | Not started |
 
 Order inside 0.2.80 (the lab comes before the changes it measures; otherwise a metric change cannot be

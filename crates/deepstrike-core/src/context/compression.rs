@@ -1,6 +1,6 @@
 use super::config::ContextConfig;
 use super::measurement::TokenMeasurement;
-use super::partitions::ContextPartitions;
+use super::partitions::{ContextPartitions, PartitionRow};
 use super::pressure::PressureAction;
 use super::token_engine::ContextTokenEngine;
 use super::units::{strict_tool_pairing_is_valid, unit_boundaries};
@@ -14,10 +14,8 @@ pub struct CompressResult {
     pub tokens_saved: u32,
     /// Generated summary text if any.
     pub summary: Option<String>,
-    /// Messages drained/archived from the context.
-    pub archived: Vec<CoreMessage>,
-    /// Host measurements aligned with `archived`; kept separate from canonical messages.
-    pub archived_measurements: Vec<TokenMeasurement>,
+    /// Items drained/archived from history, with their identities.
+    pub archived: Vec<PartitionRow>,
     /// Cache-aware (W1-1 step 2 / DoD #4): the earliest history-message index this op rewrote or
     /// removed — i.e. where it invalidates the prompt-cache prefix. `None` = prefix-safe (touched
     /// nothing). The pipeline folds the minimum across stages and surfaces it on the observation.
@@ -58,19 +56,18 @@ impl Compressor for SnipCompactor {
         // — exists only when `len < preserve_k*3`. Below that threshold, disable protection so a
         // forced/413 compaction can always cap the oldest messages and free space; above it, the
         // prefix is droppable as a fallback, so we protect it (cache-aware).
-        let prefix_keep = prefix_keep_for(partition.messages.len(), preserve_k);
+        let prefix_keep = prefix_keep_for(partition.len(), preserve_k);
         let indices = oversized_text_message_indices(
-            &partition.messages,
-            &partition.measurements,
+            partition.messages(),
+            partition.measurements(),
             per_msg_limit,
             prefix_keep,
             engine,
         );
 
         for &i in &indices {
-            let measured = partition.measured_tokens(i, engine);
-            let msg = &mut partition.messages[i];
-            let original_tokens = measured;
+            let original_tokens = partition.measured_tokens(i, engine);
+            let msg = &partition.messages()[i];
             let head_limit = per_msg_limit / 2;
             let tail_limit = per_msg_limit.saturating_sub(head_limit);
             // Same head/tail elision as excerpt_text; the omitted count comes from the recorded
@@ -87,13 +84,11 @@ impl Compressor for SnipCompactor {
                 None
             };
             if let Some(text) = snipped {
-                msg.content = Content::Text(text);
-                partition.set_measured_tokens(i, per_msg_limit);
-                saved += original_tokens.saturating_sub(per_msg_limit);
+                let mut excerpt = msg.clone();
+                excerpt.content = Content::Text(text);
+                saved += partition.excerpt(i, excerpt, per_msg_limit, engine);
             }
         }
-
-        partition.token_count = partition.token_count.saturating_sub(saved);
 
         // Pure executor: snip caps oversized messages in place; it never archives or summarizes.
         // Summary + compression-log attribution is the pipeline's job (under the *requested* action).
@@ -318,23 +313,21 @@ impl Compressor for MicroCompactor {
 
         // Selection lifted to a pure helper (excludes `preserved_refs` + the cache-prefix when it has
         // a drop-fallback); the executor only applies the excerpt to the chosen tool-result messages.
-        let prefix_keep = prefix_keep_for(partitions.history.messages.len(), preserve_k);
+        let prefix_keep = prefix_keep_for(partitions.history.len(), preserve_k);
         let indices = excerptable_tool_result_indices(
-            &partitions.history.messages,
-            &partitions.history.measurements,
+            partitions.history.messages(),
+            partitions.history.measurements(),
             &partitions.task_state.preserved_refs,
             prefix_keep,
             engine,
         );
-        let messages_clone = partitions.history.messages.clone();
+        let messages_clone = partitions.history.messages().to_vec();
         let preserved_refs = partitions.task_state.preserved_refs.clone();
         let partition = &mut partitions.history;
         let mut saved = 0u32;
 
         for &i in &indices {
-            let measured = partition.measured_tokens(i, engine);
-            let msg = &mut partition.messages[i];
-            let original_tokens = measured;
+            let mut msg = partition.messages()[i].clone();
             if let Content::Parts(ref mut parts) = msg.content {
                 for part in parts.iter_mut() {
                     if let ContentPart::ToolResult {
@@ -383,13 +376,10 @@ impl Compressor for MicroCompactor {
                         *durable_content = None;
                     }
                 }
-                let new_tokens = engine.count_message(msg);
-                partition.set_measured_tokens(i, new_tokens);
-                saved += original_tokens.saturating_sub(new_tokens);
+                let new_tokens = engine.count_message(&msg);
+                saved += partition.excerpt(i, msg, new_tokens, engine);
             }
         }
-
-        partition.token_count = partition.token_count.saturating_sub(saved);
 
         // Pure executor: excerpts tool results in place; no archive, summary, or self-log.
         CompressResult {
@@ -445,12 +435,12 @@ impl Compressor for CollapseCompactor {
     ) -> CompressResult {
         let non_history_tokens = partitions
             .total_tokens(engine)
-            .saturating_sub(partitions.history.token_count);
+            .saturating_sub(partitions.history.token_count());
         let history_target = target_tokens.saturating_sub(non_history_tokens);
         let plan = super::utility::plan_utility_archive_with_measurements(
-            &partitions.history.messages,
-            &partitions.history.measurements,
-            partitions.history.token_count,
+            partitions.history.messages(),
+            partitions.history.measurements(),
+            partitions.history.token_count(),
             history_target,
             preserve_k,
             engine,
@@ -465,15 +455,13 @@ impl Compressor for CollapseCompactor {
             return CompressResult::default();
         }
         let prefix_invalidated_at = plan.archived_ranges.iter().map(|range| range.start).min();
-        let (archived, archived_measurements, saved) =
-            apply_utility_plan(&mut partitions.history, &plan, engine);
+        let (archived, saved) = apply_utility_plan(&mut partitions.history, &plan);
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
         // requested action. Removing an interior unit invalidates from its original start index.
         CompressResult {
             tokens_saved: saved,
             archived,
-            archived_measurements,
             prefix_invalidated_at,
             ..Default::default()
         }
@@ -492,17 +480,17 @@ impl Compressor for AutoCompactor {
         preserve_k: usize,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
-        if partitions.history.messages.is_empty() {
+        if partitions.history.is_empty() {
             return CompressResult::default();
         }
         let non_history_tokens = partitions
             .total_tokens(engine)
-            .saturating_sub(partitions.history.token_count);
+            .saturating_sub(partitions.history.token_count());
         let history_target = target_tokens.saturating_sub(non_history_tokens);
         let plan = super::utility::plan_utility_archive_with_measurements(
-            &partitions.history.messages,
-            &partitions.history.measurements,
-            partitions.history.token_count,
+            partitions.history.messages(),
+            partitions.history.measurements(),
+            partitions.history.token_count(),
             history_target,
             preserve_k,
             engine,
@@ -517,15 +505,13 @@ impl Compressor for AutoCompactor {
             return CompressResult::default();
         }
         let prefix_invalidated_at = plan.archived_ranges.iter().map(|range| range.start).min();
-        let (archived, archived_measurements, saved) =
-            apply_utility_plan(&mut partitions.history, &plan, engine);
+        let (archived, saved) = apply_utility_plan(&mut partitions.history, &plan);
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
         // requested action.
         CompressResult {
             tokens_saved: saved,
             archived,
-            archived_measurements,
             prefix_invalidated_at,
             ..Default::default()
         }
@@ -535,57 +521,19 @@ impl Compressor for AutoCompactor {
 fn apply_utility_plan(
     partition: &mut super::partitions::Partition,
     plan: &super::utility::UtilityArchivePlan,
-    engine: &ContextTokenEngine,
-) -> (Vec<CoreMessage>, Vec<TokenMeasurement>, u32) {
-    while partition.measurements.len() < partition.messages.len() {
-        let index = partition.measurements.len();
-        let message = &partition.messages[index];
-        let tokens = engine.count_message(message);
-        partition
-            .measurements
-            .push(super::measurement::TokenMeasurement::for_message(
-                message, tokens,
-            ));
-    }
-    partition.align_items();
-    let pairing_was_valid = strict_tool_pairing_is_valid(&partition.messages);
+) -> (Vec<PartitionRow>, u32) {
+    let pairing_was_valid = strict_tool_pairing_is_valid(partition.messages());
     let archived_indices = plan
         .archived_ranges
         .iter()
         .flat_map(|range| range.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut archived = Vec::new();
-    let mut archived_measurements = Vec::new();
-    let mut retained = Vec::new();
-    let old_messages = std::mem::take(&mut partition.messages);
-    let old_measurements = std::mem::take(&mut partition.measurements);
-    let old_items = std::mem::take(&mut partition.items);
-    let mut retained_measurements = Vec::new();
-    let mut retained_items = Vec::new();
-    for (index, ((message, measurement), tag)) in old_messages
-        .into_iter()
-        .zip(old_measurements.into_iter())
-        .zip(old_items.into_iter())
-        .enumerate()
-    {
-        if archived_indices.contains(&index) {
-            archived.push(message);
-            archived_measurements.push(measurement);
-        } else {
-            retained.push(message);
-            retained_measurements.push(measurement);
-            retained_items.push(tag);
-        }
-    }
-    partition.messages = retained;
-    partition.measurements = retained_measurements;
-    partition.items = retained_items;
-    partition.token_count = plan.retained_tokens;
+    let archived = partition.take_rows(&archived_indices, plan.retained_tokens);
     debug_assert!(
-        !pairing_was_valid || strict_tool_pairing_is_valid(&partition.messages),
+        !pairing_was_valid || strict_tool_pairing_is_valid(partition.messages()),
         "utility selection split a valid tool transaction"
     );
-    (archived, archived_measurements, plan.archived_tokens)
+    (archived, plan.archived_tokens)
 }
 
 /// Compression pipeline — operates on history partition but can reference full partitions.
@@ -619,14 +567,13 @@ impl CompressionPipeline {
         max_tokens: u32,
         target_tokens: u32,
         engine: &ContextTokenEngine,
-    ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
+    ) -> (u32, Option<String>, Vec<PartitionRow>, Option<usize>) {
         if action == PressureAction::None {
             return (0, None, vec![], None);
         }
 
         let mut total_saved = 0;
-        let mut all_archived = vec![];
-        let mut all_archived_measurements = vec![];
+        let mut all_archived: Vec<PartitionRow> = vec![];
         // Cache cost of the whole compaction = the earliest prefix-break across the stages that ran
         // (an earlier break dominates). `None` = entirely prefix-safe.
         let mut cache_at: Option<usize> = None;
@@ -650,7 +597,6 @@ impl CompressionPipeline {
                     .flatten()
                     .min();
                 all_archived.extend(res.archived);
-                all_archived_measurements.extend(res.archived_measurements);
             }
         }
 
@@ -673,9 +619,13 @@ impl CompressionPipeline {
         let summary = if all_archived.is_empty() {
             None
         } else {
+            let (messages, measurements): (Vec<_>, Vec<_>) = all_archived
+                .iter()
+                .map(|row| (row.message.clone(), row.measurement.clone()))
+                .unzip();
             let s = summarizer.summarize(
-                &all_archived,
-                &all_archived_measurements,
+                &messages,
+                &measurements,
                 action,
                 summary_budget,
             );
@@ -719,7 +669,7 @@ mod tests {
         // preserve_k=0: exercise the truncation transform directly (no cache-prefix protection).
         let result = compactor.compress(&mut ctx, 0, MAX, 0, &engine());
         assert!(result.tokens_saved > 0);
-        if let Content::Text(ref t) = ctx.history.messages[0].content {
+        if let Content::Text(ref t) = ctx.history.messages()[0].content {
             assert!(t.contains("… [… 100 tokens omitted …] …"), "got: {t}");
         }
     }
@@ -757,13 +707,12 @@ mod tests {
             content: Content::Parts(parts),
             tool_calls: vec![],
         };
-        ctx.history.messages.push(msg);
-        ctx.history.token_count = 300;
+        ctx.history.push(msg, 300);
 
         // preserve_k=0: exercise the excerpt transform directly (no cache-prefix protection).
         let result = compactor.compress(&mut ctx, 0, MAX, 0, &engine());
         assert!(result.tokens_saved > 0);
-        let Content::Parts(parts) = &ctx.history.messages[0].content else {
+        let Content::Parts(parts) = &ctx.history.messages()[0].content else {
             panic!("tool-result envelope must survive compaction");
         };
         let text = parts
@@ -813,9 +762,9 @@ mod tests {
 
         compactor.compress(&mut ctx, 0, MAX, 0, &engine());
 
-        let message = &ctx.history.messages[0];
+        let message = &ctx.history.messages()[0];
         let recounted = engine().count_message(message);
-        assert_eq!(ctx.history.token_count, recounted);
+        assert_eq!(ctx.history.token_count(), recounted);
         let Content::Parts(parts) = &message.content else {
             panic!("parts preserved")
         };
@@ -838,7 +787,7 @@ mod tests {
         }
         let result = compactor.compress(&mut ctx, 250, MAX, 2, &engine());
         assert!(result.tokens_saved > 0);
-        assert!(ctx.history.messages.len() < 8);
+        assert!(ctx.history.len() < 8);
         // Pure executor: returns the drained messages; summary + log attribution is the pipeline's
         // job (under the requested action), so the compactor itself no longer summarizes or logs.
         assert!(
@@ -853,6 +802,40 @@ mod tests {
             ctx.task_state.compression_log.is_empty(),
             "compactor no longer logs"
         );
+    }
+
+    #[test]
+    fn compaction_acts_on_items_and_keeps_their_identity() {
+        use crate::context::item::{Fidelity, ItemOrigin, ItemTag};
+
+        let mut ctx = ContextPartitions::new(&config());
+        for id in 1..=8u64 {
+            let text = if id == 8 { "long ".repeat(400) } else { "msg".into() };
+            let tag = ItemTag::new(id, ItemOrigin::User, 0);
+            ctx.history.push_tagged(CoreMessage::user(text), 50, tag);
+        }
+        ctx.history.push_tagged(
+            CoreMessage::user("long ".repeat(400)),
+            500,
+            ItemTag::new(9, ItemOrigin::User, 0),
+        );
+
+        // An in-place excerpt keeps the item and records what it now renders.
+        SnipCompactor { per_msg_ratio: 0.001 }.compress(&mut ctx, 0, 100_000, 0, &engine());
+        let snipped = ctx.history.tags().iter().find(|tag| tag.id == 9).unwrap();
+        assert_eq!(snipped.fidelity, Fidelity::Excerpt);
+        assert!(ctx.history.tags().iter().filter(|tag| tag.id < 8).all(|tag| tag.fidelity == Fidelity::Full));
+
+        // Archiving takes whole rows out: the archived ids and the retained ids partition the table.
+        let result = CollapseCompactor.compress(&mut ctx, 250, MAX, 2, &engine());
+        let archived: Vec<_> = result.archived.iter().map(|row| row.tag.id).collect();
+        let retained: Vec<_> = ctx.history.tags().iter().map(|tag| tag.id).collect();
+        assert!(!archived.is_empty());
+        let mut all = [archived.clone(), retained.clone()].concat();
+        all.sort();
+        assert_eq!(all, (1..=9).collect::<Vec<_>>());
+        assert_eq!(ctx.history.tags().len(), ctx.history.len());
+        assert_eq!(ctx.history.measurements().len(), ctx.history.len());
     }
 
     #[test]
@@ -876,7 +859,7 @@ mod tests {
         let result = compactor.compress(&mut ctx, 160, MAX, 1, &engine());
         let retained = ctx
             .history
-            .messages
+            .messages()
             .iter()
             .filter_map(|message| message.content.as_text())
             .collect::<Vec<_>>()
@@ -884,7 +867,7 @@ mod tests {
         let archived = result
             .archived
             .iter()
-            .filter_map(|message| message.content.as_text())
+            .filter_map(|row| row.message.content.as_text())
             .collect::<Vec<_>>()
             .join("\n");
         assert!(retained.contains("ORCHID"));
@@ -892,7 +875,7 @@ mod tests {
         assert!(!retained.contains("routine chatter"));
         assert!(archived.contains("routine chatter one"));
         assert!(archived.contains("routine chatter two"));
-        assert_eq!(ctx.history.token_count, 160);
+        assert_eq!(ctx.history.token_count(), 160);
     }
 
     #[test]
@@ -907,7 +890,7 @@ mod tests {
 
         let result = compactor.compress(&mut ctx, 700, MAX, 1, &engine());
         assert_eq!(result.tokens_saved, 300);
-        assert_eq!(ctx.history.token_count, 100);
+        assert_eq!(ctx.history.token_count(), 100);
         assert!(ctx.total_tokens(&engine()) <= 700);
     }
 
@@ -958,13 +941,12 @@ mod tests {
             content: Content::Parts(parts),
             tool_calls: vec![],
         };
-        ctx.history.messages.push(msg);
-        ctx.history.token_count = 300;
+        ctx.history.push(msg, 300);
 
         let result = compactor.compress(&mut ctx, 0, MAX, 2, &engine());
         // Since call_id "keep_me" is in preserved_refs, it should not be replaced!
         assert_eq!(result.tokens_saved, 0);
-        let text_opt = ctx.history.messages[0].content.as_text();
+        let text_opt = ctx.history.messages()[0].content.as_text();
         assert!(
             text_opt.is_none(),
             "should not be replaced to text placeholder"
@@ -980,7 +962,7 @@ mod tests {
         }
         let result = compactor.compress(&mut ctx, 0, MAX, 2, &engine());
         assert!(result.tokens_saved > 0);
-        assert_eq!(ctx.history.messages.len(), 2); // kept last 2 semantic units
+        assert_eq!(ctx.history.len(), 2); // kept last 2 semantic units
         // Pure executor: returns the drained messages; the pipeline summarizes + logs under the
         // requested action (see `baseline_auto_*` / `pipeline_attributes_summary_to_requested_action`).
         assert!(
@@ -1066,8 +1048,8 @@ mod tests {
 
         compactor.compress(&mut ctx, 0, MAX, 1, &engine());
 
-        assert_eq!(ctx.history.messages.len(), 4);
-        assert_eq!(ctx.history.messages[0].content.as_text(), Some("question"));
+        assert_eq!(ctx.history.len(), 4);
+        assert_eq!(ctx.history.messages()[0].content.as_text(), Some("question"));
     }
 
     #[test]
@@ -1185,7 +1167,7 @@ mod tests {
         let (saved, summary, archived, _cache_at) =
             CompressionPipeline::new(&cfg).compress(&mut ctx, action, MAX, 500, &engine());
         let archived_len = archived.len();
-        let msgs_after = ctx.history.messages.len();
+        let msgs_after = ctx.history.len();
         let total_after = ctx.total_tokens(&engine());
         (
             before,
@@ -1301,7 +1283,7 @@ mod tests {
             archived.is_empty(),
             "heavier archival stages should not run"
         );
-        assert_eq!(ctx.history.messages.len(), 1);
+        assert_eq!(ctx.history.len(), 1);
         assert!(ctx.total_tokens(&engine()) <= 500);
     }
 
@@ -1429,7 +1411,7 @@ mod tests {
                     }
                     pipeline.compress(&mut ctx, action, MAX, target, &eng);
                     assert!(
-                        strict_tool_pairing_is_valid(&ctx.history.messages),
+                        strict_tool_pairing_is_valid(ctx.history.messages()),
                         "compression {action:?} target {target} broke pairing (seed {seed})"
                     );
 

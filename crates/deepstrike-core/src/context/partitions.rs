@@ -1,21 +1,30 @@
 use super::config::ContextConfig;
-use super::item::{ContextItem, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease};
+use super::item::{ContextItem, Fidelity, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease};
 use super::measurement::TokenMeasurement;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
 use crate::mm::value::{RetentionFeatures, RetentionKind, deterministic_retention_score};
 use crate::types::message::CoreMessage;
 
-/// A single context partition — a named bucket of messages with a token counter.
+/// A positional context tier (system[0] or history) held as an item table: each row is one item —
+/// its identity ([`ItemTag`]), its rendered message and the host's measurement of it. The rows are
+/// stored by column so the renderer and the compression planners read the message column as one
+/// slice; every write goes through a row operation, so the columns cannot drift apart.
 #[derive(Debug, Clone)]
 pub struct Partition {
-    pub messages: Vec<CoreMessage>,
-    /// Host-side measurements aligned with `messages`; not part of canonical message state.
-    pub measurements: Vec<TokenMeasurement>,
-    /// Plan task 1.1b · each message's item identity, aligned with `messages`. A message pushed
-    /// without one reads as [`ItemTag::untracked`].
-    pub items: Vec<ItemTag>,
-    pub token_count: u32,
+    messages: Vec<CoreMessage>,
+    /// Host-side measurements; not part of canonical message state.
+    measurements: Vec<TokenMeasurement>,
+    items: Vec<ItemTag>,
+    token_count: u32,
+}
+
+/// One row taken out of a [`Partition`] (archived by compaction).
+#[derive(Debug, Clone)]
+pub struct PartitionRow {
+    pub tag: ItemTag,
+    pub message: CoreMessage,
+    pub measurement: TokenMeasurement,
 }
 
 impl Partition {
@@ -28,18 +37,22 @@ impl Partition {
         }
     }
 
+    /// Append a message with no recorded identity ([`ItemTag::untracked`]).
     pub fn push(&mut self, msg: CoreMessage, token_count: u32) {
         let tag = ItemTag::untracked(&msg);
         self.push_tagged(msg, token_count, tag);
     }
 
     pub fn push_tagged(&mut self, msg: CoreMessage, token_count: u32, tag: ItemTag) {
-        self.align_items();
         let measurement = TokenMeasurement::for_message(&msg, token_count);
-        self.token_count += token_count;
-        self.messages.push(msg);
-        self.measurements.push(measurement);
-        self.items.push(tag);
+        self.push_row(PartitionRow { tag, message: msg, measurement });
+    }
+
+    pub fn push_row(&mut self, row: PartitionRow) {
+        self.token_count += row.measurement.tokens;
+        self.messages.push(row.message);
+        self.measurements.push(row.measurement);
+        self.items.push(row.tag);
     }
 
     pub fn clear(&mut self) {
@@ -49,23 +62,27 @@ impl Partition {
         self.token_count = 0;
     }
 
-    /// The item identity of message `index`.
-    pub fn tag(&self, index: usize) -> ItemTag {
-        self.items.get(index).copied().unwrap_or_else(|| {
-            self.messages
-                .get(index)
-                .map(ItemTag::untracked)
-                .unwrap_or(ItemTag { id: 0, origin: ItemOrigin::User, injected_turn: 0 })
-        })
+    /// The rendered messages, in order.
+    pub fn messages(&self) -> &[CoreMessage] {
+        &self.messages
     }
 
-    /// Pad `items` to `messages` (a message written straight into `messages` has no tag yet).
-    pub fn align_items(&mut self) {
-        while self.items.len() < self.messages.len() {
-            let tag = ItemTag::untracked(&self.messages[self.items.len()]);
-            self.items.push(tag);
-        }
-        self.items.truncate(self.messages.len());
+    pub fn measurements(&self) -> &[TokenMeasurement] {
+        &self.measurements
+    }
+
+    /// Item identities, aligned with [`Self::messages`].
+    pub fn tags(&self) -> &[ItemTag] {
+        &self.items
+    }
+
+    /// The item identity of message `index`.
+    pub fn tag(&self, index: usize) -> ItemTag {
+        self.items[index]
+    }
+
+    pub fn token_count(&self) -> u32 {
+        self.token_count
     }
 
     pub fn measured_tokens(&self, index: usize, engine: &ContextTokenEngine) -> u32 {
@@ -85,15 +102,116 @@ impl Partition {
             })
     }
 
-    pub fn set_measured_tokens(&mut self, index: usize, tokens: u32) {
-        if let Some(message) = self.messages.get(index) {
-            let measurement = TokenMeasurement::for_message(message, tokens);
-            if let Some(slot) = self.measurements.get_mut(index) {
-                *slot = measurement;
+    /// Compaction rewrote item `index` in place to a shorter form of the same source: the item
+    /// keeps its identity and now renders an [`Fidelity::Excerpt`]. Returns the tokens freed.
+    pub fn excerpt(
+        &mut self,
+        index: usize,
+        message: CoreMessage,
+        tokens: u32,
+        engine: &ContextTokenEngine,
+    ) -> u32 {
+        let before = self.measured_tokens(index, engine);
+        self.measurements[index] = TokenMeasurement::for_message(&message, tokens);
+        self.messages[index] = message;
+        self.items[index].fidelity = Fidelity::Excerpt;
+        let saved = before.saturating_sub(tokens);
+        self.token_count = self.token_count.saturating_sub(saved);
+        saved
+    }
+
+    /// Take every row whose index is in `indices` out of the table, in order, leaving
+    /// `retained_tokens` behind.
+    pub fn take_rows(
+        &mut self,
+        indices: &std::collections::BTreeSet<usize>,
+        retained_tokens: u32,
+    ) -> Vec<PartitionRow> {
+        let rows = std::mem::take(&mut self.messages)
+            .into_iter()
+            .zip(std::mem::take(&mut self.measurements))
+            .zip(std::mem::take(&mut self.items))
+            .map(|((message, measurement), tag)| PartitionRow { tag, message, measurement });
+        let mut taken = Vec::new();
+        for (index, row) in rows.enumerate() {
+            if indices.contains(&index) {
+                taken.push(row);
             } else {
-                self.measurements.push(measurement);
+                self.messages.push(row.message);
+                self.measurements.push(row.measurement);
+                self.items.push(row.tag);
             }
         }
+        self.token_count = retained_tokens;
+        taken
+    }
+
+    /// Drop every row from `len` on (a rollback to an earlier history length).
+    pub fn truncate(&mut self, len: usize) {
+        if len >= self.messages.len() {
+            return;
+        }
+        let dropped: u32 = self.measurements[len..].iter().map(|m| m.tokens).sum();
+        self.messages.truncate(len);
+        self.measurements.truncate(len);
+        self.items.truncate(len);
+        self.token_count = self.token_count.saturating_sub(dropped);
+    }
+
+    /// Every row, in order (renewal re-admits the ones it keeps).
+    pub fn rows(&self) -> impl Iterator<Item = PartitionRow> + '_ {
+        self.messages
+            .iter()
+            .zip(&self.measurements)
+            .zip(&self.items)
+            .map(|((message, measurement), tag)| PartitionRow {
+                tag: *tag,
+                message: message.clone(),
+                measurement: measurement.clone(),
+            })
+    }
+
+    /// Restore a checkpointed table. Measurements or tags that do not line up with the messages
+    /// (an older checkpoint) are recomputed or read as untracked.
+    pub fn restore(
+        &mut self,
+        messages: Vec<(CoreMessage, u32)>,
+        measurements: Vec<TokenMeasurement>,
+        items: Vec<ItemTag>,
+    ) {
+        self.clear();
+        let measurements_fit = measurements.len() == messages.len();
+        let items_fit = items.len() == messages.len();
+        let mut measurements = measurements.into_iter();
+        let mut items = items.into_iter();
+        for (message, tokens) in messages {
+            let measurement = measurements
+                .next()
+                .filter(|_| measurements_fit)
+                .unwrap_or_else(|| TokenMeasurement::for_message(&message, tokens));
+            let tag = items
+                .next()
+                .filter(|_| items_fit)
+                .unwrap_or_else(|| ItemTag::untracked(&message));
+            self.messages.push(message);
+            self.measurements.push(measurement);
+            self.items.push(tag);
+            self.token_count += tokens;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn measurement_mut(&mut self, index: usize) -> &mut TokenMeasurement {
+        &mut self.measurements[index]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove(&mut self, index: usize) -> PartitionRow {
+        let message = self.messages.remove(index);
+        let measurement = self.measurements.remove(index);
+        let tag = self.items.remove(index);
+        self.token_count = self.token_count.saturating_sub(measurement.tokens);
+        PartitionRow { tag, message, measurement }
     }
 
     pub fn len(&self) -> usize {
@@ -609,6 +727,21 @@ mod tests {
         let expected = engine().count_message(&partition.messages[0]);
         assert!(expected > 1);
         assert_eq!(partition.measured_tokens(0, &engine()), expected);
+    }
+
+    #[test]
+    fn truncating_drops_whole_rows_and_their_tokens() {
+        let mut partition = Partition::new();
+        for (id, tokens) in [(1, 10), (2, 20), (3, 30)] {
+            let tag = ItemTag::new(id, ItemOrigin::User, 0);
+            partition.push_tagged(CoreMessage::user(format!("m{id}")), tokens, tag);
+        }
+        partition.truncate(1);
+        assert_eq!(partition.len(), 1);
+        assert_eq!(partition.tags().len(), 1);
+        assert_eq!(partition.measurements().len(), 1);
+        assert_eq!(partition.tag(0).id, 1);
+        assert_eq!(partition.token_count(), 10);
     }
 
     #[test]

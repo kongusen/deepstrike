@@ -87,7 +87,8 @@ ContextItem {
 
 - [x] 任务 1.1a（2026-11-02）：新增 `context/item.rs`：`ContextItem`（origin / lease / value）与 origin 默认值表（`ItemOrigin::defaults`，11 种 origin 各有 scope / fidelity / lease / authority）。knowledge 分区的条目改为 `ContextItem`，`KnowledgeEntry` 删除；宿主写入的 knowledge 按 key 定 origin（`skill:` → skill，其余 → reference），kernel recall 为 `memory_recall`，治理提示为 `system`。lease 四种：permanent、until_boundary、turns(n)、single_use，到期后标记为在下一个 boundary 离开（不在缓存代内改写 system[1]）。recall 的 index line 默认 `turns(8)`，从最近一次 recall 或引用起算，`memory(record_id)` 读取算作引用并标记 `expanded`。`lease_remaining_steps` 改为从 lease 计算。checkpoint 的 knowledge slot 带上 origin、lease、离开原因和 value，`retired_items` 记录已离开的 item；缺 origin 的 slot 按 key 推断（`memory:` → recall）。未做：`until(event)` lease；scope / fidelity / authority 目前只是表中的描述，尚无行为。
 - [x] 任务 1.1b（2026-11-02，部分）：每条 history 消息带 `ItemTag { id, origin, injected_turn }`，id 按到达顺序分配、不复用，随压缩归档、renewal 携带和 checkpoint（`history_items`、`last_item_id`）保留；缺 `history_items` 的 checkpoint 恢复为 id 0。origin 由角色决定（user / assistant / tool_result / system）。handle 仍按 call_id 锚定到 tool_result item，其 residency 即该 item 的 fidelity（Resident = full，Collapsed / External / PagedOut = handle）。`read_result` 读取旧 tool result 或 `dep:` 依赖输出记为 read-back。lifecycle report 的 `history` 按 origin 汇总：进入过 history 的 item 数和 token、结束时仍在 history 的、read-back 次数。
-  - 未做（0.2.79 完成）：`ContextPartitions` 改为 item 表上的渲染视图。压缩管线仍按位置操作 `Partition`，item 标签只是随行；history item 的逐条明细只做了按 origin 汇总（逐条列出会让长任务的报告过大）。
+  - 0.2.79 第一项（2026-11-02）：system[0] 与 history 的 `Partition` 改为 item 表，每行是一个 item（`ItemTag`、渲染的消息、宿主测量），按列存储，字段私有，只能按行写入，消息列只读地交给渲染器和压缩规划器。压缩按 item 操作：snip / micro 原地改写的 item 保留 id，fidelity 记为新增的 `excerpt`（checkpoint 的 `history_items` 只在非 full 时写出该字段）；collapse / auto 整行取出，归档结果带 item 标签。顺带修复：rollback 原先只截断消息列，测量、标签与 token 计数会错位，现在整行截断。
+  - 未做（0.2.79 后续项）：history item 的逐条明细（目前按 origin 汇总；逐条列出需要上限，否则长任务的报告过大）。
 - ~~原任务 1.1：kernel 引入 `ContextItem`、item 表和 origin 默认值表~~
   - 验收：`ContextPartitions` 变成 item 表上的渲染视图；`KnowledgeEntry`、history message、handle 都映射为 item，旧类型删除。一张表定义每种 origin 的默认 scope/fidelity/lease/authority（例如 `memory_recall → session / handle(index line) / turns(N) / host`），宿主没有直接写分区的 API。`mm/value.rs` 里一直是 `None` 的 `lease_remaining_steps` 改为从 lease 计算。
   - 验证：现有 renderer 和 compression 测试迁到新模型后通过；每种 lease 有到期测试。
@@ -219,7 +220,7 @@ ContextItem {
 | 版本 | 内容 | 状态 |
 |------|------|------|
 | 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1、6.1；1.1a 与 1.1b 的 item 身份部分；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 待合并 |
-| 0.2.79 | 1.1 收尾，要求完整：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 未开始 |
+| 0.2.79 | 1.1 收尾，要求完整：~~`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作~~（已完成）；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 进行中，分支 `feat/context-items-0.2.79` |
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级与 `RelevanceJudge`；6.2 blackboard；6.3 Python、WASM 宿主程序 API。只写一份 `MIGRATION-0.2.79-to-0.2.80.md` | 未开始 |
 
 0.2.80 内部顺序（lab 先于被衡量的改动，否则分不清指标变化来自哪一项）：

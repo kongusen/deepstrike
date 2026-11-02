@@ -4,7 +4,7 @@
 //! Every item gets its scope, fidelity, lease and authority from one table keyed by origin
 //! ([`ItemOrigin::defaults`]); a host cannot set them per item. Knowledge-tier items (system[1] and
 //! the staged state-turn copy) are held as [`ContextItem`]s today; history messages and handles
-//! join the same table in task 1.1b.
+//! join the same table as [`ItemTag`] rows of a [`crate::context::partitions::Partition`].
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
@@ -27,12 +27,19 @@ pub struct ItemTag {
     pub origin: ItemOrigin,
     #[serde(default)]
     pub injected_turn: u32,
+    /// What the history row renders of its source. Full until compaction excerpts it.
+    #[serde(default, skip_serializing_if = "Fidelity::is_full")]
+    pub fidelity: Fidelity,
 }
 
 impl ItemTag {
+    pub fn new(id: ItemId, origin: ItemOrigin, injected_turn: u32) -> Self {
+        Self { id, origin, injected_turn, fidelity: Fidelity::Full }
+    }
+
     /// The tag of a message with no recorded identity: id `0`, origin from its role.
     pub fn untracked(message: &CoreMessage) -> Self {
-        Self { id: 0, origin: ItemOrigin::of_message(message), injected_turn: 0 }
+        Self::new(0, ItemOrigin::of_message(message), 0)
     }
 }
 
@@ -155,13 +162,24 @@ pub enum ItemScope {
 
 /// How much of the source the item renders: all of it, a structured form, or a handle line the
 /// model expands on demand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Fidelity {
+    #[default]
     Full,
     Structured,
+    /// Compaction rewrote the item in place to a head/tail or JSON excerpt of the source.
+    Excerpt,
     Handle,
 }
+
+impl Fidelity {
+    pub fn is_full(&self) -> bool {
+        *self == Self::Full
+    }
+}
+
+
 
 /// How long an item stays. An expired item leaves at the next boundary, like any other removal
 /// from system[1].

@@ -6,6 +6,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- History and system[0] are held as an item table: every row is one item with its id, origin,
+  rendered message and measurement, and is only written whole. Compaction acts on items: an item a
+  snip or micro rewrites in place keeps its id and is marked `excerpt` (checkpoint `history_items`
+  carry `fidelity` only when it is not `full`); archived items leave with their ids.
+
+### Fixed
+
+- A rollback truncated only the history messages, leaving their measurements, item ids and the
+  history token count misaligned; it now drops whole rows.
+
 ## [0.2.78] - 2026-11-02
 
 ### Added
