@@ -60,22 +60,45 @@ export async function realProvider(dist, name) {
   }
 }
 
-/** Wraps a provider to count the characters each call sends and keep the last error. */
+/** Wraps a provider to count the characters each call sends and keep the last error. Every other
+ *  member (replay, descriptor, context edits, …) reaches the real provider unchanged: a wrapper
+ *  that hid them would change what the runner and kernel do, not just measure it. */
 export class MeteredProvider {
   constructor(inner) {
     this.inner = inner
     this.reset()
+    return new Proxy(this, {
+      get(target, property, receiver) {
+        if (property === "prepareRequest" && !inner.prepareRequest) return undefined
+        if (property in target) return Reflect.get(target, property, receiver)
+        const value = inner[property]
+        return typeof value === "function" ? value.bind(inner) : value
+      },
+    })
   }
   reset() {
+    this.callEstimates = []
+    this.trace = []
     this.sentChars = 0
     this.calls = 0
     this.lastError = undefined
-    this.kernelEstimates = []
   }
   measure(context) {
     this.calls += 1
-    // The kernel's own estimate of the request (0.2.80+); older checkouts do not send one.
-    if (typeof context.estimatedTokens === "number") this.kernelEstimates.push(context.estimatedTokens)
+    if (process.env.TRIAL_TRACE) {
+      const replays = (context.turns ?? []).filter(turn => turn.providerReplay)
+      ;(this.trace ??= []).push({
+        estimate: context.estimatedTokens,
+        system: (context.systemStable ?? context.systemText ?? "").length,
+        knowledge: (context.systemKnowledge ?? "").length,
+        turns: (context.turns ?? []).length,
+        historyChars: JSON.stringify(context.turns ?? []).length,
+        stateChars: JSON.stringify(context.stateTurn ?? "").length,
+        replayTurns: replays.length,
+        replayChars: replays.reduce((sum, turn) => sum + JSON.stringify(turn.providerReplay).length, 0),
+        assistantToolTurns: (context.turns ?? []).filter(turn => turn.role === "assistant" && turn.toolCalls?.length).length,
+      })
+    }
     this.sentChars += JSON.stringify([
       context.systemStable ?? context.systemText ?? "",
       context.systemKnowledge ?? "",
@@ -88,9 +111,34 @@ export class MeteredProvider {
     try { return await this.inner.complete(context, ...rest) } catch (cause) { this.lastError = redact(cause?.message ?? cause); throw cause }
   }
   async *stream(context, ...rest) {
+    yield* this.metered(context, () => this.inner.stream(context, ...rest))
+  }
+  /** Present only when the real provider prepares its own requests: the runner then streams the
+   *  prepared request, so that is where the metering goes. */
+  prepareRequest(context, tools, options, state) {
+    if (!this.inner.prepareRequest) return undefined
+    const prepared = this.inner.prepareRequest(context, tools, options, state)
+    const meter = this
+    return new Proxy(prepared, {
+      get(target, property) {
+        if (property === "stream") return signal => meter.metered(context, () => target.stream(signal))
+        const value = target[property]
+        return typeof value === "function" ? value.bind(target) : value
+      },
+    })
+  }
+  async *metered(context, open) {
     this.measure(context)
     this.lastContext = context
-    try { yield* this.inner.stream(context, ...rest) } catch (cause) { this.lastError = redact(cause?.message ?? cause); throw cause }
+    try {
+      for await (const event of open()) {
+        // The provider's count of this very request, paired with the kernel's estimate of it.
+        if (event.type === "usage" && event.inputTokens && typeof context.estimatedTokens === "number") {
+          this.callEstimates.push({ estimated: context.estimatedTokens, observed: event.inputTokens })
+        }
+        yield event
+      }
+    } catch (cause) { this.lastError = redact(cause?.message ?? cause); throw cause }
   }
 }
 
@@ -123,11 +171,10 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
   const observedByEffect = new Map(attempts
     .filter(attempt => attempt.usage?.inputTokens)
     .map(attempt => [attempt.effect_id, attempt.usage.inputTokens]))
-  // Prefer the kernel's estimate, paired with the provider's counts in call order; a checkout that
-  // does not send one falls back to the SDK's pre-call measurement, paired by effect id.
-  const counted = attempts.filter(attempt => attempt.usage?.inputTokens).map(attempt => attempt.usage.inputTokens)
-  const tokenEstimates = provider.kernelEstimates.length === counted.length && counted.length > 0
-    ? counted.map((observed, index) => ({ estimated: provider.kernelEstimates[index], observed }))
+  // Prefer the kernel's estimate, paired with the provider's count of the same call; a checkout
+  // that does not send one falls back to the SDK's pre-call measurement, paired by effect id.
+  const tokenEstimates = provider.callEstimates.length > 0
+    ? provider.callEstimates
     : firstMeasurements(events)
       .filter(event => observedByEffect.has(event.effect_id))
       .map(event => ({ estimated: event.measurement.inputTokens, observed: observedByEffect.get(event.effect_id) }))
@@ -145,6 +192,7 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
       cache_read_tokens: sum("cacheReadInputTokens"),
     },
     token_estimates: tokenEstimates,
+    ...(provider.trace?.length ? { trace: provider.trace } : {}),
     lifecycle: events.filter(event => event.kind === "context_lifecycle_reported"),
   }
 }
