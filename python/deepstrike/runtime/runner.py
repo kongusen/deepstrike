@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import json
 import time
+import dataclasses
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
@@ -1122,6 +1123,132 @@ class RuntimeRunner:
           self._current_session_id = None
           self._pending_observations = []
           self._active_group_budget_scope = None
+
+  async def run_dynamic_workflow(
+    self,
+    program: "Callable[[DynamicWorkflowContext], Awaitable[Any]]",
+    *,
+    session_id: str | None = None,
+    run_id: str | None = None,
+    args: dict[str, Any] | None = None,
+    limits: "DynamicWorkflowLimits | None" = None,
+  ) -> "DynamicWorkflowRun":
+    """Plan task 6.3 · run a host program that decides which agents to run as it goes.
+
+    The program receives a :class:`DynamicWorkflowContext`; each ``agent`` / ``parallel_agents``
+    call is admitted by the kernel onto this operation's dynamic workflow root and driven to its
+    typed outcome before the call returns. Submissions and blackboard writes reach the kernel one
+    at a time, in the order the program makes them. Requires a standalone runner.
+    """
+    from deepstrike.runtime.dynamic_workflow import (
+      DynamicWorkflowContext,
+      DynamicWorkflowHost,
+      DynamicWorkflowLimits,
+      DynamicWorkflowRun,
+    )
+    from deepstrike.types.agent import ControlRequestRejection, workflow_spec_to_kernel
+
+    if self._active_kernel is not None or self._current_session_id is not None:
+      raise RuntimeError("dynamic workflows require a standalone RuntimeRunner")
+    sid = session_id or f"dw-{uuid.uuid4()}"
+    run_id = run_id or str(uuid.uuid4())
+    group_budget_scope: GroupBudgetScope | None = None
+    try:
+      if self._opts.run_group is not None:
+        request = self._group_budget_request(include_tokens=False)
+        group_budget_scope = await GroupBudgetScope.open(
+          self._opts.run_group,
+          GroupMember(sid, self._opts.agent_id, kind="vehicle"),
+          limits=request[0],
+          requested=request[1],
+        )
+        self._active_group_budget_scope = group_budget_scope
+      await self._opts.session_log.append(sid, {
+        "kind": "run_started",
+        "run_id": run_id,
+        "goal": "dynamic-workflow",
+        "criteria": [],
+        "agent_id": self._opts.agent_id,
+        "route": route_to_record(self._provider_route),
+      })
+      runtime = await self._initialize_workflow_kernel(sid, run_id, group_budget_scope)
+      await runtime.start_dynamic_workflow()
+      runtime.drain_host_observations()
+      lock = asyncio.Lock()
+      runner = self
+
+      class _Host(DynamicWorkflowHost):
+        async def run_workflow(self, spec: "WorkflowSpec", plan: dict[str, Any]) -> WorkflowOutcome:
+          async with lock:
+            start = len(runner._pending_observations)
+            try:
+              action = await runtime.append_workflow_nodes(workflow_spec_to_kernel(spec), plan)
+            except CanonicalKernelRejectedError as error:
+              return WorkflowOutcome(node_outcomes=[], outputs={}, rejection=ControlRequestRejection(
+                operation="submit_workflow_nodes", reason=error.message))
+            runner._pending_observations.extend(runtime.drain_host_observations())
+            if action is None:
+              rejected = next((o for o in runner._pending_observations[start:]
+                               if o.get("kind") == "control_request_rejected"), None)
+              return WorkflowOutcome(node_outcomes=[], outputs={}, rejection=ControlRequestRejection(
+                operation="submit_workflow_nodes",
+                reason=str((rejected or {}).get("reason") or "the kernel admitted no nodes")))
+            submitted = next((o for o in runner._pending_observations[start:]
+                              if o.get("kind") == "workflow_nodes_submitted"), {})
+            base = submitted.get("base") if isinstance(submitted.get("base"), int) else 0
+            outcome = await runner._run_workflow_inner(None, _initial_action=action)
+            # The kernel names appended nodes by position (wf-node<base+i>); the program by its own ids.
+            kernel_to_host = {
+              f"wf-node{base + index}": node.node_id or f"wf-node{base + index}"
+              for index, node in enumerate(spec.nodes)
+            }
+            return WorkflowOutcome(
+              node_outcomes=[
+                dataclasses.replace(node, node_id=kernel_to_host.get(node.node_id, node.node_id))
+                for node in outcome.node_outcomes
+              ],
+              outputs={kernel_to_host.get(k, k): v for k, v in outcome.outputs.items()},
+              rejection=outcome.rejection,
+            )
+
+        async def write_blackboard(self, key: str, content: str | None) -> None:
+          # Plan task 6.2 · a keyed kernel item on this operation; agents spawned later inherit it.
+          async with lock:
+            event: dict[str, Any] = (
+              {"kind": "remove_knowledge", "key": f"blackboard:{key}"} if content is None else
+              {"kind": "add_knowledge_message", "key": f"blackboard:{key}", "content": content,
+               "tokens": max(1, len(content) // 4)}
+            )
+            await apply_host(runtime, runner._pending_observations, event)
+
+      context = DynamicWorkflowContext(_Host(), run_id, args or {}, limits or DynamicWorkflowLimits())
+      value = await program(context)
+      async with lock:
+        terminal = await runtime.complete_dynamic_workflow()
+        self._pending_observations.extend(runtime.drain_host_observations())
+      terminal = terminal or runtime.resume_action()
+      if terminal is None or terminal.kind != "done":
+        raise RuntimeError("dynamic workflow close did not produce a terminal kernel action")
+      await self._append_observations(sid, runtime, 0)
+      if group_budget_scope is not None and not group_budget_scope.closed:
+        await self._settle_group_budget(
+          group_budget_scope,
+          tokens=int(getattr(terminal.result, "total_tokens_used", 0) or 0),
+          subagents=runtime.local_subagents_spawned(),
+          rounds=0,
+        )
+        self._active_group_budget_scope = None
+      return DynamicWorkflowRun(run_id=run_id, value=value, progress=context.progress)
+    finally:
+      try:
+        if group_budget_scope is not None and not group_budget_scope.closed:
+          await group_budget_scope.release()
+      finally:
+        self._reject_pending_control("the run ended before the control command was applied")
+        self._active_kernel = None
+        self._current_session_id = None
+        self._pending_observations = []
+        self._active_group_budget_scope = None
 
   async def _initialize_workflow_kernel(
     self,
