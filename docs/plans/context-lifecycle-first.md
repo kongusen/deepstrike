@@ -139,6 +139,7 @@ ContextItem {
   - 文件：`context/utility.rs`、`context/partitions.rs`、新增 `context/relevance.rs`
 
 - [ ] 任务 4.3：离线调参
+  - 第一步（2026-11-02）：`benchmark/context-lifecycle/run.mjs` 用脚本化 provider 驱动真实 kernel，对比两个 checkout 渲染出的上下文（不测任务成功率）。相对基线 `5b5308d3`：长任务 prefix 复用 0.761→0.785，cache 下的 knowledge 改写 2→0，输入总量不变；fan-out→synthesize 在 `handle` 模式下首个调用 48.5k→4.5k 字符（−91%），且能用 `read_result` 读全文。3.2 的继承默认值在此场景不可见（workflow root 没有父 transcript）。任务成功率需要真实 provider 跑。
   - 验收：`crates/deepstrike-lab` 提供工具，用 lifecycle report 和任务结果（成功/失败、成本）比较不同 `ContextPolicy`（阈值、lease 默认值、edge mode）。不依赖已删除的 evolution 模块。
   - 文件：`crates/deepstrike-lab`、`benchmark/`
 
