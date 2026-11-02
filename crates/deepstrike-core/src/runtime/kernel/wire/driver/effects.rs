@@ -177,6 +177,11 @@ impl CanonicalOperationDriver {
                     let tokens = engine.ctx.engine.count(&content).max(1);
                     engine.ctx.push_history(CoreMessage::user(content), tokens);
                 }
+                if let Some(record_id) = &query.record_id
+                    && !queried.recalls.is_empty()
+                {
+                    self.engine_mut()?.ctx.note_memory_expanded(record_id);
+                }
                 let mut recalled = Vec::with_capacity(queried.recalls.len());
                 let mut priors = Vec::with_capacity(queried.recalls.len());
                 let mut index_lines = Vec::new();

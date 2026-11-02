@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The end-of-run `context_lifecycle_reported` event carries `recalled` and `recall_expanded`
+  (memory records the kernel recalled, and how many the model read with `memory(record_id)`) and
+  `items`: one record per knowledge item with its origin, tokens, injection turn, reference count,
+  whether it was expanded or came back after removal, and why it left (`evicted`, `expired`,
+  `removed`; absent while resident).
+
+### Changed
+
+- Knowledge entries are context items with an origin (`system`, `skill`, `memory_recall`,
+  `reference`, …) whose lease comes from one origin table. A recalled memory index line now leaves
+  at the next compaction or renewal boundary once 8 turns pass without it being recalled again or
+  referenced; reading it with `memory(record_id)` counts as a reference. Pinned and host-seeded
+  knowledge is unaffected. Checkpoints written by 0.2.78 restore unchanged.
+
 ## [0.2.78] - 2026-11-02
 
 ### Added

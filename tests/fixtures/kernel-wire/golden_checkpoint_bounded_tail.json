@@ -3,8 +3,8 @@
   "checkpoint": {
     "base_record_digest": "sha256:ad02c6b34be537d5d34143ec72e4dfdbe3b8c94c79437e122cc35e4025453a25",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:af1410ad8aed3987b41bf19a730f902584ae7486aef1f667d1463d6c7257961e",
-    "covered_transaction_head_digest": "sha256:0410a5ef8938b54bd38212367549c653dd3efe58ca6c73d7b02fd3cfc2bf39be",
+    "checkpoint_digest": "sha256:fd8e9c704a0f77076f5be6759939ae4d17423039925bbc9e3ef268dbd4eff7b1",
+    "covered_transaction_head_digest": "sha256:5ab29c788cd22684517865769d685150d1cf1adf188fdff6fda6f1a2d3d6a73d",
     "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
     "logical_state": {
       "context_vm": {
@@ -604,7 +604,7 @@
     },
     "operation_id": "op-driver-1",
     "state_digest": "sha256:75399d590572fbc30af5dce55ee9f1982fad198df93c0bd05b7b048807dabbb6",
-    "tail_digest": "sha256:f116f0934a4119a613342bbbaf23cee9e21159698a792f5522fd66992d5b122e",
+    "tail_digest": "sha256:ad629cbaaf06dda1ce4927e8ddc05e8730efdb3be2a031185b54d88f8b091b5d",
     "tail_inputs": [
       {
         "input": {
@@ -694,7 +694,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:0410a5ef8938b54bd38212367549c653dd3efe58ca6c73d7b02fd3cfc2bf39be",
+        "record_digest": "sha256:5ab29c788cd22684517865769d685150d1cf1adf188fdff6fda6f1a2d3d6a73d",
         "step_seq": "4"
       }
     ],

@@ -46,7 +46,9 @@ pub enum KernelObservation {
     /// Context lifecycle metrics for the finished run (plan task 4.1), emitted once at termination.
     /// `regret`: evicted knowledge keys that were pushed again. `waste_tokens`: knowledge tokens
     /// never referenced (evicted or still resident). `cache_loss_tokens`: history tokens whose
-    /// cache a mid-run system[1] promotion discarded.
+    /// cache a mid-run system[1] promotion discarded. `recalled` / `recall_expanded`: memory
+    /// records the kernel recalled, and how many of them the model read with `memory(record_id)`.
+    /// `items`: every knowledge item of the run with its origin, use and why it left.
     LifecycleReport {
         turn: u32,
         knowledge_entries: u32,
@@ -54,6 +56,12 @@ pub enum KernelObservation {
         regret: u32,
         waste_tokens: u64,
         cache_loss_tokens: u64,
+        #[serde(default)]
+        recalled: u32,
+        #[serde(default)]
+        recall_expanded: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<crate::context::item::ItemRecord>,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in

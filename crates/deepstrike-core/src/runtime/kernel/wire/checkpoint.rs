@@ -34,6 +34,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
 use super::config::ResolvedOperationConfig;
+use crate::context::item::{ItemEnd, ItemOrigin, ItemRecord, Lease};
 use super::effect::{Digest, KernelEffect, LaunchToken, wire_opaque_ref};
 use super::envelope::OperationLifecycle;
 use super::fault::{KernelFault, KernelFaultCode};
@@ -659,6 +660,12 @@ pub struct ContextVmState {
     pub active_skills: Vec<SkillLeaseState>,
     #[serde(default)]
     pub knowledge: Vec<KnowledgeSlotState>,
+    /// Knowledge items that already left, for the end-of-run lifecycle report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_items: Vec<ItemRecord>,
+    /// The turn the item table counts leases against.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub item_turn: u32,
     #[serde(default)]
     pub signals: Vec<String>,
     /// §5q-2 · the stored messages of the system and history partitions, in render order. **The**
@@ -905,6 +912,24 @@ pub struct KnowledgeSlotState {
     /// Rendered in the state turn until the next boundary promotes it into system[1].
     #[serde(default)]
     pub staged: bool,
+    /// Plan task 1.1 · the item's origin. Absent in 0.2.78 checkpoints: a `memory:` key is then a
+    /// recall and any other key follows [`ItemOrigin::for_host_key`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ItemOrigin>,
+    /// Absent ⇒ the origin's default lease (permanent when pinned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease: Option<Lease>,
+    /// Why the item leaves at the next boundary, when `evict_at_boundary` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leaving: Option<ItemEnd>,
+    #[serde(default)]
+    pub injected_turn: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_referenced_turn: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub expanded: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paged_in_after_evict: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2254,4 +2279,8 @@ mod tests {
             }
         }
     }
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }

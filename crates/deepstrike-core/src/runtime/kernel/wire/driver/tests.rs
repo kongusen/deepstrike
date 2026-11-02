@@ -10122,8 +10122,8 @@ fn context_optimization_evidence_and_pending_knowledge_survive_checkpoint_restor
         after.knowledge_checkpoint_state()
     );
     let entry = &after.partitions.knowledge.entries[0];
-    assert_eq!(entry.use_count, 1);
-    assert!(entry.last_used_step.is_some());
+    assert_eq!(entry.value.ref_count, 1);
+    assert!(entry.value.last_referenced_step.is_some());
     assert_eq!(
         entry.pending.as_ref().unwrap().0.content.as_text(),
         Some("replacement evidence")
@@ -11261,7 +11261,7 @@ fn has_skill_knowledge(runtime: &Runtime, name: &str) -> bool {
         .knowledge
         .entries
         .iter()
-        .any(|entry| entry.key.as_deref() == Some(key.as_str()) && !entry.evict_at_boundary)
+        .any(|entry| entry.key.as_deref() == Some(key.as_str()) && !entry.is_leaving())
 }
 
 fn stage_skill_knowledge(runtime: &mut Runtime, name: &str) {
@@ -11774,6 +11774,83 @@ fn a_recall_policy_recalls_the_goal_before_the_first_provider_call() {
     assert!(!call.context.system_knowledge.contains("full record body"), "an index line, not the record");
     assert!(history_text(&runtime).iter().all(|line| !line.contains("rec-1")));
     assert!(observation_kinds(&runtime).contains(&"memory_recalled"));
+}
+
+/// Plan tasks 1.1 / 4.1 · a recalled index line the model reads with `memory(record_id)` is an
+/// expanded `memory_recall` item, the expansion survives a restore, and the end-of-run report
+/// counts the recall hit rate item by item.
+#[test]
+fn the_lifecycle_report_counts_which_recalls_the_model_read() {
+    use crate::context::item::{ItemOrigin, Lease, RECALL_LEASE_TURNS};
+    let mut runtime = Runtime::new();
+    runtime.submit(&recall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let recall = sole_effect(&started).effect_id.clone();
+    let resumed = runtime.submit(&resolved(
+        "in-recalled",
+        1_700_000_002_000,
+        &recall,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "one"), recall_of("rec-2", "two")],
+        }),
+    ));
+    let provider = sole_effect(&resumed).effect_id.clone();
+    let queried = runtime.submit(&provider_result(
+        "in-fetch",
+        1_700_000_003_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            crate::context::manager::MEMORY_TOOL_NAME,
+            json!({"record_id": "rec-1"}),
+        )],
+    ));
+    let fetch = sole_effect(&queried).effect_id.clone();
+    let resumed = runtime.submit(&resolved(
+        "in-fetched",
+        1_700_000_004_000,
+        &fetch,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "one")],
+        }),
+    ));
+    let items = |runtime: &Runtime| {
+        runtime
+            .driver
+            .engine()
+            .unwrap()
+            .ctx
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .map(|entry| (entry.origin, entry.lease, entry.value.expanded))
+            .collect::<Vec<_>>()
+    };
+    let recall_lease = Lease::Turns(RECALL_LEASE_TURNS);
+    let expected = vec![
+        (ItemOrigin::MemoryRecall, recall_lease, true),
+        (ItemOrigin::MemoryRecall, recall_lease, false),
+    ];
+    assert_eq!(items(&runtime), expected);
+    assert_eq!(items(&Runtime::restore_with(None, &runtime.journal)), expected);
+
+    let provider = sole_effect(&resumed).effect_id.clone();
+    runtime.submit(&provider_answer("in-answer", 1_700_000_005_000, &provider, "done"));
+    let report = runtime
+        .observations()
+        .iter()
+        .find_map(|observation| match observation {
+            KernelObservation::LifecycleReport { recalled, recall_expanded, items, .. } => {
+                Some((*recalled, *recall_expanded, items.clone()))
+            }
+            _ => None,
+        })
+        .expect("the run reports its context lifecycle");
+    assert_eq!((report.0, report.1), (2, 1));
+    assert_eq!(report.2[0].key.as_deref(), Some("memory:rec-1"));
+    assert!(report.2[0].value.expanded);
+    assert_eq!(report.2[0].end, None, "still resident at the end of the run");
 }
 
 #[test]

@@ -123,7 +123,7 @@ def _project_kernel_observation(
             "handoff_ref": "",
         }
     if kind == "lifecycle_report":
-        return {
+        event = {
             "kind": "context_lifecycle_reported",
             "turn": t,
             "knowledge_entries": _get(obs, "knowledge_entries", 0),
@@ -131,7 +131,13 @@ def _project_kernel_observation(
             "regret": _get(obs, "regret", 0),
             "waste_tokens": _get(obs, "waste_tokens", 0),
             "cache_loss_tokens": _get(obs, "cache_loss_tokens", 0),
+            "recalled": _get(obs, "recalled", 0),
+            "recall_expanded": _get(obs, "recall_expanded", 0),
         }
+        items = _get(obs, "items", None)
+        if items:
+            event["items"] = list(items)
+        return event
     if kind == "rollbacked":
         return {
             "kind": "rollbacked",

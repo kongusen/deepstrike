@@ -72,7 +72,18 @@
           "knowledge_referenced": 3,
           "regret": 1,
           "waste_tokens": 120,
-          "cache_loss_tokens": 0
+          "cache_loss_tokens": 0,
+          "recalled": 2,
+          "recall_expanded": 1,
+          "items": [
+            {
+              "key": "memory:rec-1",
+              "origin": "memory_recall",
+              "tokens": 18,
+              "value": { "injected_turn": 1, "ref_count": 1, "expanded": true },
+              "end": "expired"
+            }
+          ]
         }
       },
       {
@@ -462,7 +473,18 @@
           "knowledge_referenced": 3,
           "regret": 1,
           "waste_tokens": 120,
-          "cache_loss_tokens": 0
+          "cache_loss_tokens": 0,
+          "recalled": 2,
+          "recall_expanded": 1,
+          "items": [
+            {
+              "key": "memory:rec-1",
+              "origin": "memory_recall",
+              "tokens": 18,
+              "value": { "injected_turn": 1, "ref_count": 1, "expanded": true },
+              "end": "expired"
+            }
+          ]
         },
         "rollbacked_turn_zero": {
           "kind": "rollbacked",

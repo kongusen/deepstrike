@@ -364,7 +364,19 @@ class ContextRenewedEvent(TypedDict):
     handoff_ref: str
 
 
-class ContextLifecycleReportedEvent(TypedDict):
+class ContextItemRecord(TypedDict, total=False):
+    key: str
+    origin: str
+    tokens: int
+    value: dict[str, Any]
+    end: Literal["evicted", "expired", "removed"]
+
+
+class _ContextLifecycleItems(TypedDict, total=False):
+    items: list[ContextItemRecord]
+
+
+class ContextLifecycleReportedEvent(_ContextLifecycleItems):
     kind: Literal["context_lifecycle_reported"]
     turn: int
     knowledge_entries: int
@@ -372,6 +384,8 @@ class ContextLifecycleReportedEvent(TypedDict):
     regret: int
     waste_tokens: int
     cache_loss_tokens: int
+    recalled: int
+    recall_expanded: int
 
 
 class MemoryWrittenEvent(TypedDict):

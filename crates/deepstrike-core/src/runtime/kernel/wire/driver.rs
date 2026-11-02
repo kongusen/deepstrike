@@ -102,6 +102,7 @@ use super::terminal::{
 };
 use super::transaction::{PlanContext, TransitionStep};
 
+use crate::context::item::{ContextItem, ItemEnd, ItemOrigin, ItemValue};
 use crate::context::manager::READ_RESULT_TOOL_NAME;
 use crate::context::task_state::{CompressionEntry, PlanStep, TaskState};
 use crate::mm::handle::{Handle, HandleKind, Residency};
@@ -1204,16 +1205,36 @@ fn restore_context_vm(
     }
     for slot in &state.knowledge {
         let message = restore_message(&slot.role, &slot.body, &slot.tool_calls)?;
-        ctx.partitions.knowledge.push_entry(
+        let origin = slot.origin.unwrap_or_else(|| match slot.key.as_deref() {
+            Some(key) if key.starts_with("memory:") => ItemOrigin::MemoryRecall,
+            key => ItemOrigin::for_host_key(key),
+        });
+        let mut entry = ContextItem::new(
+            origin,
             slot.key.as_deref().map(Into::into),
             message,
             slot.tokens,
             slot.pinned,
+            slot.injected_turn,
         );
+        if let Some(lease) = slot.lease {
+            entry.lease = lease;
+        }
+        entry.leaving = match (slot.evict_at_boundary, slot.leaving) {
+            (false, _) => None,
+            (true, leaving) => Some(leaving.unwrap_or(ItemEnd::Removed)),
+        };
+        entry.value = ItemValue {
+            injected_turn: slot.injected_turn,
+            ref_count: slot.use_count,
+            last_referenced_step: slot.last_used_step,
+            last_referenced_turn: slot.last_referenced_turn,
+            expanded: slot.expanded,
+            paged_in_after_evict: slot.paged_in_after_evict,
+        };
+        ctx.partitions.knowledge.token_count += entry.tokens;
+        ctx.partitions.knowledge.entries.push(entry);
         if let Some(entry) = ctx.partitions.knowledge.entries.last_mut() {
-            entry.evict_at_boundary = slot.evict_at_boundary;
-            entry.use_count = slot.use_count;
-            entry.last_used_step = slot.last_used_step;
             entry.staged = slot.staged;
             entry.pending = slot
                 .pending
@@ -1235,6 +1256,8 @@ fn restore_context_vm(
     ctx.partitions.knowledge.evicted_keys = state.evicted_knowledge_keys.iter().cloned().collect();
     ctx.partitions.knowledge.regret = state.knowledge_regret;
     ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;
+    ctx.partitions.knowledge.retired = state.retired_items.clone();
+    ctx.partitions.knowledge.turn = state.item_turn;
     ctx.recall_top_k = state.recall_top_k;
     ctx.recall_due = state.recall_due;
     ctx.dependency_bodies = state.dependency_bodies.clone();

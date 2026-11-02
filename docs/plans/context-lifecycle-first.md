@@ -85,7 +85,9 @@ ContextItem {
 
 ### 阶段 1：ContextItem 统一模型（修 Q1、Q3）
 
-- [ ] 任务 1.1：kernel 引入 `ContextItem`、item 表和 origin 默认值表
+- [x] 任务 1.1a（2026-11-02）：新增 `context/item.rs`：`ContextItem`（origin / lease / value）与 origin 默认值表（`ItemOrigin::defaults`，11 种 origin 各有 scope / fidelity / lease / authority）。knowledge 分区的条目改为 `ContextItem`，`KnowledgeEntry` 删除；宿主写入的 knowledge 按 key 定 origin（`skill:` → skill，其余 → reference），kernel recall 为 `memory_recall`，治理提示为 `system`。lease 四种：permanent、until_boundary、turns(n)、single_use，到期后标记为在下一个 boundary 离开（不在缓存代内改写 system[1]）。recall 的 index line 默认 `turns(8)`，从最近一次 recall 或引用起算，`memory(record_id)` 读取算作引用并标记 `expanded`。`lease_remaining_steps` 改为从 lease 计算。checkpoint 的 knowledge slot 带上 origin、lease、离开原因和 value，`retired_items` 记录已离开的 item；0.2.78 的 checkpoint 仍可恢复（`memory:` key 推断为 recall）。未做：`until(event)` lease；scope / fidelity / authority 目前只是表中的描述，尚无行为。
+- [ ] 任务 1.1b：history 消息和 handle 映射为 item（origin、稳定 id、注入 / 引用 / 折叠记录），`ContextPartitions` 改为 item 表上的渲染视图
+- ~~原任务 1.1：kernel 引入 `ContextItem`、item 表和 origin 默认值表~~
   - 验收：`ContextPartitions` 变成 item 表上的渲染视图；`KnowledgeEntry`、history message、handle 都映射为 item，旧类型删除。一张表定义每种 origin 的默认 scope/fidelity/lease/authority（例如 `memory_recall → session / handle(index line) / turns(N) / host`），宿主没有直接写分区的 API。`mm/value.rs` 里一直是 `None` 的 `lease_remaining_steps` 改为从 lease 计算。
   - 验证：现有 renderer 和 compression 测试迁到新模型后通过；每种 lease 有到期测试。
   - 文件：新增 `context/item.rs`；改 `context/partitions.rs`、`manager.rs`、`renderer.rs`、`mm/handle.rs`、`mm/value.rs`
@@ -126,7 +128,7 @@ ContextItem {
 
 ### 阶段 4：反馈闭环（修 Q4、Q10）
 
-- [x] 任务 4.1（2026-11-01，汇总部分）：kernel 在 run 结束时发出 `lifecycle_report` 观测（knowledge 条目数、被引用数、regret、waste_tokens、cache_loss_tokens），四个 SDK 投影为会话事件 `context_lifecycle_reported`；evicted key、regret、waste 进入 checkpoint。未做：逐 item 的注入/引用/淘汰明细和 recall 命中率，等 1.1 的 item 表落地后补。
+- [x] 任务 4.1（2026-11-01，汇总部分）：kernel 在 run 结束时发出 `lifecycle_report` 观测（knowledge 条目数、被引用数、regret、waste_tokens、cache_loss_tokens），四个 SDK 投影为会话事件 `context_lifecycle_reported`；evicted key、regret、waste 进入 checkpoint。逐 item 明细与 recall 命中率（2026-11-02，随 1.1a）：`lifecycle_report` 增加 `recalled`、`recall_expanded` 和 `items`（每个 knowledge item 的 key、origin、tokens、注入 turn、引用次数、是否 expanded、是否淘汰后回来、离开原因 evicted / expired / removed），四个 SDK 原样投影到 `context_lifecycle_reported`。history item 的明细随 1.1b。
 - ~~原任务 4.1：lifecycle report~~
   - 验收：每个 run 输出每个 item 的注入、引用、淘汰、page-in、到期记录，以及三个指标：
     - **regret**：淘汰或折叠后又被 page-in 或重新请求的 item 数；
@@ -216,7 +218,7 @@ ContextItem {
 | 版本 | 内容 | 状态 |
 |------|------|------|
 | 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1 汇总、6.1；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 待合并 |
-| 0.2.79 | 1.1a/1.1b：ContextItem 与 origin 默认值表，knowledge、history、handle 都映射为 item，lease 到期；4.1 逐 item 明细与 recall 命中率 | 未开始 |
+| 0.2.79 | 1.1a/1.1b：ContextItem 与 origin 默认值表，knowledge、history、handle 都映射为 item，lease 到期；4.1 逐 item 明细与 recall 命中率 | 进行中（1.1a 与 4.1 knowledge 明细完成） |
 | 0.2.80 | 4.3 lab 工具（`deepstrike-lab`）；4.2 引用证据分级与 `RelevanceJudge`，用 lab 对比纯词法版本 | 未开始 |
 | 0.2.81 | 1.1c：item 稳定 id 进入消息 ABI，provider replay 改按 id 作 key（替代按内容作 key，Anthropic native blocks 一并改）；5.1 吸收 provider 改写（与 1.1c 共用一次 ABI 扩展）；6.2 blackboard；6.3 Python、WASM 宿主程序 API | 未开始 |
 

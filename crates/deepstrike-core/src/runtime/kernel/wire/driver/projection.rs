@@ -298,7 +298,7 @@ impl CanonicalOperationDriver {
                     body: self.project_body(&entry.message),
                     tokens: entry.tokens,
                     pinned: entry.pinned,
-                    evict_at_boundary: entry.evict_at_boundary,
+                    evict_at_boundary: entry.is_leaving(),
                     tool_calls: entry
                         .message
                         .tool_calls
@@ -316,11 +316,20 @@ impl CanonicalOperationDriver {
                             pending.1,
                         ))
                     }),
-                    use_count: entry.use_count,
-                    last_used_step: entry.last_used_step,
+                    use_count: entry.value.ref_count,
+                    last_used_step: entry.value.last_referenced_step,
                     staged: entry.staged,
+                    origin: Some(entry.origin),
+                    lease: Some(entry.lease),
+                    leaving: entry.leaving,
+                    injected_turn: entry.value.injected_turn,
+                    last_referenced_turn: entry.value.last_referenced_turn,
+                    expanded: entry.value.expanded,
+                    paged_in_after_evict: entry.value.paged_in_after_evict,
                 })
                 .collect(),
+            retired_items: ctx.partitions.knowledge.retired.clone(),
+            item_turn: ctx.partitions.knowledge.turn,
             signals: ctx.partitions.signals.clone(),
             messages: ctx
                 .partitions

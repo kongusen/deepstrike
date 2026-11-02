@@ -1,7 +1,7 @@
 {
   "description": "One whole agent turn cycle on the canonical wire (spec 7.9 · Task 12): configure → atomic agent start → provider result carrying a tool call → tool results → final provider answer → agent terminal. Every step after the start is a single `ResolveEffect` input, and each one publishes exactly the next effect the loop is waiting on — until the last, whose disposition is the terminal itself and which publishes nothing.",
   "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
-  "head_digest": "sha256:0410a5ef8938b54bd38212367549c653dd3efe58ca6c73d7b02fd3cfc2bf39be",
+  "head_digest": "sha256:5ab29c788cd22684517865769d685150d1cf1adf188fdff6fda6f1a2d3d6a73d",
   "links": [
     {
       "envelope": {
@@ -510,8 +510,8 @@
         "input_id": "in-answer",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
-        "record_digest": "sha256:0410a5ef8938b54bd38212367549c653dd3efe58ca6c73d7b02fd3cfc2bf39be",
-        "step_digest": "sha256:dcec419e17586d9478324784d8048049cdae1bf9c9c10b293160f1ca69dc1aa4",
+        "record_digest": "sha256:5ab29c788cd22684517865769d685150d1cf1adf188fdff6fda6f1a2d3d6a73d",
+        "step_digest": "sha256:e8aa36b37626d3868bff1a23c24a84f65ad7e7720e15c68b0fa3cbbeab388340",
         "step_seq": "4"
       },
       "step": {
@@ -544,6 +544,8 @@
             "kind": "lifecycle_report",
             "knowledge_entries": 0,
             "knowledge_referenced": 0,
+            "recall_expanded": 0,
+            "recalled": 0,
             "regret": 0,
             "turn": 1,
             "waste_tokens": 0

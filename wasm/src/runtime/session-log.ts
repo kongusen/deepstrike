@@ -35,6 +35,23 @@ export interface ProviderAttemptRecord {
   accounting_policy_id?: string
 }
 
+/** One knowledge item's lifecycle in a `context_lifecycle_reported` event (plan task 4.1). */
+export interface ContextItemRecord {
+  key?: string
+  origin: "system" | "skill" | "memory_recall" | "reference" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary"
+  tokens: number
+  value: {
+    injected_turn: number
+    ref_count: number
+    last_referenced_step?: number
+    last_referenced_turn?: number
+    expanded?: boolean
+    paged_in_after_evict?: boolean
+  }
+  /** Why it left; absent while resident. */
+  end?: "evicted" | "expired" | "removed"
+}
+
 export type SessionEvent =
   // P4-S1: `route` is the runner-construction ResolvedProviderRoute snapshot (P4 §0.2).
   | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: import("../types.js").ContentPart[]; route?: ResolvedProviderRoute; metadata?: Record<string, unknown> }
@@ -83,6 +100,11 @@ export type SessionEvent =
       regret: number
       waste_tokens: number
       cache_loss_tokens: number
+      /** Memory records the kernel recalled, and how many the model read with `memory(record_id)`. */
+      recalled: number
+      recall_expanded: number
+      /** Every knowledge item of the run. Absent when the run had none. */
+      items?: ContextItemRecord[]
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

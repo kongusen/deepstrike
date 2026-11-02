@@ -1,5 +1,6 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
+use super::item::{ItemEnd, ItemOrigin, ItemRecord};
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
@@ -70,6 +71,22 @@ pub(crate) const EXPOSURE_EXEMPT_META_TOOLS: &[&str] = &[
 /// (see [`EXPOSURE_EXEMPT_META_TOOLS`]). Used by both filters in `emit_call_llm`.
 pub(crate) fn is_exposure_exempt_meta_tool(name: &str) -> bool {
     EXPOSURE_EXEMPT_META_TOOLS.contains(&name)
+}
+
+/// End-of-run context lifecycle metrics (plan task 4.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LifecycleMetrics {
+    pub knowledge_entries: u32,
+    pub knowledge_referenced: u32,
+    pub regret: u32,
+    pub waste_tokens: u64,
+    pub cache_loss_tokens: u64,
+    /// Memory records the kernel recalled into the run.
+    pub recalled: u32,
+    /// Of those, the ones the model read in full with `memory(record_id)`.
+    pub recall_expanded: u32,
+    /// Every knowledge item of the run: the retired ones in the order they left, then the resident.
+    pub items: Vec<ItemRecord>,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -663,17 +680,37 @@ impl ContextManager {
         format!("[MEMORY record_id={record_id} kind={kind}{trust}] {summary}")
     }
 
-    /// Land recalled records as keyed knowledge `memory:<record_id>`. The key dedupes a record
-    /// across recalls; a record already resident is left as it is.
+    /// Land recalled records as keyed `memory_recall` items `memory:<record_id>`. The key dedupes a
+    /// record across recalls; a record already resident keeps its bytes and has its lease renewed.
     pub fn push_recalled(&mut self, lines: Vec<(String, String)>) {
         for (record_id, line) in lines {
             let key = CompactString::from(format!("memory:{record_id}"));
-            if self.partitions.knowledge.contains_key(&key) {
+            if self.partitions.knowledge.renew(&key) {
                 continue;
             }
             let tokens = self.engine.count(&line).max(1);
-            self.push_knowledge_entry(Some(key), CoreMessage::system(line), tokens, false);
+            self.push_knowledge_item(
+                ItemOrigin::MemoryRecall,
+                Some(key),
+                CoreMessage::system(line),
+                tokens,
+                false,
+            );
         }
+    }
+
+    /// The model read memory record `record_id` in full: its index line was used.
+    pub fn note_memory_expanded(&mut self, record_id: &str) -> bool {
+        self.partitions
+            .knowledge
+            .note_expanded(&format!("memory:{record_id}"))
+    }
+
+    /// Advance the item table to `turn` and mark every item whose lease ran out to leave at the
+    /// next boundary. Runs at the head of every event, like the skill lease sweep.
+    pub fn sweep_expired_item_leases(&mut self, turn: u32) {
+        self.partitions.knowledge.turn = turn;
+        self.partitions.knowledge.expire_leases();
     }
 
     /// The rendered context is about to go to a provider: from now on system[1] is cached.
@@ -681,23 +718,31 @@ impl ContextManager {
         self.prefix_sent = true;
     }
 
-    /// The run's context lifecycle metrics: (entries, referenced, regret, waste, cache loss).
-    pub fn lifecycle_metrics(&self) -> (u32, u32, u32, u64, u64) {
+    /// The run's context lifecycle metrics (plan task 4.1).
+    pub fn lifecycle_metrics(&self) -> LifecycleMetrics {
         let knowledge = &self.partitions.knowledge;
-        let referenced = knowledge.entries.iter().filter(|e| e.use_count > 0).count() as u32;
+        let referenced = knowledge.entries.iter().filter(|e| e.value.ref_count > 0).count() as u32;
         let resident_waste: u64 = knowledge
             .entries
             .iter()
-            .filter(|e| e.use_count == 0)
+            .filter(|e| e.value.ref_count == 0)
             .map(|e| u64::from(e.tokens))
             .sum();
-        (
-            knowledge.entries.len() as u32,
-            referenced,
-            knowledge.regret,
-            knowledge.wasted_tokens + resident_waste,
-            self.cache_invalidated_tokens,
-        )
+        let items = knowledge.item_records();
+        let recalls = items.iter().filter(|item| item.origin == ItemOrigin::MemoryRecall);
+        let (recalled, recall_expanded) = recalls.fold((0, 0), |(all, expanded), item| {
+            (all + 1, expanded + u32::from(item.value.expanded))
+        });
+        LifecycleMetrics {
+            knowledge_entries: knowledge.entries.len() as u32,
+            knowledge_referenced: referenced,
+            regret: knowledge.regret,
+            waste_tokens: knowledge.wasted_tokens + resident_waste,
+            cache_loss_tokens: self.cache_invalidated_tokens,
+            recalled,
+            recall_expanded,
+            items,
+        }
     }
 
     /// History tokens whose cache mid-run system[1] promotions discarded.
@@ -750,10 +795,23 @@ impl ContextManager {
         tokens: u32,
         pinned: bool,
     ) {
+        let origin = ItemOrigin::for_host_key(key.as_deref());
+        self.push_knowledge_item(origin, key, msg, tokens, pinned);
+    }
+
+    /// [`Self::push_knowledge_entry`] for an item whose origin the caller knows.
+    pub fn push_knowledge_item(
+        &mut self,
+        origin: ItemOrigin,
+        key: Option<CompactString>,
+        msg: CoreMessage,
+        tokens: u32,
+        pinned: bool,
+    ) {
         let before = self.partitions.knowledge.entries.len();
         self.partitions
             .knowledge
-            .push_entry(key, msg, tokens, pinned);
+            .push_item(origin, key, msg, tokens, pinned);
         self.place_appended_knowledge(before);
     }
 
@@ -811,7 +869,7 @@ impl ContextManager {
             .knowledge
             .entries
             .iter()
-            .filter(|e| e.evict_at_boundary)
+            .filter(|e| e.is_leaving())
             .map(|e| e.tokens)
             .sum();
         let mut projected = used.saturating_sub(marked);
@@ -822,7 +880,7 @@ impl ContextManager {
             .iter()
             .enumerate()
             .filter(|(_, entry)| {
-                !entry.evict_at_boundary
+                !entry.is_leaving()
                     && !entry.pinned
                     && !entry
                         .key
@@ -844,7 +902,7 @@ impl ContextManager {
                 break;
             }
             let entry = &mut self.partitions.knowledge.entries[index];
-            entry.evict_at_boundary = true;
+            entry.leaving = Some(ItemEnd::Evicted);
             projected = projected.saturating_sub(entry.tokens);
         }
         if self.knowledge_budget_warned {
@@ -1279,10 +1337,73 @@ mod tests {
         mgr.sweep_knowledge_at_boundary();
         // memory:a left unreferenced (waste) and comes back (regret).
         mgr.push_knowledge_entry(Some("memory:a".into()), CoreMessage::system("alpha notes"), 7, false);
-        let (entries, referenced, regret, waste, cache_loss) = mgr.lifecycle_metrics();
-        assert_eq!((entries, referenced, regret), (2, 1, 1));
-        assert_eq!(waste, 7 + 7, "evicted unreferenced + resident unreferenced");
-        assert_eq!(cache_loss, 0);
+        let metrics = mgr.lifecycle_metrics();
+        assert_eq!(
+            (metrics.knowledge_entries, metrics.knowledge_referenced, metrics.regret),
+            (2, 1, 1)
+        );
+        assert_eq!(metrics.waste_tokens, 7 + 7, "evicted unreferenced + resident unreferenced");
+        assert_eq!(metrics.cache_loss_tokens, 0);
+        let items: Vec<_> = metrics
+            .items
+            .iter()
+            .map(|item| (item.key.as_deref().unwrap(), item.end, item.value.paged_in_after_evict))
+            .collect();
+        assert_eq!(
+            items,
+            vec![
+                ("memory:a", Some(ItemEnd::Removed), false),
+                ("memory:b", None, false),
+                ("memory:a", None, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recall_left_unused_expires_and_leaves_at_the_next_boundary() {
+        use crate::context::item::RECALL_LEASE_TURNS;
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.sweep_expired_item_leases(1);
+        mgr.push_recalled(vec![
+            ("r1".into(), "[MEMORY record_id=r1 kind=project] orchid storage".into()),
+            ("r2".into(), "[MEMORY record_id=r2 kind=project] mercury deploys".into()),
+        ]);
+        mgr.sweep_expired_item_leases(4);
+        assert!(mgr.note_memory_expanded("r2"));
+        mgr.sweep_expired_item_leases(1 + RECALL_LEASE_TURNS);
+        let leaving: Vec<_> = mgr
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .map(|entry| entry.leaving)
+            .collect();
+        assert_eq!(leaving, vec![Some(ItemEnd::Expired), None], "r2 was used at turn 4");
+        // Still rendered until the boundary: an expiry never rewrites cached bytes mid-generation.
+        assert!(mgr.render().system_knowledge.contains("orchid storage"));
+        mgr.sweep_knowledge_at_boundary();
+        assert!(!mgr.render().system_knowledge.contains("orchid storage"));
+
+        let metrics = mgr.lifecycle_metrics();
+        assert_eq!((metrics.recalled, metrics.recall_expanded), (2, 1));
+        assert_eq!(metrics.items[0].end, Some(ItemEnd::Expired));
+        assert_eq!(metrics.items[0].origin, ItemOrigin::MemoryRecall);
+    }
+
+    #[test]
+    fn a_fresh_recall_of_a_resident_record_renews_its_lease() {
+        use crate::context::item::RECALL_LEASE_TURNS;
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        let line = || vec![("r1".to_string(), "[MEMORY record_id=r1 kind=project] a".to_string())];
+        mgr.push_recalled(line());
+        mgr.sweep_expired_item_leases(5);
+        mgr.push_recalled(line());
+        mgr.sweep_expired_item_leases(RECALL_LEASE_TURNS);
+        assert!(!mgr.partitions.knowledge.entries[0].is_leaving());
+        mgr.sweep_expired_item_leases(5 + RECALL_LEASE_TURNS);
+        assert!(mgr.partitions.knowledge.entries[0].is_leaving());
     }
 
     #[test]
@@ -2005,10 +2126,10 @@ mod tests {
         assert_eq!(warn, Some((40, 25)));
         // Equal scores retain the deterministic insertion-order tie-break: unkeyed then "a".
         let e = &mgr.partitions.knowledge.entries;
-        assert!(e[0].evict_at_boundary);
-        assert!(e[1].evict_at_boundary);
-        assert!(!e[2].evict_at_boundary, "pinned exempt");
-        assert!(!e[3].evict_at_boundary, "skill pin exempt");
+        assert!(e[0].is_leaving());
+        assert!(e[1].is_leaving());
+        assert!(!e[2].is_leaving(), "pinned exempt");
+        assert!(!e[3].is_leaving(), "skill pin exempt");
 
         // Warn-once per generation; marking stays idempotent.
         assert_eq!(mgr.enforce_knowledge_budget(), None);
@@ -2044,7 +2165,7 @@ mod tests {
                 .knowledge
                 .entries
                 .iter()
-                .all(|e| !e.evict_at_boundary)
+                .all(|e| !e.is_leaving())
         );
     }
 
@@ -2075,15 +2196,15 @@ mod tests {
         assert_eq!(mgr.enforce_knowledge_budget(), Some((30, 25)));
         let entries = &mgr.partitions.knowledge.entries;
         assert!(
-            !entries[0].evict_at_boundary,
+            !entries[0].is_leaving(),
             "a real reference must raise retention"
         );
         assert!(
-            entries[1].evict_at_boundary,
+            entries[1].is_leaving(),
             "lowest-value entry evicts first"
         );
         assert!(
-            !entries[2].evict_at_boundary,
+            !entries[2].is_leaving(),
             "one eviction is enough to fit"
         );
     }
@@ -2094,7 +2215,7 @@ mod tests {
         mgr.config.knowledge_budget_ratio = 0.0;
         mgr.push_knowledge(CoreMessage::system("huge"), 90);
         assert_eq!(mgr.enforce_knowledge_budget(), None);
-        assert!(!mgr.partitions.knowledge.entries[0].evict_at_boundary);
+        assert!(!mgr.partitions.knowledge.entries[0].is_leaving());
     }
 
     #[test]

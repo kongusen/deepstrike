@@ -133,15 +133,23 @@ fn project(obs: &Value, turn: u32, opts: &ProjectionOptions) -> Option<Value> {
             "sprint": or(obs, "sprint", 0.into()),
             "handoff_ref": "",
         }),
-        "lifecycle_report" => json!({
-            "kind": "context_lifecycle_reported",
-            "turn": t,
-            "knowledge_entries": or(obs, "knowledge_entries", 0.into()),
-            "knowledge_referenced": or(obs, "knowledge_referenced", 0.into()),
-            "regret": or(obs, "regret", 0.into()),
-            "waste_tokens": or(obs, "waste_tokens", 0.into()),
-            "cache_loss_tokens": or(obs, "cache_loss_tokens", 0.into()),
-        }),
+        "lifecycle_report" => {
+            let mut event = json!({
+                "kind": "context_lifecycle_reported",
+                "turn": t,
+                "knowledge_entries": or(obs, "knowledge_entries", 0.into()),
+                "knowledge_referenced": or(obs, "knowledge_referenced", 0.into()),
+                "regret": or(obs, "regret", 0.into()),
+                "waste_tokens": or(obs, "waste_tokens", 0.into()),
+                "cache_loss_tokens": or(obs, "cache_loss_tokens", 0.into()),
+                "recalled": or(obs, "recalled", 0.into()),
+                "recall_expanded": or(obs, "recall_expanded", 0.into()),
+            });
+            if let Some(items) = obs.get("items").filter(|items| items.as_array().is_some_and(|a| !a.is_empty())) {
+                event["items"] = items.clone();
+            }
+            event
+        }
         "rollbacked" => json!({
             "kind": "rollbacked",
             "turn": t,

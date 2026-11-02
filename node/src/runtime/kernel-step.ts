@@ -9,7 +9,7 @@ import type {
   MediaSource,
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
-import type { RollbackReason } from "./session-log.js"
+import type { ContextItemRecord, RollbackReason } from "./session-log.js"
 import type { WorkflowBudget, WorkflowSpawnInfo } from "../types/agent.js"
 import { validateSkillKernelProjection } from "./validators/skill-kernel-projection.js"
 import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
@@ -241,6 +241,9 @@ export interface KernelObservation {
   regret?: number
   waste_tokens?: number
   cache_loss_tokens?: number
+  recalled?: number
+  recall_expanded?: number
+  items?: ContextItemRecord[]
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string

@@ -117,6 +117,9 @@ function projectKernelObservation(
         regret: obs.regret ?? 0,
         waste_tokens: obs.waste_tokens ?? 0,
         cache_loss_tokens: obs.cache_loss_tokens ?? 0,
+        recalled: obs.recalled ?? 0,
+        recall_expanded: obs.recall_expanded ?? 0,
+        ...(obs.items && obs.items.length > 0 ? { items: obs.items } : {}),
       }
     case "rollbacked":
       return {

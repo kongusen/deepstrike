@@ -240,6 +240,14 @@ pub enum SessionEvent {
         regret: u32,
         waste_tokens: u64,
         cache_loss_tokens: u64,
+        /// Memory records the kernel recalled, and how many the model read with `memory(record_id)`.
+        #[serde(default)]
+        recalled: u32,
+        #[serde(default)]
+        recall_expanded: u32,
+        /// Every knowledge item of the run: origin, use, and why it left (absent while resident).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<crate::context::item::ItemRecord>,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

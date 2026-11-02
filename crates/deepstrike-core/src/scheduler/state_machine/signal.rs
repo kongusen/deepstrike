@@ -65,6 +65,7 @@ impl LoopStateMachine {
         self.sweep_expired_leases();
         // K3: skill leases expire on the same head-of-event cadence as capability leases.
         self.ctx.sweep_expired_skill_leases(self.turn);
+        self.ctx.sweep_expired_item_leases(self.turn);
         let signal_id = signal.id.to_string();
         let (action, disposition, queue_depth) = self.route_signal(signal, may_issue_request);
         self.observations

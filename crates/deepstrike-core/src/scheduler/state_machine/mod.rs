@@ -1197,6 +1197,7 @@ impl LoopStateMachine {
         self.sweep_expired_leases();
         // K3: skill leases expire on the same head-of-event cadence as capability leases.
         self.ctx.sweep_expired_skill_leases(self.turn);
+        self.ctx.sweep_expired_item_leases(self.turn);
 
         match event {
             LoopEvent::LLMResponse { message } => {
@@ -1819,15 +1820,17 @@ impl LoopStateMachine {
             let tokens = self.message_tokens(msg);
             self.ctx.push_history(msg.clone(), tokens);
         }
-        let (knowledge_entries, knowledge_referenced, regret, waste_tokens, cache_loss_tokens) =
-            self.ctx.lifecycle_metrics();
+        let metrics = self.ctx.lifecycle_metrics();
         self.observations.push(KernelObservation::LifecycleReport {
             turn: self.turn,
-            knowledge_entries,
-            knowledge_referenced,
-            regret,
-            waste_tokens,
-            cache_loss_tokens,
+            knowledge_entries: metrics.knowledge_entries,
+            knowledge_referenced: metrics.knowledge_referenced,
+            regret: metrics.regret,
+            waste_tokens: metrics.waste_tokens,
+            cache_loss_tokens: metrics.cache_loss_tokens,
+            recalled: metrics.recalled,
+            recall_expanded: metrics.recall_expanded,
+            items: metrics.items,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
@@ -2046,14 +2049,15 @@ impl LoopStateMachine {
                     .map_or(&entry.message, |pending| &pending.0);
                 (
                     message.content.as_text().map(str::to_string),
-                    entry.evict_at_boundary,
+                    entry.is_leaving(),
                 )
             });
         match (note, current) {
             (Some(note), Some((Some(text), false))) if text == note => {}
             (Some(note), _) => {
                 let tokens = self.ctx.engine.count(&note).max(1);
-                self.ctx.push_knowledge_entry(
+                self.ctx.push_knowledge_item(
+                    crate::context::item::ItemOrigin::System,
                     Some(KEY.into()),
                     CoreMessage::system(note),
                     tokens,
