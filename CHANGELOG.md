@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.79] - 2026-11-02
+
 ### Added
 
 - Item leases can wait for an event: a skill body's lease is `until(skill_deactivated)`, so it

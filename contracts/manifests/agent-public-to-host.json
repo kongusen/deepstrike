@@ -1,6 +1,6 @@
 {
   "id": "agent.public-to-host",
-  "version": "0.2.78",
+  "version": "0.2.79",
   "protocol": {
     "family": "public-to-host",
     "direction": "lower",
