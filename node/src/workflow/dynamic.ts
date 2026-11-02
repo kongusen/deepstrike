@@ -255,6 +255,9 @@ export interface DynamicWorkflowHost {
   runWorkflow(spec: WorkflowSpec, plan?: DynamicWorkflowPlan): Promise<WorkflowOutcome>
   /** Persist a replay decision as a kernel-owned fact when the host has one. */
   recordReplayFact?(fact: DynamicWorkflowReplayFact): Promise<void>
+  /** Plan task 6.2 · write (or, with `undefined`, remove) the blackboard entry `key` as a kernel
+   *  item on the workflow's operation, in order with the program's submissions. */
+  writeBlackboard?(key: string, content: string | undefined): Promise<void>
 }
 
 export interface DynamicWorkflowRun<T> {
@@ -264,9 +267,25 @@ export interface DynamicWorkflowRun<T> {
   events: readonly DynamicWorkflowLifecycleEvent[]
 }
 
+/** Plan task 6.2 · how long a blackboard entry stays: the whole run, or the current phase. */
+export interface DynamicWorkflowBlackboardOptions {
+  scope?: "workflow" | "phase"
+}
+
+/** Plan task 6.2 · state the program shares with the agents it runs. Each entry is a kernel item
+ *  (`blackboard:<key>`) that every agent spawned after the write starts with, whatever its context
+ *  inheritance; a later write of the key replaces it, and a phase-scoped entry leaves when its
+ *  phase ends. Values that are not strings are written as JSON. */
+export interface DynamicWorkflowBlackboard {
+  put(key: string, value: unknown, options?: DynamicWorkflowBlackboardOptions): Promise<void>
+  get(key: string): unknown
+  delete(key: string): Promise<void>
+}
+
 export interface DynamicWorkflowContext<TArgs extends Record<string, unknown> = Record<string, unknown>> {
   readonly args: Readonly<TArgs>
   readonly progress: DynamicWorkflowProgress
+  readonly blackboard: DynamicWorkflowBlackboard
   agent<T = string>(prompt: string, options?: DynamicWorkflowAgentOptions): Promise<DynamicWorkflowAgentResult<T> | null>
   parallel<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R> | R): Promise<R[]>
   parallelAgents<T>(items: readonly T[], worker: (item: T, index: number) => DynamicWorkflowAgentRequest): Promise<Array<DynamicWorkflowAgentResult | null>>
@@ -549,6 +568,12 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
 
 class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implements DynamicWorkflowContext<TArgs> {
   readonly args: Readonly<TArgs>
+  private readonly board = new Map<string, { value: unknown; phase?: DynamicWorkflowPhaseProgress }>()
+  readonly blackboard: DynamicWorkflowBlackboard = Object.freeze({
+    put: (key: string, value: unknown, options?: DynamicWorkflowBlackboardOptions) => this.blackboardPut(key, value, options),
+    get: (key: string) => this.board.get(key)?.value,
+    delete: (key: string) => this.blackboardDelete(key),
+  })
   private agentCount = 0
   private nextNode = 0
   private replayInvalidated = false
@@ -581,6 +606,25 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
 
   agent<T = string>(prompt: string, options: DynamicWorkflowAgentOptions = {}): Promise<DynamicWorkflowAgentResult<T> | null> {
     return this.runAgent<T>(prompt, options)
+  }
+
+  private async blackboardPut(key: string, value: unknown, options: DynamicWorkflowBlackboardOptions = {}): Promise<void> {
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(key)) {
+      throw new Error("dynamic workflow blackboard keys are 1-128 characters of letters, digits, _ . : -")
+    }
+    const scope = options.scope ?? "workflow"
+    if (scope !== "workflow" && scope !== "phase") throw new Error(`unknown blackboard scope ${String(scope)}`)
+    const phase = scope === "phase" ? this.phaseStack.at(-1) : undefined
+    if (scope === "phase" && !phase) throw new Error("a phase-scoped blackboard entry needs an enclosing phase")
+    const content = typeof value === "string" ? value : JSON.stringify(value)
+    if (content === undefined) throw new Error("dynamic workflow blackboard values must be serializable")
+    this.board.set(key, { value: typeof value === "string" ? value : JSON.parse(content), ...(phase ? { phase } : {}) })
+    await this.host.writeBlackboard?.(key, content)
+  }
+
+  private async blackboardDelete(key: string): Promise<void> {
+    if (!this.board.delete(key)) return
+    await this.host.writeBlackboard?.(key, undefined)
   }
 
   async parallelAgents<T>(
@@ -635,6 +679,9 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       this.phaseStack.pop()
       this.progress.phase = this.phaseStack.at(-1)?.name
       this.emit()
+      for (const [key, entry] of [...this.board]) {
+        if (entry.phase === phase) await this.blackboardDelete(key)
+      }
     }
   }
 

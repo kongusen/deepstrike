@@ -80,6 +80,8 @@ pub enum ItemOrigin {
     MemoryRecall,
     /// Reference material the host seeded or pinned.
     Reference,
+    /// Shared state a workflow program wrote for the agents it runs (`blackboard:<key>`).
+    Blackboard,
     ToolResult,
     DependencyOutput,
     User,
@@ -105,6 +107,7 @@ impl ItemOrigin {
     pub fn for_host_key(key: Option<&str>) -> Self {
         match key {
             Some(key) if key.starts_with("skill:") => Self::Skill,
+            Some(key) if key.starts_with("blackboard:") => Self::Blackboard,
             _ => Self::Reference,
         }
     }
@@ -115,6 +118,7 @@ impl ItemOrigin {
             Self::Skill => "skill",
             Self::MemoryRecall => "memory_recall",
             Self::Reference => "reference",
+            Self::Blackboard => "blackboard",
             Self::ToolResult => "tool_result",
             Self::DependencyOutput => "dependency_output",
             Self::User => "user",
@@ -138,6 +142,7 @@ impl ItemOrigin {
             Self::Skill => (S::Task, F::Full, L::Until(LeaseEvent::SkillDeactivated), A::Model),
             Self::MemoryRecall => (S::Session, F::Handle, L::Turns(RECALL_LEASE_TURNS), A::Host),
             Self::Reference => (S::Operation, F::Full, L::Permanent, A::Host),
+            Self::Blackboard => (S::Workflow, F::Full, L::Permanent, A::Host),
             Self::ToolResult => (S::Task, F::Full, L::Permanent, A::Host),
             Self::DependencyOutput => (S::Edge, F::Handle, L::Permanent, A::Kernel),
             Self::User => (S::Operation, F::Full, L::Permanent, A::Host),
@@ -164,6 +169,9 @@ pub enum ItemScope {
     Session,
     /// The agent's identity, whatever it works on.
     Agent,
+    /// A workflow run: every agent it spawns reads it, whatever its context inheritance —
+    /// shared state the program hands its agents on purpose, not the parent's transcript.
+    Workflow,
 }
 
 impl ItemScope {
@@ -180,6 +188,7 @@ impl ItemScope {
     pub fn inherited_by(self, inheritance: crate::types::agent::ContextInheritance) -> bool {
         use crate::types::agent::ContextInheritance as I;
         match (self, inheritance) {
+            (Self::Workflow, _) => true,
             (Self::Edge, _) | (_, I::None) => false,
             (Self::Agent, I::SystemOnly) => true,
             (_, I::SystemOnly) => false,
@@ -508,6 +517,10 @@ mod tests {
             assert!(scope.survives_renewal(), "{scope:?}");
         }
         assert!(!ItemScope::Edge.inherited_by(I::Full));
+        for inheritance in [I::None, I::SystemOnly, I::Full] {
+            assert!(ItemScope::Workflow.inherited_by(inheritance));
+        }
+        assert_eq!(ItemOrigin::for_host_key(Some("blackboard:plan")), ItemOrigin::Blackboard);
         assert!(!ItemScope::Edge.survives_renewal());
     }
 

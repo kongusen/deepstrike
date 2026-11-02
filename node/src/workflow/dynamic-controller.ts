@@ -18,6 +18,9 @@ export interface DynamicWorkflowSubmission {
   readonly id: string
   readonly spec: WorkflowSpec
   readonly plan?: DynamicWorkflowPlan
+  /** Plan task 6.2 · a blackboard write, not a workflow: the driver applies it to the kernel and
+   *  completes the submission with an empty outcome. `content` absent = remove the entry. */
+  readonly blackboard?: { key: string; content?: string }
 }
 
 interface PendingSubmission extends DynamicWorkflowSubmission {
@@ -57,6 +60,7 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
     const host: DynamicWorkflowHost = {
       runWorkflow: (spec, plan) => this.enqueue(spec, plan),
       recordReplayFact: fact => this.recordReplayFact(fact),
+      writeBlackboard: (key, content) => this.enqueueBlackboard(key, content),
     }
     const processExecutor = options.trust === "untrusted" ? new DynamicWorkflowProcessExecutor(host) : undefined
     const run = typeof program === "function"
@@ -107,6 +111,25 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
         id,
         spec,
         ...(plan ? { plan: { ...plan } } : {}),
+        resolve,
+        reject,
+      }
+      const waiter = this.waiters.shift()
+      if (waiter) {
+        this.active.set(submission.id, submission)
+        waiter(submission)
+      } else {
+        this.queue.push(submission)
+      }
+    })
+  }
+
+  private async enqueueBlackboard(key: string, content: string | undefined): Promise<void> {
+    await new Promise<WorkflowOutcome>((resolve, reject) => {
+      const submission: PendingSubmission = {
+        id: `dynamic-submission-${this.nextId++}`,
+        spec: { nodes: [] },
+        blackboard: { key, ...(content !== undefined ? { content } : {}) },
         resolve,
         reject,
       }

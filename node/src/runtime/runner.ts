@@ -1824,6 +1824,22 @@ export class RuntimeRunner {
       for (;;) {
         const submission = await controller.nextSubmission()
         if (!submission) break
+        if (submission.blackboard) {
+          // Plan task 6.2 · a blackboard write lands as a keyed kernel item on this operation,
+          // in order with the submissions around it; every agent spawned after it inherits it.
+          try {
+            const key = `blackboard:${submission.blackboard.key}`
+            if (submission.blackboard.content !== undefined) {
+              await this.pushKnowledge({ role: "system", content: submission.blackboard.content, toolCalls: [] }, undefined, { key })
+            } else {
+              await this.removeKnowledge(key)
+            }
+            controller.completeSubmission(submission.id, { nodeOutcomes: [], outputs: {} } as unknown as WorkflowOutcome)
+          } catch (error) {
+            controller.failSubmission(submission.id, error)
+          }
+          continue
+        }
         const observationStart = this.pendingObservations.length
         try {
           const action = await this.appendDynamicWorkflowNodes(submission.spec, submission.plan)

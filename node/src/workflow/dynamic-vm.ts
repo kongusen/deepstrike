@@ -113,6 +113,14 @@ function createWorkflowFacade<TArgs extends Record<string, unknown>, T>(workflow
     pipeline: { enumerable: true, value: createVmCallable(workflow.pipeline.bind(workflow)) },
     phase: { enumerable: true, value: createVmCallable(workflow.phase.bind(workflow)) },
     log: { enumerable: true, value: createVmCallable(workflow.log.bind(workflow)) },
+    blackboard: {
+      enumerable: true,
+      value: Object.freeze(Object.assign(Object.create(null), {
+        put: createVmCallable((key: string, value: unknown, options?: { scope?: "workflow" | "phase" }) => workflow.blackboard.put(key, value, options)),
+        get: createVmCallable((key: string) => cloneIntoVm(context, workflow.blackboard.get(key))),
+        delete: createVmCallable((key: string) => workflow.blackboard.delete(key)),
+      })),
+    },
   })
   return Object.freeze(facade)
 }

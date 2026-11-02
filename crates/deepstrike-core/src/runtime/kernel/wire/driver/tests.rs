@@ -1204,6 +1204,49 @@ fn a_full_inheritance_launch_carries_the_knowledge_its_scope_allows() {
 }
 
 #[test]
+fn a_blackboard_entry_reaches_every_spawned_agent_whatever_its_inheritance() {
+    let mut spec = two_node_spec();
+    spec.nodes[0].run_spec = Some(LogicalAgentSpec {
+        context_inheritance: Some(WireContextInheritance::SystemOnly),
+        ..LogicalAgentSpec::new("collect the sources")
+    });
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    let started = runtime.submit(&envelope(
+        "in-start",
+        1_700_000_001_000,
+        KernelInput::StartOperation(StartOperation {
+            entry: RootEntry::Workflow(RootWorkflowEntry { spec }),
+            initial_context: InitialContext {
+                knowledge: vec![
+                    super::super::root::KnowledgeEntry {
+                        content: "sources must be primary".to_string(),
+                        key: Some("blackboard:criteria".to_string()),
+                        tokens: Some(4),
+                        pinned: false,
+                    },
+                    super::super::root::KnowledgeEntry {
+                        content: "parent-only reference".to_string(),
+                        key: Some("notes".to_string()),
+                        tokens: Some(3),
+                        pinned: false,
+                    },
+                ],
+                ..InitialContext::default()
+            },
+        }),
+    ));
+    let EffectKind::SpawnTasks(spawn) = &sole_effect(&started).effect else {
+        panic!("expected a task spawn");
+    };
+    let metadata = serde_json::to_value(&spawn.tasks[0].spec.metadata).unwrap();
+    assert_eq!(
+        metadata["inherited_knowledge"],
+        json!([{ "content": "sources must be primary", "key": "blackboard:criteria", "tokens": 4 }]),
+    );
+}
+
+#[test]
 fn a_workflow_root_with_no_nodes_has_no_first_effect_and_is_refused() {
     let mut runtime = Runtime::new();
     runtime.submit(&configure());
