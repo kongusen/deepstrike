@@ -1,0 +1,11 @@
+[package]
+name = "deepstrike-lab"
+description = "Offline comparison of context-policy variants from recorded benchmark trials"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -306,6 +306,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "deepstrike-lab"
+version = "0.2.79"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "deepstrike-node"
 version = "0.2.79"
 dependencies = [
