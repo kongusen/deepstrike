@@ -41,6 +41,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The Rust `RuntimeRunner` runs workflow nodes. It used to fail every spawn ("no workflow
+  orchestrator"); each node now runs as a child run on the parent's provider and execution plane,
+  holding its dependency outputs, and model-authored `start_workflow` / `submit_workflow_nodes`
+  arguments are lowered to the canonical DAG as in Node and Python.
+- DeepSeek thinking mode: a tool-call turn the model answered without reasoning replays
+  `reasoning_content: ""` (Node, Python). The API accepts the empty field and rejects a missing
+  one; the replay check used to fail the run instead. The check now requires the field the model
+  returned, not a non-empty one.
 - Node and Python OpenAI-chat providers (DeepSeek, Kimi, Qwen, MiniMax, GLM) store a tool-call
   turn's reasoning replay under its tool calls alone. The kernel collapses an old turn's
   narration to a stub at render time, and the lookup by the original text then missed: DeepSeek

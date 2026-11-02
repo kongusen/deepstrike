@@ -151,6 +151,15 @@ ContextItem {
     | 分支 handle | 9/12 | 699k | 26 | 31.3k |
 
     handle 的 3 个失败都是 DeepSeek replay 报错（见“交接”中的已知问题），不是答错。分支 full 首个调用减半，但模型会用 `read_result` 读被截断的依赖，总发送量高于基线；准确率 12/12。默认 edge mode 还不能定，需要先修 replay 问题再重跑 handle。
+  - 第二步重跑（2026-11-02，修复两处 replay 问题后，每组 24 题，访问码三种深度各 8 题）：
+
+    | 变体 | 正确 | 发送字符 | 调用 | 预览内 / 截断内 / 截断外（发送字符） |
+    |------|------|----------|------|------------------------------------|
+    | 基线 full（`5b5308d3`） | 24/24 | 1185k | 24 | 395k / 395k / 395k |
+    | 分支 full | 24/24 | 1861k | 41 | 254k / 918k / 689k |
+    | 分支 handle | 24/24 | 1394k | 51 | 560k / 503k / 331k |
+
+    replay 问题有两个来源：一是 kernel 折叠旧叙述后按内容查 reasoning 查不到（已修，见“交接”）；二是 `deepseek-flash` 确实会在带 tool call 的轮次不给 reasoning（本次 51 次调用中 4 次），DeepSeek 接受回放空的 `reasoning_content`、拒绝缺失，因此改为原样回放空串。三组准确率持平。分支 full 比基线贵 57%：8k 截断后模型几乎总会 `read_result` 读全文；handle 比分支 full 省 25%，但答案在预览内时模型仍会去读全文。基线不截断，在 16k 输出的场景最省，但下游初始上下文随 fan-out 宽度线性增长。
   - 验收：`crates/deepstrike-lab` 提供工具，用 lifecycle report 和任务结果（成功/失败、成本）比较不同 `ContextPolicy`（阈值、lease 默认值、edge mode）。不依赖已删除的 evolution 模块。
   - 文件：`crates/deepstrike-lab`、`benchmark/`
 
@@ -213,8 +222,9 @@ ContextItem {
 
 0.2.78 剩余步骤：
 
-1. 重建基线 worktree，重跑 `live.mjs --provider deepseek` 的三个变体（基线 full、分支 full、分支 handle），每组 24 题，据此决定默认 edge mode（3.1 未做项）。
-2. 任务 6.3 的 Rust 部分：Rust runner 目前所有 workflow spawn 都会失败，补 Rust workflow 编排。
+1. ~~重跑三个变体，每组 24 题~~（已完成，结果见 4.3 第二步重跑）。默认 edge mode 待定。
+   附带修复：DeepSeek 不给 reasoning 的 tool call 轮次改为回放空的 `reasoning_content`。
+2. ~~任务 6.3 的 Rust 部分~~（已完成，`34850587`）：workflow 节点作为子 run 在父 runner 的 provider 和 plane 上运行，带依赖输出；模型提交的 `start_workflow` / `submit_workflow_nodes` 参数降为 canonical DAG。未做：信号驱动的抢占监控（Node 的 `monitorWorkflowPreemption`）、节点完成写入会话日志以支持恢复、Rust 侧 `start_workflow` 工具 schema 的导出。
 3. 同步删除清单，升版本号到 0.2.78，开 PR。
 
 零散未做项（2.1 plan 变更时召回、3.2 Full 的 token 代价、3.1 的 `fields` 切片、`benchmark-0.2.74` 版本守卫）不单独排期，在碰到相关代码的版本里顺带完成。
@@ -225,12 +235,12 @@ ContextItem {
 |--------|----------|
 | ~~`context/execution.rs`、`evolution.rs`、四个 SDK 的 `shared_evidence.*` 和 `evolution.*`~~（已删） | 0.1 |
 | ~~`context_prepared` 事件、`prepare_context_dispatch`、conformance 中的 digest 比对、`EvaluationContextBinding`~~（已删） | 0.1 |
-| `verifiable.rs`、chain_validator 除 C1/C3 外的部分、CLI `verify` | 0.2 |
+| ~~`verifiable.rs`、chain_validator、CLI~~（已删，C1/C3 由 restore 自检覆盖） | 0.2 |
 | `KnowledgeEntry` 等旧分区类型（被 item 取代） | 1 |
-| 四个 `prefetchMemory`、三个 `recall-projection.*` | 2 |
-| 三个 `workflow-control-flow.*`（含 `summarizeDependency`）、边的 `summary`/`reference` 模式 | 2、3 |
-| `NodeKind::Loop/Classify/Tournament`、`orchestration/tournament.rs` | 6 |
-| “knowledge 追加便宜”的注释和文档 | 1 |
+| ~~四个 `prefetchMemory`、三个 `recall-projection.*` 的投影逻辑~~（已删；文件只剩 `memoryFetchRecall` 点查） | 2 |
+| ~~三个 `workflow-control-flow.*`（含 `summarizeDependency`）、边的 `summary` 模式~~（已删；`reference` 模式保留） | 2、3 |
+| ~~`NodeKind::Loop/Classify/Tournament`、`orchestration/tournament.rs`~~（已删，连同 Reduce） | 6 |
+| ~~“knowledge 追加便宜”的注释和文档~~（已改：`partitions.rs`、`docs/concepts/prompt-cache-design.md`） | 1 |
 
 ## 依赖与顺序
 

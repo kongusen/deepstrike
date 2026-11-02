@@ -647,7 +647,8 @@ mod tests {
         let mut p = KnowledgePartition::new();
         p.push(CoreMessage::system("existing"), 3);
         p.push_entry(Some("a".into()), CoreMessage::system("fresh"), 4, true);
-        // Appends are visible right away (cache-cheap direction: prefix only extends).
+        // Appends land in the partition right away; the manager stages one that arrives after
+        // the prefix was sent, so the cached history stays valid (plan task 1.2).
         assert_eq!(text_of(&p), vec!["existing", "fresh"]);
         assert_eq!(p.token_count, 7);
         assert!(p.entries[1].pinned);
