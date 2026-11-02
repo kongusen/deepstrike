@@ -496,7 +496,12 @@ graph store. Constraints:
     `context/manager.rs`, `context/partitions.rs`, `runtime/kernel/wire/checkpoint.rs`; the
     session-event registry and the four SDK projections
 
-- [ ] Task 7.2: transaction units come from `answers` edges
+- [x] Task 7.2 (decided against, 2026-11-02): `unit_boundaries` already pairs tool results with
+  calls by `call_id`, not by position, and it also keeps the user turn and the trailing answer in
+  the unit, which `answers` edges cannot express. Rebuilding units from edge components would add
+  no information and could not keep rendering byte-identical. `answers` edges stay in the report,
+  for attribution.
+- ~~Original task 7.2: transaction units come from `answers` edges~~
   - Acceptance: compaction, the renderer, renewal, provider summary coverage and held history all
     take "units that must not be split" from the connected components of `answers` edges;
     position-based `unit_boundaries` is deleted (or kept only as the fallback for older

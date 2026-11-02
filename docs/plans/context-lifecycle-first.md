@@ -236,7 +236,8 @@ ContextItem {
   - 验收：knowledge item 从同一个分配器取 `ItemId`（checkpoint 携带，缺 id 的旧 slot 恢复时补发）。manager 持有边表，产生 `answers`（tool result → call 所在的 assistant item）、`references{strong|lexical}`（history → knowledge，取代只计数）、`reads_back`（`read_result` / `memory(record_id)` → 目标）、`summarizes`（摘要 → 被覆盖的 item）。lifecycle report 增加有上限的 `edges`，regret 记录是哪条读回边把被淘汰的 item 拉回来的，waste 列出没有任何入边的 knowledge。渲染与压缩不变：golden 只在 checkpoint / report 字段上变化。
   - 文件：`context/item.rs`（`ItemEdge`、`Relation`）、新增 `context/graph.rs`、`context/manager.rs`、`context/partitions.rs`、`runtime/kernel/wire/checkpoint.rs`；session event 注册表与四端 SDK 投影
 
-- [ ] 任务 7.2：交易单元来自 `answers` 边
+- [x] 任务 7.2（2026-11-02 决定不做）：`unit_boundaries` 本来就按 `call_id` 配对 tool result 与 call，不依赖位置；它还把用户消息和收尾回答并入同一单元，这是 `answers` 边表达不了的。改成按边的连通分量既拿不到新信息，又做不到渲染逐字节不变。`answers` 边保留在报告里，供归因使用。
+- ~~原任务 7.2：交易单元来自 `answers` 边~~
   - 验收：压缩、renderer、renewal、provider 摘要覆盖范围、held history 都按 `answers` 边的连通分量确定"不可拆开的单元"，删除按位置推断的 `unit_boundaries`（或降为恢复旧 checkpoint 的兜底）。
   - 验证：随机 transcript 的配对性质测试照常通过；现有 golden 的渲染结果逐字节不变。
 
