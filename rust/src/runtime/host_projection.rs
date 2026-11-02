@@ -38,6 +38,9 @@ pub(crate) enum HostEffect {
         nodes: Vec<WorkflowSpawnInfo>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<WorkflowBudget>,
+        /// Plan task 3.1 · per node, the dependency outputs its child run holds, by agent id.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        dependency_outputs: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     },
     PreemptSubAgents {
         agent_ids: Vec<String>,

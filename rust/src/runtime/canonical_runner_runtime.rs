@@ -337,9 +337,11 @@ impl CanonicalRunnerRuntime {
         match kind {
             "provider_result" => {
                 let message = object(event.get("message"));
+                let mut message = provider_message(&message);
+                self.lower_workflow_syscalls(&mut message);
                 let mut outcome = json!({
                     "kind": "completed",
-                    "message": provider_message(&message),
+                    "message": message,
                 });
                 if let Some(v) = event.get("observed_input_tokens") {
                     outcome
@@ -581,7 +583,10 @@ impl CanonicalRunnerRuntime {
                     .unwrap_or_default();
                 if !submitted.is_empty() {
                     let nodes = self
-                        .workflow_spec(object(Some(&json!({ "nodes": submitted }))))
+                        .workflow_spec_from(
+                            object(Some(&json!({ "nodes": submitted }))),
+                            Some(&append_prefix()),
+                        )
                         .get("nodes")
                         .cloned()
                         .unwrap_or_else(|| json!([]));
@@ -1722,6 +1727,13 @@ impl CanonicalRunnerRuntime {
     }
 
     fn workflow_spec(&self, raw: Map<String, Value>) -> Value {
+        self.workflow_spec_from(raw, None)
+    }
+
+    /// Lower a workflow spec to the canonical DAG. An anonymous node's id is positional
+    /// (`wf-node<i>`), or `<prefix>-<i>` for an appended batch, so ids stay unique across batches:
+    /// the kernel refuses an append whose id is already declared.
+    fn workflow_spec_from(&self, raw: Map<String, Value>, id_prefix: Option<&str>) -> Value {
         let nodes = raw
             .get("nodes")
             .and_then(|v| v.as_array())
@@ -1737,7 +1749,10 @@ impl CanonicalRunnerRuntime {
                     .and_then(|v| v.as_str())
                     .filter(|id| !id.is_empty())
                     .map(str::to_string)
-                    .unwrap_or_else(|| format!("wf-node{index}"))
+                    .unwrap_or_else(|| match id_prefix {
+                        Some(prefix) => format!("{prefix}-{index}"),
+                        None => format!("wf-node{index}"),
+                    })
             })
             .collect();
         let lowered: Vec<Value> = nodes
@@ -1805,6 +1820,49 @@ impl CanonicalRunnerRuntime {
             .collect();
         json!({ "nodes": lowered })
     }
+}
+
+impl CanonicalRunnerRuntime {
+    /// Lower model-authored `start_workflow` / `submit_workflow_nodes` arguments to the canonical
+    /// DAG shape, as Node and Python do. Arguments that do not lower are forwarded verbatim, so the
+    /// kernel's syscall decoder answers the model with a rejection.
+    fn lower_workflow_syscalls(&self, message: &mut Value) {
+        let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for call in calls {
+            let name = call.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let Some(arguments) = call.get("arguments").and_then(Value::as_object).cloned() else {
+                continue;
+            };
+            let lowered = match name.as_str() {
+                "start_workflow" => {
+                    let spec = arguments
+                        .get("spec")
+                        .and_then(Value::as_object)
+                        .filter(|spec| !spec.is_empty())
+                        .cloned()
+                        .unwrap_or(arguments);
+                    self.workflow_spec(spec)
+                }
+                "submit_workflow_nodes" => {
+                    let nodes = arguments.get("nodes").cloned().unwrap_or_else(|| json!([]));
+                    let spec = self.workflow_spec_from(
+                        object(Some(&json!({ "nodes": nodes }))),
+                        Some(&append_prefix()),
+                    );
+                    json!({ "nodes": spec.get("nodes").cloned().unwrap_or_else(|| json!([])) })
+                }
+                _ => continue,
+            };
+            call["arguments"] = lowered;
+        }
+    }
+}
+
+/// A batch-scoped id prefix for anonymous appended nodes; it cannot collide with a declared id.
+fn append_prefix() -> String {
+    format!("wf-append-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
 pub(crate) async fn canonical_kernel_apply(
@@ -1944,54 +2002,79 @@ fn protocol_action_from_wire(
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::SpawnTasks { payload: spawn, .. } = canonical else {
                 unreachable!("spawn_tasks effect must project to spawn action");
             };
-            HostEffect::SpawnWorkflow {
-                nodes: spawn
-                    .tasks
-                    .iter()
-                    .map(|task| {
-                        let role = task
-                            .spec
-                            .role
-                            .and_then(|role| serde_json::to_value(role).ok())
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_else(|| "custom".into());
-                        let isolation = task
-                            .spec
+            let mut dependency_outputs = std::collections::BTreeMap::new();
+            let nodes = spawn
+                .tasks
+                .iter()
+                .map(|task| {
+                    let metadata = task.spec.metadata.get();
+                    let wire_name = |value: Option<Value>, fallback: &str| {
+                        value
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_else(|| fallback.into())
+                    };
+                    let role = wire_name(
+                        task.spec.role.and_then(|role| serde_json::to_value(role).ok()),
+                        "custom",
+                    );
+                    let isolation = wire_name(
+                        task.spec
                             .isolation
-                            .and_then(|isolation| serde_json::to_value(isolation).ok())
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_else(|| "shared".into());
-                        // The kernel composes the dependency section of the brief.
-                        let goal = match task
-                            .spec
-                            .metadata
-                            .get()
-                            .get("dependency_brief")
-                            .and_then(|brief| brief.as_str())
-                        {
-                            Some(brief) if !brief.is_empty() => {
-                                format!("{}\n\n{brief}", task.spec.goal)
-                            }
-                            _ => task.spec.goal.clone(),
-                        };
-                        deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
-                            agent_id: task.task_id.as_str().to_string(),
-                            goal,
-                            role,
-                            isolation,
-                            context_inheritance: "none".into(),
-                            model_hint: None,
-                            trust: "trusted".into(),
-                            output_schema: None,
-                            input_agent_ids: Vec::new(),
-                            dependency_context: Default::default(),
-                            token_budget: None,
-                            max_turns: None,
-                            max_wall_ms: None,
-                        }
-                    })
-                    .collect(),
+                            .and_then(|isolation| serde_json::to_value(isolation).ok()),
+                        "shared",
+                    );
+                    let context_inheritance = wire_name(
+                        task.spec
+                            .context_inheritance
+                            .and_then(|inheritance| serde_json::to_value(inheritance).ok()),
+                        "none",
+                    );
+                    // The kernel composes the dependency section of the brief.
+                    let goal = match metadata.get("dependency_brief").and_then(Value::as_str) {
+                        Some(brief) if !brief.is_empty() => format!("{}\n\n{brief}", task.spec.goal),
+                        _ => task.spec.goal.clone(),
+                    };
+                    let outputs: std::collections::BTreeMap<String, String> = metadata
+                        .get("dependency_outputs")
+                        .and_then(Value::as_object)
+                        .map(|outputs| {
+                            outputs
+                                .iter()
+                                .filter_map(|(id, output)| Some((id.clone(), output.as_str()?.to_string())))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !outputs.is_empty() {
+                        dependency_outputs.insert(task.task_id.as_str().to_string(), outputs);
+                    }
+                    deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
+                        agent_id: task.task_id.as_str().to_string(),
+                        goal,
+                        role,
+                        isolation,
+                        context_inheritance,
+                        model_hint: metadata.get("model_hint").and_then(Value::as_str).map(str::to_string),
+                        trust: "trusted".into(),
+                        output_schema: metadata.get("output_schema").cloned(),
+                        input_agent_ids: metadata
+                            .get("input_agent_ids")
+                            .and_then(Value::as_array)
+                            .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                            .unwrap_or_default(),
+                        dependency_context: Default::default(),
+                        token_budget: metadata.get("token_budget").and_then(Value::as_u64),
+                        max_turns: metadata
+                            .get("max_turns")
+                            .and_then(Value::as_u64)
+                            .map(|turns| turns.min(u32::MAX as u64) as u32),
+                        max_wall_ms: metadata.get("max_wall_ms").and_then(Value::as_u64),
+                    }
+                })
+                .collect();
+            HostEffect::SpawnWorkflow {
+                nodes,
                 budget: None,
+                dependency_outputs,
             }
         }
         EffectKind::PreemptTasks(_) => {

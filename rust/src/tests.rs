@@ -2905,6 +2905,48 @@ mod tests {
             events
         }
 
+        /// Plan task 6.3 · a model-authored workflow runs its nodes as child runs on the parent's
+        /// provider: a dependent node sees its dependency's output, and the parent resumes with the
+        /// node results in context.
+        #[tokio::test]
+        async fn a_model_authored_workflow_runs_its_nodes_as_child_runs() {
+            let mut plane = crate::runtime::execution_plane::LocalExecutionPlane::new();
+            plane.register(crate::tools::RegisteredTool::text(
+                "start_workflow",
+                "Author and run a sub-workflow",
+                serde_json::json!({ "type": "object", "properties": { "spec": { "type": "object" } } }),
+                |_| Box::pin(async { Ok(String::new()) }),
+            ));
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![
+                    vec![StreamEvent::ToolCall {
+                        id: "c1".into(),
+                        name: "start_workflow".into(),
+                        arguments: serde_json::json!({ "spec": { "nodes": [
+                            { "task": "collect the sources" },
+                            { "task": "write the brief", "depends_on": [0] },
+                        ] } }),
+                    }],
+                    vec![StreamEvent::TextDelta { delta: "sources: ALPHA-7".into() }],
+                    vec![StreamEvent::TextDelta { delta: "brief written from ALPHA-7".into() }],
+                ],
+                contexts: contexts.clone(),
+            };
+            let runner = RuntimeRunner::new(options(provider, plane, &["start_workflow"]));
+            let events = drain(&runner, "wf-6-3").await;
+
+            let contexts = contexts.lock().unwrap();
+            assert_eq!(contexts.len(), 4, "parent, two nodes, parent again");
+            assert!(contexts[1].contains("collect the sources"));
+            assert!(contexts[2].contains("write the brief") && contexts[2].contains("ALPHA-7"));
+            assert!(contexts[3].contains("brief written from ALPHA-7"), "{}", contexts[3]);
+            assert!(matches!(
+                events.last(),
+                Some(RunEvent::Done { status, .. }) if status == "completed"
+            ));
+        }
+
         /// P1-13 · argument text that is not a JSON object fails the call; the tool never runs.
         #[tokio::test]
         async fn a_truncated_call_never_executes() {

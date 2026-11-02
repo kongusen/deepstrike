@@ -260,7 +260,9 @@ fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
 /// Orchestrates the agentic turn loop via the runtime kernel + session event log.
 pub struct RuntimeRunner {
     opts: RuntimeOptions,
-    plane: Box<dyn ExecutionPlane>,
+    /// The configured provider, shared with workflow child runs; `opts.provider` delegates to it.
+    provider: Arc<dyn LLMProvider>,
+    plane: Arc<dyn ExecutionPlane>,
     kernel_journal: Arc<dyn KernelJournal>,
     interrupted: AtomicBool,
     cancellation_reason: AtomicU8,
@@ -296,12 +298,19 @@ impl RuntimeRunner {
         if opts.payload_store.is_none() {
             opts.payload_store = Some(Arc::new(FilePayloadStore::new(".payloads")));
         }
-        let plane = opts
-            .execution_plane
-            .take()
-            .unwrap_or_else(|| Box::new(LocalExecutionPlane::new()));
+        let plane: Arc<dyn ExecutionPlane> = Arc::from(
+            opts.execution_plane
+                .take()
+                .unwrap_or_else(|| Box::new(LocalExecutionPlane::new())),
+        );
+        let provider: Arc<dyn LLMProvider> = Arc::from(std::mem::replace(
+            &mut opts.provider,
+            Box::new(crate::runtime::replay_provider::ReplayProvider::new(Vec::new())),
+        ));
+        opts.provider = Box::new(provider.clone());
         Self {
             opts,
+            provider,
             plane,
             kernel_journal,
             interrupted: AtomicBool::new(false),
@@ -1909,28 +1918,106 @@ impl RuntimeRunner {
                             }),
                         ).await?;
                     }
-                    HostEffect::SpawnWorkflow { nodes, .. } => {
-                        // This runner has no workflow child orchestrator. Report each
-                        // requested spawn as a completed failure instead of treating the
-                        // action as an observation or leaving the effect unresolved.
-                        let workflow_effect_id = action.effect_id.clone();
-                        let failures: Vec<deepstrike_core::runtime::kernel::WorkflowSpawnFailure> = nodes
-                            .into_iter()
-                            .map(|node| deepstrike_core::runtime::kernel::WorkflowSpawnFailure {
-                                agent_id: node.agent_id.clone(),
-                                error: "Rust RuntimeRunner has no workflow orchestrator".to_string(),
-                            })
-                            .collect();
-                        action = kernel_action(
-                            &kernel,
-                            &mut pending_observations,
-                            serde_json::json!({
-                                "kind": "workflow_spawn_result",
-                                "effect_id": workflow_effect_id,
-                                "started_agent_ids": [],
-                                "failures": failures,
-                            }),
-                        ).await?;
+                    HostEffect::SpawnWorkflow { .. } => {
+                        // Plan task 6.3 · each spawned node runs as a child run on this runner's
+                        // provider and plane. Completions are fed back as they land (no round
+                        // barrier); the kernel answers with more spawns, a preemption, the
+                        // parent's next provider call, or the end of the operation.
+                        let mut children = futures::stream::FuturesUnordered::new();
+                        let mut running: std::collections::HashMap<String, futures::future::AbortHandle> =
+                            std::collections::HashMap::new();
+                        let mut queue = std::collections::VecDeque::from([action.clone()]);
+                        let mut continuation: Option<HostAction> = None;
+                        let mut finished: Option<HostAction> = None;
+                        loop {
+                            while let Some(next) = queue.pop_front() {
+                                match &next.effect {
+                                    HostEffect::SpawnWorkflow { nodes, dependency_outputs, .. } => {
+                                        let started: Vec<String> =
+                                            nodes.iter().map(|node| node.agent_id.clone()).collect();
+                                        if let Some(reply) = kernel_maybe_action(
+                                            &kernel,
+                                            &mut pending_observations,
+                                            serde_json::json!({
+                                                "kind": "workflow_spawn_result",
+                                                "effect_id": next.effect_id,
+                                                "started_agent_ids": started,
+                                                "failures": [],
+                                            }),
+                                        ).await? {
+                                            queue.push_back(reply);
+                                        }
+                                        for node in nodes {
+                                            let outputs = dependency_outputs
+                                                .get(&node.agent_id)
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            let (child, handle) = futures::future::abortable(
+                                                self.workflow_child(node, &session_id, outputs),
+                                            );
+                                            running.insert(node.agent_id.clone(), handle);
+                                            children.push(child);
+                                        }
+                                    }
+                                    HostEffect::PreemptSubAgents { agent_ids, .. } => {
+                                        let already_finished: Vec<&String> =
+                                            agent_ids.iter().filter(|id| !running.contains_key(*id)).collect();
+                                        for id in agent_ids {
+                                            if let Some(handle) = running.remove(id) {
+                                                handle.abort();
+                                            }
+                                        }
+                                        if let Some(reply) = kernel_maybe_action(
+                                            &kernel,
+                                            &mut pending_observations,
+                                            serde_json::json!({
+                                                "kind": "preempt_result",
+                                                "effect_id": next.effect_id,
+                                                "already_finished_agent_ids": already_finished,
+                                            }),
+                                        ).await? {
+                                            queue.push_back(reply);
+                                        }
+                                    }
+                                    HostEffect::CallProvider { .. } => continuation = Some(next),
+                                    HostEffect::Done { .. } => {
+                                        finished = Some(next);
+                                        break;
+                                    }
+                                    other => Err(Error::Other(format!(
+                                        "workflow returned unexpected effect: {}",
+                                        host_effect_kind(other)
+                                    )))?,
+                                }
+                            }
+                            if finished.is_some() {
+                                break;
+                            }
+                            let Some(landed) = children.next().await else {
+                                break;
+                            };
+                            // A preempted child resolves as aborted; the kernel already knows.
+                            let Ok(result) = landed else {
+                                continue;
+                            };
+                            let agent_id = result["agent_id"].as_str().unwrap_or_default().to_string();
+                            if running.remove(&agent_id).is_none() {
+                                continue;
+                            }
+                            if let Some(reply) = kernel_maybe_action(
+                                &kernel,
+                                &mut pending_observations,
+                                serde_json::json!({ "kind": "sub_agent_completed", "result": result }),
+                            ).await? {
+                                queue.push_back(reply);
+                            }
+                        }
+                        for handle in running.values() {
+                            handle.abort();
+                        }
+                        action = finished.or(continuation).ok_or_else(|| {
+                            Error::Other("workflow settled without a kernel continuation".into())
+                        })?;
                     }
                     HostEffect::PreemptSubAgents { agent_ids, .. } => {
                         // RuntimeRunner does not launch external child runners, so there is no
@@ -2530,6 +2617,133 @@ impl RuntimeRunner {
         }
     }
 
+    /// The options of a workflow node's child run: this runner's provider, plane, stores and
+    /// policies, with the node's own identity and dependency outputs.
+    fn workflow_child_options(
+        &self,
+        node: &deepstrike_core::orchestration::workflow::WorkflowSpawnInfo,
+        session_id: String,
+        dependency_outputs: std::collections::BTreeMap<String, String>,
+    ) -> RuntimeOptions {
+        let opts = &self.opts;
+        RuntimeOptions {
+            provider: Box::new(self.provider.clone()),
+            execution_plane: Some(Box::new(self.plane.clone())),
+            session_log: opts.session_log.clone(),
+            compression_store: opts.compression_store.clone(),
+            payload_store: opts.payload_store.clone(),
+            kernel_reliability: opts.kernel_reliability.clone(),
+            session_id: Some(session_id),
+            max_tokens: opts.max_tokens,
+            max_turns: node.max_turns.or(opts.max_turns),
+            timeout_ms: node.max_wall_ms.or(opts.timeout_ms),
+            extensions: opts.extensions.clone(),
+            agent_id: Some(node.agent_id.clone()),
+            memory_scope: None,
+            pre_query_memory: None,
+            system_prompt: opts.system_prompt.clone(),
+            initial_memory: Vec::new(),
+            dependency_outputs,
+            skill_dir: opts.skill_dir.clone(),
+            memory_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: opts.governance.clone(),
+            os_profile: opts.os_profile.clone(),
+            governance_policy: opts.governance_policy.clone(),
+            signal_policy: opts.signal_policy.clone(),
+            scheduler_policy: opts.scheduler_policy.clone(),
+            resource_quota: opts.resource_quota.clone(),
+            memory_policy: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
+            tokenizer: opts.tokenizer.clone(),
+            enable_plan_tool: opts.enable_plan_tool,
+            on_tool_suspend: opts.on_tool_suspend.clone(),
+            on_permission_request: opts.on_permission_request.clone(),
+            milestone_policy: opts.milestone_policy,
+            milestone_contract: None,
+            run_spec: None,
+            allowed_tool_ids: opts.allowed_tool_ids.clone(),
+            baseline_tool_ids: opts.baseline_tool_ids.clone(),
+            on_turn_metrics: opts.on_turn_metrics.clone(),
+            stable_core_tool_ids: opts.stable_core_tool_ids.clone(),
+            on_milestone_evaluate: opts.on_milestone_evaluate.clone(),
+        }
+    }
+
+    /// Run one workflow node to completion and describe it as the kernel's `sub_agent_completed`
+    /// result. A child that fails, or cannot start, is an ordinary failed completion.
+    fn workflow_child(
+        &self,
+        node: &deepstrike_core::orchestration::workflow::WorkflowSpawnInfo,
+        parent_session_id: &str,
+        dependency_outputs: std::collections::BTreeMap<String, String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value>>> {
+        let session_id = format!("{parent_session_id}-{}", node.agent_id);
+        let opts = self.workflow_child_options(node, session_id.clone(), dependency_outputs);
+        let journal = self.kernel_journal.clone();
+        let agent_id = node.agent_id.clone();
+        let goal = node.goal.clone();
+        let limits = RunLimits {
+            max_turns: node.max_turns,
+            max_total_tokens: node.token_budget,
+            max_wall_ms: node.max_wall_ms,
+        };
+        Box::pin(async move {
+            let runner = RuntimeRunner::new_with_kernel_journal(opts, journal);
+            // The node's output is its last turn's text; narration before a tool call is not.
+            let mut text = String::new();
+            let mut done: Option<(u32, u64, String)> = None;
+            let mut error: Option<String> = None;
+            match runner
+                .run_streaming_with_attachments_and_limits(
+                    &goal,
+                    &[],
+                    None,
+                    Some(&session_id),
+                    &[],
+                    Some(limits),
+                )
+                .await
+            {
+                Ok(mut stream) => {
+                    while let Some(event) = stream.next().await {
+                        match event {
+                            Ok(RunEvent::TextDelta(delta)) => text.push_str(&delta),
+                            Ok(RunEvent::ToolCall { .. }) => text.clear(),
+                            Ok(RunEvent::Done { iterations, total_tokens, status }) => {
+                                done = Some((iterations, total_tokens, status));
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                error = Some(err.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(err) => error = Some(err.to_string()),
+            }
+            let (turns_used, total_tokens, status) = done.unwrap_or((0, 0, "error".into()));
+            let termination = match (error.is_some(), status.as_str()) {
+                (true, _) => "error".to_string(),
+                (false, "userabort") => "user_abort".to_string(),
+                (false, other) => other.to_string(),
+            };
+            serde_json::json!({
+                "agent_id": agent_id,
+                "result": {
+                    "termination": termination,
+                    "final_message": { "role": "assistant", "content": text },
+                    "turns_used": turns_used,
+                    "total_tokens_used": total_tokens,
+                },
+                "error": error,
+            })
+        })
+    }
+
     pub(crate) async fn append_observations(
         &self,
         session_id: &str,
@@ -2675,6 +2889,26 @@ async fn kernel_action(
 ) -> Result<HostAction> {
     let mut runtime = kernel.lock().await;
     canonical_kernel_action(&mut runtime, pending_observations, event).await
+}
+
+/// Like [`kernel_action`], for transitions after which the kernel may simply wait (a spawn
+/// acknowledgement, a child completion that leaves siblings running).
+async fn kernel_maybe_action(
+    kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
+    pending_observations: &mut Vec<KernelObservation>,
+    event: serde_json::Value,
+) -> Result<Option<HostAction>> {
+    let mut runtime = kernel.lock().await;
+    let action = runtime.apply_host_event(event).await?;
+    pending_observations.extend(runtime.drain_host_observations());
+    Ok(action)
+}
+
+fn host_effect_kind(effect: &HostEffect) -> String {
+    serde_json::to_value(effect)
+        .ok()
+        .and_then(|value| value.get("kind").and_then(|kind| kind.as_str()).map(str::to_string))
+        .unwrap_or_default()
 }
 
 async fn kernel_start_agent(
