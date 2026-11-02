@@ -7,7 +7,7 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>An agent framework that spends attention like a budget:<br>under a finite attention budget, deciding for every piece of information its scope, form, lifetime, and write authority.</strong>
+  <strong>Others wire agents into graphs. DeepStrike wires context into one:<br>under a finite attention budget, deciding for every piece of information its scope, form, lifetime, and write authority.</strong>
 </p>
 
 <p align="center">
@@ -28,11 +28,13 @@
 
 ---
 
-DeepStrike helps developers build AI assistants that carry real work over long tasks: gathering information, using tools, remembering project context, dividing work between assistants, and waiting for approval when needed. What sets it apart is its answer to the question every other framework waves off: **what exactly should the model see on each turn?**
+DeepStrike helps developers build AI assistants that carry real work over long tasks: gathering information, using tools, remembering project context, dividing work between assistants, and waiting for approval when needed.
 
-## The problem we found: agents don't fail at reasoning — they fail at attention
+While most frameworks polish the orchestration topology *between* agents, DeepStrike answers the question underneath: **how does the model's attention get spent?**
 
-When a forty-turn task fails, it is rarely because the model cannot think. It is because by turn 40, it is looking at the wrong things:
+## The industry is building agent graphs. The bottleneck isn't the graph.
+
+The industry's default answer is the agent graph: agents wired into DAGs, pipelines, and supervisors, with tasks flowing along the edges. But wire agents together as elegantly as you like — if what each one sees at turn 40 is wrong, the task still fails:
 
 - memory injected in full on turn 1, then left behind as the task drifted;
 - a skill body squatting in the window long after the task needed it;
@@ -40,9 +42,9 @@ When a forty-turn task fails, it is rarely because the model cannot think. It is
 - ten parallel nodes inlining their full outputs, so the downstream node's first call grows with its fan-in;
 - one mid-task knowledge insert invalidating the entire cached conversation prefix behind it.
 
-What a model can see each turn is finite. Memory, skills, tool results, dependency outputs, summaries — they all compete for the same **attention budget**. Most frameworks treat context as a **log**: append, append, append, truncate when full.
+What a model can see each turn is finite. Memory, skills, tool results, dependency outputs, summaries — they all compete for the same **attention budget**. Orchestration topology decides who works next; the attention budget decides what the worker can see now. Most frameworks treat context as a **log**: append, append, append, truncate when full.
 
-Before building 0.2.78 we audited our own framework against its code, and grouped what we found into five failures:
+Before building this mechanism we audited our own framework against its code, and grouped what we found into five failures:
 
 | Failure | What we verified in the code |
 | --- | --- |
@@ -52,13 +54,13 @@ Before building 0.2.78 we audited our own framework against its code, and groupe
 | **Orchestration unconstrained by context** | DAG edges were string concatenation cut at character counts; plan/implement sub-agents inherited the parent transcript by default; three parallel paths existed for dynamic orchestration |
 | **No feedback** | Evict a piece of knowledge and never learn whether that was wrong; inject a memory and never learn it was wasted; nobody accounted for cache lost mid-run |
 
-## Our answer: a contract for every piece of information
+## Our answer: context itself is a graph
 
 > **Under a finite attention budget, decide for every piece of information its scope (who may see it), its form (full text, a summary, or a one-line handle), its lifetime (how long it lives and which event ends it), and its write authority (who may change or remove it) — and let results correct those decisions.**
 
-This is not a slogan. It is the kernel's data structure.
+Every piece of information that enters the model's attention is a **node**; every relationship between pieces is an **edge**. The DeepStrike kernel is the bookkeeper of this graph: a deterministic state machine over recorded inputs — it never calls a model, never reads a clock, and after a crash replays to the same graph from its journal and checkpoints.
 
-### One context object: the ContextItem
+### Nodes: one context object, origin is the contract
 
 There is only one kind of thing in context: an item. Memory index lines, skill bodies, host reference material, tool results, dependency outputs, orchestration shared state, provider summaries — all the same object. Its five attributes are not set ad hoc by callers; they are looked up from one table by **origin**. Origin is the contract.
 
@@ -75,9 +77,24 @@ There is only one kind of thing in context: an item. Memory index lines, skill b
 
 So: a recalled memory line lives eight turns from its last reference; a skill body leaves when the skill is deactivated — a host trying to remove it mid-activation is refused outright; a dependency output belongs to its downstream node alone; a provider summary can only be written by the provider.
 
-### Policy in the kernel, I/O in the host
+### Edges: every relationship recorded
 
-"Where, in what form, for how long" is decided once, in the kernel — a deterministic state machine over recorded inputs that never calls a model and never reads a clock, and replays byte-for-byte after a crash from its journal and checkpoints. Hosts only fetch bytes: run a search, read the payload store, make a request.
+The value of a graph is in its edges. The kernel draws them only from recorded inputs, so a replay always reproduces the same graph:
+
+- **answers** — which tool result answered which call;
+- **references** — which message referenced which knowledge, graded: naming a key, passing a record id in tool arguments, or expanding explicitly is strong; bare lexical overlap is weak (retention scoring weighs them 4:1);
+- **reads_back** — which read-back retrieved which collapsed or paged-out result;
+- **summarizes** — which summary covers which original content;
+- **inherited_from** — which parent item a child run's copy came from;
+- **depends_on** — which upstream output a downstream node depends on.
+
+With edges, feedback lands on specific items instead of aggregate numbers: regret points at the entry evicted and then requested back along a reference; waste points at the entry no edge ever pointed at; cache loss accounts every mid-run promotion. Every run ends with a lifecycle report, and a policy change must pass its gate on real benchmarks (`deepstrike-lab`) before it lands.
+
+### Collaboration is model-driven; the kernel admits and accounts
+
+On this graph, collaboration is not a hard-coded pipeline. Skills are activated by the model — the body loads on activation, the toolset narrows with it, deactivation releases the space. Memory is expanded by the model — index lines stay resident, `memory(record_id=…)` fetches the full record. Collapsed results are paged back in by the model. The next batch of workflow nodes is submitted by the model (`submit_workflow_nodes`) and admitted by the kernel as a canonical DAG. Host programs (`runDynamicWorkflow`) share the same vocabulary — loops, branches, and parallelism are the program itself or the model itself. We deleted the declarative loop/classify/tournament node templates: control flow is part of the model's capability, not a fill-in-the-blank in the framework.
+
+The kernel keeps exactly three things: **admission** (governance, quotas, edge legality), **bookkeeping** (the graph and its lifecycle report), and **constraint** (scope, form, lifetime, write authority); hosts only fetch bytes — run a search, read the payload store, make a request. Side effects are governed by a separate effect-admission line (approvals, sandboxing, quotas). Shared state between a program and its agents is not closure variables pasted into prompts either: `ctx.blackboard` writes nodes on the graph (`blackboard:<key>`) that every agent spawned afterwards starts with, whatever its inheritance setting.
 
 ### Boundaries and the cache invariant
 
@@ -94,31 +111,23 @@ The system knowledge block renders ahead of the turns; change one byte of it and
 
 Every expansion path is limited to content the caller already holds an address for — it can never become a general-purpose read primitive.
 
-### Graded evidence and a feedback loop
-
-References are not counted by word overlap: naming a key, passing a record id in tool arguments, or calling `memory(record_id)` is **strong** evidence; bare lexical overlap is weak (retention scoring weighs them 4:1). Every run ends with a lifecycle report: which knowledge was never referenced (waste), what was evicted and then requested again (regret), how many cached tokens a mid-run promotion spent (cache loss), and the recall hit rate. Policy stops being guesswork — `deepstrike-lab report / gate` compares policy variants on real benchmarks, and a change that fails its gate does not land.
-
 ### One truth about what the model sees
 
 - The provider compacted or cleared context server-side? The kernel absorbs it as a fact: covered history becomes a `provider_summary` item, cleared tool results degrade to handles — pressure, utility and renewal now reason over exactly what the model sees.
 - Reasoning replay is held by the kernel alongside its item: after narration collapse, compaction, or renewal, it still renders back, verbatim.
 - Token estimates are calibrated per request against the provider's own counts — raised, never lowered.
 
-### Orchestration built on the same semantics
-
-A dynamic workflow is a host program plus kernel admission: loops, branches and parallelism live in the program (`ctx.agent / parallelAgents / phase`), and each batch lowers to a canonical DAG the kernel admits under governance. Shared state between the program and its agents is not closure variables pasted into prompts — `ctx.blackboard` writes context items that every agent spawned afterwards starts with, whatever its inheritance setting. Edges default to handles (preview plus on-demand full text), so a node's starting context no longer grows with fan-in. What a child agent inherits is decided by item scope, not convention.
-
 ## Measured results
 
-From `deepstrike-lab` and two live-model benchmarks (DeepSeek `deepseek-flash`):
+From the lab and two live-model benchmarks (DeepSeek `deepseek-flash`):
 
 | Metric | Before | After |
 | --- | --- | --- |
-| fan-out → synthesis, downstream first call ¹ | 48.5k chars | **4.5k chars (−91%)**, full text still readable via `read_result` |
-| Answer accuracy (24 questions) ² | 24/24 | 24/24 (no regression) |
-| Kernel estimate vs provider-reported tokens (size-weighted) ² | 11.6% | **0.7%** |
+| fan-out → synthesis, downstream first call | 48.5k chars | **4.5k chars (−91%)**, full text still readable via `read_result` |
+| Answer accuracy (24 questions) | 24/24 | 24/24 (no regression) |
+| Kernel estimate vs provider-reported tokens (size-weighted) | 11.6% | **0.7%** |
 
-¹ Against the pre-context-lifecycle kernel. ² 0.2.79 → 0.2.80. All three gates (accuracy no worse, weighted estimate error ≤ 10%) passed; the measurement harness and results live in `benchmark/context-lifecycle/`.
+The first row compares before handle-shaped dependency edges; the other two compare before per-request estimate calibration and replay-counted pressure, on the same benchmark. All gates (accuracy no worse, weighted estimate error ≤ 10%) passed; the harness and results live in `benchmark/context-lifecycle/`.
 
 ## DeepStrike at a glance
 
@@ -147,7 +156,7 @@ These are applications you can build with the framework. Search, email, database
 Install the Node.js SDK and choose a model available to your account:
 
 ```bash
-npm install @deepstrike/sdk@0.2.80
+npm install @deepstrike/sdk
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="your-model-id"
 ```
@@ -189,7 +198,7 @@ The Agent facade provides in-memory sessions by default. Configure a durable ses
 - **Tools and integrations.** Files, services, and MCP servers behind a controlled execution boundary; side effects constrained by a separate admission line (governance, approval, sandbox, quotas).
 - **Reusable expertise.** Skill catalogs stay resident, bodies load on activation, the toolset narrows with them, and deactivation releases the space.
 - **Project memory.** Kernel-issued recall and re-recall, index lines first with on-demand expansion; writes go through an attested candidate ledger that rejects duplicates and unauthorized writes.
-- **Teamwork.** Dynamic workflows, handle-shaped dependency edges, a blackboard that is itself context — orchestration no longer blows up the context it runs on.
+- **Teamwork.** Model-driven collaboration with kernel admission: dynamic workflows, handle-shaped dependency edges, a blackboard that is itself a graph node — orchestration no longer blows up the context it runs on.
 - **Longer tasks.** Item-level compression tiers, tool-result collapse and paging, renewal at the threshold — with the cache prefix defended throughout.
 - **Control.** Permissions, budgets, deadlines, approval points, and cancellation rules.
 - **Recovery and inspection.** Deterministic replay from journal + checkpoints; a lifecycle report that records, item by item, what was injected, referenced, and why it left.
@@ -202,7 +211,7 @@ DeepStrike is a framework you integrate into an application. You provide model a
 
 The task scheduler runs locally. Connecting remote tools does not provide a distributed worker system. Actions that affect an external system may be retried, so integrations should prevent duplicate side effects where necessary.
 
-**Upgrading to 0.2.78 and later:** upgrade the kernel and SDK bindings together, and finish or abandon in-flight operations first — journals and checkpoints written by 0.2.77 or earlier cannot be restored. Per-version migration notes live in [MIGRATION-*.md](./MIGRATION-0.2.77-to-0.2.78.md); see [CHANGELOG.md](./CHANGELOG.md) for the full history.
+**Upgrading:** DeepStrike makes breaking changes within minor versions. Upgrade the kernel and SDK bindings together, and finish or abandon in-flight operations first — journals and checkpoints written by earlier versions are not guaranteed to restore. Per-version migration notes live in [MIGRATION-*.md](./MIGRATION-0.2.77-to-0.2.78.md); see [CHANGELOG.md](./CHANGELOG.md) for the full history.
 
 ## Go deeper
 
