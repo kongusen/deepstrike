@@ -4,8 +4,8 @@
 > no plugin, compatibility layer or same-name template; migration notes go into per-version files
 > such as `MIGRATION-0.2.77-to-0.2.78.md`.
 >
-> Revised 2026-11-02: no jump to 0.3.0. The plan ships in four releases, 0.2.78–0.2.81; see
-> "Release plan".
+> Revised 2026-11-02: no jump to 0.3.0. The plan ships in three releases, 0.2.78–0.2.80; see
+> "Release plan". The originally planned 0.2.81 is folded into 0.2.80, making it a larger release.
 
 ## Overview
 
@@ -421,8 +421,24 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 |---------|---------|--------|
 | 0.2.78 | Current branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Awaiting merge |
 | 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Not started |
-| 0.2.80 | 4.3 lab tool (`deepstrike-lab`); 4.2 graded reference evidence and `RelevanceJudge`, compared with the lexical-only version in the lab | Not started |
-| 0.2.81 | 1.1c: stable item ids in the message ABI, provider replay keyed by id (replacing content keys, Anthropic native blocks included); 5.1 absorbing provider rewrites (sharing one ABI extension with 1.1c); 6.2 blackboard; 6.3 Python and WASM host program APIs | Not started |
+| 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence and `RelevanceJudge`; 6.2 blackboard; 6.3 Python and WASM host program APIs. One `MIGRATION-0.2.79-to-0.2.80.md` | Not started |
+
+Order inside 0.2.80 (the lab comes before the changes it measures; otherwise a metric change cannot be
+attributed):
+
+1. 4.3 lab tool (`crates/deepstrike-lab`), with a baseline run on the 0.2.79 code first: regret,
+   waste, cache_loss, success rate, cost.
+2. 1.1c + 5.1: stable item ids in the message ABI, provider replay keyed by id (replacing content
+   keys, Anthropic native blocks included); provider compaction and `clear_tool_uses` absorbed as
+   facts (the two share one ABI extension). Use the lab to confirm the kernel's token estimate is
+   within 10% of measured usage.
+3. 4.2 graded reference evidence and `RelevanceJudge`, compared with the lexical-only version in the
+   lab: regret and waste no higher, success rate no lower.
+4. 6.2 blackboard, 6.3 Python / WASM host program APIs: independent of the first three, can be
+   interleaved.
+
+The PR is large, so the steps above land as staged PRs into one release branch, with the version
+bumped once at the end.
 
 Remaining 0.2.78 steps:
 

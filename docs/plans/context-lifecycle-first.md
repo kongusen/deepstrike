@@ -2,7 +2,7 @@
 
 > 修订 2026-11-01：确认允许破坏式更新。被取代的机制直接删除，不保留插件、兼容层或同名模板；迁移说明按版本写进 `MIGRATION-0.2.77-to-0.2.78.md` 等文件。
 >
-> 修订 2026-11-02：不跳到 0.3.0，本计划分四个版本 0.2.78–0.2.81 发布，见“版本规划”。
+> 修订 2026-11-02：不跳到 0.3.0，本计划分三个版本 0.2.78–0.2.80 发布，见“版本规划”。原定的 0.2.81 并入 0.2.80，作为一次较大的版本更新。
 
 ## 概览
 
@@ -220,8 +220,16 @@ ContextItem {
 |------|------|------|
 | 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1、6.1；1.1a 与 1.1b 的 item 身份部分；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 待合并 |
 | 0.2.79 | 1.1 收尾，要求完整：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 未开始 |
-| 0.2.80 | 4.3 lab 工具（`deepstrike-lab`）；4.2 引用证据分级与 `RelevanceJudge`，用 lab 对比纯词法版本 | 未开始 |
-| 0.2.81 | 1.1c：item 稳定 id 进入消息 ABI，provider replay 改按 id 作 key（替代按内容作 key，Anthropic native blocks 一并改）；5.1 吸收 provider 改写（与 1.1c 共用一次 ABI 扩展）；6.2 blackboard；6.3 Python、WASM 宿主程序 API | 未开始 |
+| 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级与 `RelevanceJudge`；6.2 blackboard；6.3 Python、WASM 宿主程序 API。只写一份 `MIGRATION-0.2.79-to-0.2.80.md` | 未开始 |
+
+0.2.80 内部顺序（lab 先于被衡量的改动，否则分不清指标变化来自哪一项）：
+
+1. 4.3 lab 工具（`crates/deepstrike-lab`），先在 0.2.79 的代码上跑出基线：regret、waste、cache_loss、成功率、成本。
+2. 1.1c + 5.1：item 稳定 id 进入消息 ABI，provider replay 改按 id 作 key（替代按内容作 key，Anthropic native blocks 一并改）；provider compaction 与 `clear_tool_uses` 作为 fact 吸收（两者共用一次 ABI 扩展）。用 lab 验证 kernel 估算与实测 token 偏差 <10%。
+3. 4.2 引用证据分级与 `RelevanceJudge`，用 lab 与纯词法版本对比：regret 和 waste 不升高，成功率不下降。
+4. 6.2 blackboard、6.3 Python / WASM 宿主程序 API：与前三项无依赖，可穿插进行。
+
+PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最后统一升版本号。
 
 0.2.78 剩余步骤：
 
