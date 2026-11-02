@@ -1012,6 +1012,7 @@ fn skill_epoch_filter_keeps_read_result_meta_tool() {
         residency: Residency::Collapsed,
         tokens: 100,
         source: Some(compact_str::CompactString::new("call_1")),
+        item: 0,
     });
 
     match sm.emit_call_llm() {

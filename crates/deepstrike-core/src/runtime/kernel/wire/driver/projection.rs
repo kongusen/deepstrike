@@ -265,6 +265,7 @@ impl CanonicalOperationDriver {
                         original_size,
                         tokens: handle.tokens,
                         source: handle.source.as_ref().map(|source| source.to_string()),
+                        item: handle.item,
                     }
                 })
                 .collect(),

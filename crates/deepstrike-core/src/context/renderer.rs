@@ -455,13 +455,22 @@ pub fn render_projected(
     let mut kept_unit_ranges = Vec::with_capacity(units.len());
     let mut selected_indices_rev = Vec::with_capacity(partitions.history.len());
 
+    // Plan task 1.1 · an item renders by its fidelity: one whose body a handle has taken out of
+    // the view renders as that handle's preview. Items without an id (an older checkpoint) are
+    // checked part by part.
+    let handle_items = handles.projected_items();
     for (unit_index, unit) in units.iter().enumerate().rev() {
         let is_protected = unit_index >= protected_from;
         let unit_start = kept_messages_rev.len();
         let mut tokens = 0u32;
         for message_index in unit.clone() {
             let msg = &partitions.history.messages()[message_index];
-            let projected = project_message(msg, handles).or_else(|| {
+            let item = partitions.history.tag(message_index).id;
+            let as_handle = item == 0 || handle_items.contains(&item);
+            let projected = as_handle
+                .then(|| project_message(msg, handles))
+                .flatten()
+                .or_else(|| {
                 if is_protected {
                     None
                 } else {

@@ -872,6 +872,9 @@ pub struct HandleState {
     /// Link back to the source object in working context (a tool `call_id` for a tool result).
     #[serde(default)]
     pub source: Option<String>,
+    /// The history item the handle addresses; absent ⇒ none.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub item: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

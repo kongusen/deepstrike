@@ -1291,9 +1291,11 @@ fn restore_context_vm(
             residency: restore_residency(handle)?,
             tokens: handle.tokens,
             source: handle.source.as_deref().map(Into::into),
+            item: handle.item,
         });
     }
     ctx.restore_next_handle_id(state.next_handle_id);
+    ctx.backfill_handle_items();
     if !ctx.restore_frozen_history_len(state.frozen_history_len as usize) {
         return Err(incompatible(format!(
             "the checkpoint freezes {} history messages but restores only {}",

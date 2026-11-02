@@ -337,6 +337,9 @@ impl ContextManager {
     /// payload: pruning one does not free the body, it only makes the body permanently unreachable
     /// — and page-in is exactly the operation that outlives the preview's stay in working context.
     pub fn prune_orphaned_handles(&mut self) {
+        let live_items: std::collections::HashSet<ItemId> =
+            self.partitions.history.tags().iter().map(|tag| tag.id).collect();
+        // A handle restored from a checkpoint without item ids is matched by its call_id.
         let live: std::collections::HashSet<CompactString> = self
             .partitions
             .history
@@ -355,8 +358,54 @@ impl ContextManager {
             .collect();
         self.handles.retain(|h| {
             h.residency.payload_ref().is_some()
-                || h.source.as_ref().is_none_or(|s| live.contains(s))
+                || if h.item != 0 {
+                    live_items.contains(&h.item)
+                } else {
+                    h.source.as_ref().is_none_or(|s| live.contains(s))
+                }
         });
+    }
+
+    /// Give every handle restored without an item id the id of the history item holding its body.
+    pub(crate) fn backfill_handle_items(&mut self) {
+        let missing: Vec<(HandleId, CompactString)> = self
+            .handles
+            .all()
+            .iter()
+            .filter(|h| h.item == 0)
+            .filter_map(|h| Some((h.id, h.source.clone()?)))
+            .collect();
+        for (id, source) in missing {
+            if let Some(item) = self.history_item_holding(&source) {
+                if let Some(handle) = self.handles.get_mut(id) {
+                    handle.item = item;
+                }
+            }
+        }
+    }
+
+    /// The id of the history item holding the tool result `call_id`, if one does.
+    fn history_item_holding(&self, call_id: &str) -> Option<ItemId> {
+        let history = &self.partitions.history;
+        history.messages().iter().position(|message| match &message.content {
+            Content::Parts(parts) => parts.iter().any(|part| {
+                matches!(part, ContentPart::ToolResult { call_id: id, .. } if id.as_str() == call_id)
+            }),
+            _ => false,
+        })
+        .map(|index| history.tag(index).id)
+        .filter(|id| *id != 0)
+    }
+
+    /// What history item `index` renders: a handle while one of its bodies is collapsed or paged
+    /// out, otherwise its stored form (full, or the excerpt compaction left).
+    pub fn history_fidelity(&self, index: usize) -> crate::context::item::Fidelity {
+        let tag = self.partitions.history.tag(index);
+        if tag.id != 0 && self.handles.projected_items().contains(&tag.id) {
+            crate::context::item::Fidelity::Handle
+        } else {
+            tag.fidelity
+        }
     }
 
     /// §7.10 / §25.9 · move the payload residency of the handle addressed by `source`, minting the
@@ -391,12 +440,14 @@ impl ContextManager {
             return Some(previous);
         }
         let id = self.alloc_handle_id();
+        let item = self.history_item_holding(source).unwrap_or(0);
         self.handles.insert(Handle {
             id,
             kind,
             residency,
             tokens,
             source: Some(source.into()),
+            item,
         });
         None
     }
@@ -599,9 +650,11 @@ impl ContextManager {
         self.partitions
             .knowledge
             .observe_references(&msg, self.knowledge_reference_step);
-        // P3 (3a): index each tool result entering working context as a handle, anchored to its
-        // call_id. Pure bookkeeping — render/compression still read `partitions` until 3b. The
-        // handle's residency later drives read-time projection without mutating the message.
+        self.last_item_id += 1;
+        let item = self.last_item_id;
+        // P3 (3a): index each tool result entering working context as a handle on its item,
+        // anchored to its call_id. The handle's residency is the item's: a collapsed or paged-out
+        // body makes the item render as a handle, without mutating the stored message.
         if let Content::Parts(parts) = &msg.content {
             for part in parts {
                 if let ContentPart::ToolResult {
@@ -610,18 +663,15 @@ impl ContextManager {
                 {
                     let id = self.alloc_handle_id();
                     let tok = self.engine.count(output).max(1);
-                    self.handles.insert(Handle::resident_for(
-                        id,
-                        HandleKind::ToolResult,
-                        tok,
-                        call_id.clone(),
-                    ));
+                    self.handles.insert(Handle {
+                        item,
+                        ..Handle::resident_for(id, HandleKind::ToolResult, tok, call_id.clone())
+                    });
                 }
             }
         }
-        self.last_item_id += 1;
         let tag = ItemTag::new(
-            self.last_item_id,
+            item,
             ItemOrigin::of_message(&msg),
             self.partitions.knowledge.turn,
         );
@@ -2051,6 +2101,41 @@ mod tests {
             mgr.handles.residency_for_source("c0"),
             Some(&Residency::Resident)
         );
+    }
+
+    #[test]
+    fn a_collapsed_tool_result_is_an_item_rendered_as_its_handle() {
+        use crate::context::item::Fidelity;
+        let mut mgr = ContextManager::new(1_000);
+        for i in 0..10 {
+            mgr.push_history(tool_result_msg(&format!("c{i}"), &"x".repeat(40)), 40);
+        }
+        let first = mgr.partitions.history.tag(0).id;
+        assert_eq!(mgr.handles.all()[0].item, first, "a handle addresses its item");
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Full);
+
+        mgr.set_observed_prompt_tokens(950);
+        mgr.recompute_handle_residency();
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Handle);
+        assert_eq!(mgr.history_fidelity(9), Fidelity::Full);
+        let turns = mgr.render().turns;
+        let stored = mgr.partitions.history.messages();
+        let json = |message: &CoreMessage| serde_json::to_string(message).unwrap();
+        let rendered = |call: &str| {
+            turns.iter().map(json).find(|turn| turn.contains(&format!("\"call_id\":\"{call}\"")))
+        };
+        assert_ne!(rendered("c0"), Some(json(&stored[0])), "a collapsed item renders as its handle");
+        assert_eq!(rendered("c9"), Some(json(&stored[9])), "a full item renders as stored");
+
+        // The handle stays the item's residency when the table is restored without item ids.
+        for handle in mgr.handles.all_mut() {
+            handle.item = 0;
+        }
+        mgr.backfill_handle_items();
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Handle);
+
+        mgr.reset_collapse_generation();
+        assert_eq!(mgr.history_fidelity(0), Fidelity::Full);
     }
 
     fn delegating(clearing: bool, compaction: bool) -> ContextManager {
