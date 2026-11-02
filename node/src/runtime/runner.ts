@@ -92,7 +92,7 @@ import type {
   WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
-import type { AgentCapabilityFilter } from "../types/agent.js"
+import type { AgentCapabilityFilter, InheritedKnowledge } from "../types/agent.js"
 import { DynamicWorkflowController } from "../workflow/dynamic-controller.js"
 import type { DynamicWorkflowContext, DynamicWorkflowLifecycleEvent, DynamicWorkflowPlan, DynamicWorkflowReplayFact, DynamicWorkflowRun, DynamicWorkflowRunOptions, DynamicWorkflowProgram } from "../workflow/dynamic.js"
 
@@ -435,6 +435,9 @@ export interface RuntimeOptions {
    *  holds them; the model reads one with `read_result(call_id="dep:<agent_id>")`. Set by the
    *  workflow driver for a node's child run. */
   dependencyOutputs?: Record<string, string>
+  /** Plan task 1.1 · the parent knowledge a child run starts with, chosen by the kernel from the
+   *  items' scope and the node's context inheritance. Set by the workflow driver. */
+  inheritedKnowledge?: InheritedKnowledge[]
   /** Optional host ledger that admits dynamic context before kernel insertion. */
   contextManager?: ContextManager
   skillDir?: string
@@ -1582,6 +1585,7 @@ export class RuntimeRunner {
       ...(parentRunId ? { parentRunId } : {}),
       spec: { ...baseSpec, goal: withBudget(goal) },
       ...(node.dependency_outputs ? { dependencyOutputs: node.dependency_outputs } : {}),
+      ...(node.inherited_knowledge?.length ? { inheritedKnowledge: node.inherited_knowledge } : {}),
       manifest,
       sessionLog: this.opts.sessionLog,
       // This child is a workflow node, so capability resolution applies workflow-node quarantine
@@ -2742,6 +2746,14 @@ export class RuntimeRunner {
         agent_id: agentId,
         content,
       })
+    }
+
+    for (const entry of this.opts.inheritedKnowledge ?? []) {
+      await this.pushKnowledge(
+        { role: "system", content: entry.content, toolCalls: [] },
+        entry.tokens,
+        { ...(entry.key ? { key: entry.key } : {}), ...(entry.pinned ? { pinned: true } : {}) },
+      )
     }
 
     if (this.opts.initialMemory) {

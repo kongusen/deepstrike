@@ -1266,6 +1266,8 @@ fn restore_context_vm(
     ctx.partitions.knowledge.retired = state.retired_items.clone();
     ctx.partitions.knowledge.turn = state.item_turn;
     ctx.last_item_id = state.last_item_id;
+    ctx.retired_history = state.retired_history.iter().copied().collect();
+    ctx.retired_history_omitted = state.retired_history_omitted;
     ctx.history_tally = state
         .history_tally
         .iter()

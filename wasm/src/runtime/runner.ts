@@ -52,7 +52,7 @@ import {
   type KernelObservation,
   type KernelRunnerAction,
 } from "./kernel-step.js"
-import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult, WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome, WorkflowNodeOutcome, KernelWorkflowNodeOutcome } from "./types/agent.js"
+import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult, WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, InheritedKnowledge, WorkflowOutcome, WorkflowNodeOutcome, KernelWorkflowNodeOutcome } from "./types/agent.js"
 import {
   agentRunSpecToKernel,
   MILESTONE_UNVERIFIED_REASON,
@@ -294,6 +294,9 @@ export interface RuntimeOptions {
   /** Plan task 3.1 · outputs of the workflow nodes this run depends on, by agent id. The kernel
    *  holds them; the model reads one with `read_result(call_id="dep:<agent_id>")`. */
   dependencyOutputs?: Record<string, string>
+  /** Plan task 1.1 · the parent knowledge a child run starts with, chosen by the kernel from the
+   *  items' scope and the node's context inheritance. Set by the workflow driver. */
+  inheritedKnowledge?: InheritedKnowledge[]
   /** Skill name → markdown body (WASM has no filesystem). */
   skillContentMap?: Map<string, string>
   memoryRuntimePolicy?: MemoryRuntimePolicy
@@ -1175,6 +1178,16 @@ export class RuntimeRunner {
         kind: "add_dependency_output",
         agent_id: agentId,
         content,
+      })
+    }
+
+    for (const entry of this.opts.inheritedKnowledge ?? []) {
+      await this.commitKernelApply(runtime, this.pendingObservations, {
+        kind: "add_knowledge_message",
+        content: entry.content,
+        ...(entry.key ? { key: entry.key } : {}),
+        tokens: entry.tokens ?? Math.max(1, Math.ceil(entry.content.length / 4)),
+        ...(entry.pinned ? { pinned: true } : {}),
       })
     }
 
@@ -2097,6 +2110,7 @@ export class RuntimeRunner {
       ...((node as { dependency_outputs?: Record<string, string> }).dependency_outputs
         ? { dependencyOutputs: (node as { dependency_outputs?: Record<string, string> }).dependency_outputs }
         : {}),
+      ...(node.inherited_knowledge?.length ? { inheritedKnowledge: node.inherited_knowledge } : {}),
       manifest,
       sessionLog: this.opts.sessionLog,
       // This child is a workflow node, so capability resolution applies workflow-node quarantine

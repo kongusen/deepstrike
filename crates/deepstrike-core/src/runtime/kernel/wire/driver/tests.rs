@@ -1161,6 +1161,45 @@ fn a_workflow_launch_preserves_logical_context_inheritance() {
 }
 
 #[test]
+fn a_full_inheritance_launch_carries_the_knowledge_its_scope_allows() {
+    let mut spec = two_node_spec();
+    spec.nodes[0].run_spec = Some(LogicalAgentSpec {
+        context_inheritance: Some(WireContextInheritance::Full),
+        ..LogicalAgentSpec::new("collect the sources")
+    });
+    let entry = |key: &str, content: &str| super::super::root::KnowledgeEntry {
+        content: content.to_string(),
+        key: Some(key.to_string()),
+        tokens: Some(4),
+        pinned: true,
+    };
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    let started = runtime.submit(&envelope(
+        "in-start",
+        1_700_000_001_000,
+        KernelInput::StartOperation(StartOperation {
+            entry: RootEntry::Workflow(RootWorkflowEntry { spec }),
+            initial_context: InitialContext {
+                knowledge: vec![
+                    entry("style", "the house style forbids bullet lists"),
+                    entry("skill:debug", "a skill body is the parent's own state"),
+                ],
+                ..InitialContext::default()
+            },
+        }),
+    ));
+    let EffectKind::SpawnTasks(spawn) = &sole_effect(&started).effect else {
+        panic!("expected a task spawn");
+    };
+    let metadata = serde_json::to_value(&spawn.tasks[0].spec.metadata).unwrap();
+    assert_eq!(
+        metadata["inherited_knowledge"],
+        json!([{ "content": "the house style forbids bullet lists", "key": "style", "tokens": 4, "pinned": true }]),
+    );
+}
+
+#[test]
 fn a_workflow_root_with_no_nodes_has_no_first_effect_and_is_refused() {
     let mut runtime = Runtime::new();
     runtime.submit(&configure());

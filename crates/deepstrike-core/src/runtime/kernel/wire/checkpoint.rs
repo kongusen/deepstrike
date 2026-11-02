@@ -34,7 +34,9 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
 use super::config::ResolvedOperationConfig;
-use crate::context::item::{ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease, OriginTally};
+use crate::context::item::{
+    HistoryItemRecord, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease, OriginTally,
+};
 use super::effect::{Digest, KernelEffect, LaunchToken, wire_opaque_ref};
 use super::envelope::OperationLifecycle;
 use super::fault::{KernelFault, KernelFaultCode};
@@ -676,6 +678,12 @@ pub struct ContextVmState {
     /// History items admitted and read back, by origin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history_tally: Vec<OriginTally>,
+    /// History items that left, latest ones first-to-last, capped for the end-of-run report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_history: Vec<HistoryItemRecord>,
+    /// Retired history items the cap dropped from `retired_history`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub retired_history_omitted: u32,
     #[serde(default)]
     pub signals: Vec<String>,
     /// §5q-2 · the stored messages of the system and history partitions, in render order. **The**

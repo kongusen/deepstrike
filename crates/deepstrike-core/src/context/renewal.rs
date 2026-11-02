@@ -53,6 +53,10 @@ impl RenewalPolicy {
         // pending upserts, boundary-eviction marks — survives renewal; the caller sweeps right
         // after (renewal IS a boundary).
         renewed.knowledge = partitions.knowledge.clone();
+        renewed
+            .knowledge
+            .entries
+            .retain(|entry| entry.defaults().scope.survives_renewal());
 
         // State: carry task_state (goal/plan/progress), clear scratchpad.
         renewed.task_state = partitions.task_state.clone();

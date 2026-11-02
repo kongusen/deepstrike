@@ -1,7 +1,7 @@
 import type { DoneEvent, StreamEvent, TextDelta, WorkflowNodesSubmittedEvent } from "../types.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, LoopResult, SubAgentResult, TerminationReason,
-  KernelAgentRole, WorkflowNodeSpec,
+  InheritedKnowledge, KernelAgentRole, WorkflowNodeSpec,
 } from "./types/agent.js"
 import type { RuntimeOptions } from "./runner.js"
 import type { SessionEvent, SessionLog } from "./session-log.js"
@@ -28,6 +28,8 @@ export interface SubAgentRunContext {
   abortSignal?: AbortSignal
   /** Plan task 3.1 · the outputs of the workflow nodes this child depends on, by agent id. */
   dependencyOutputs?: Record<string, string>
+  /** Plan task 1.1 · the parent knowledge the kernel lets this child inherit. */
+  inheritedKnowledge?: InheritedKnowledge[]
 }
 
 /** #2-B-ii: bridge a parent AbortSignal to a child runner's `interrupt()` (fires now if already aborted). */
@@ -160,6 +162,8 @@ export class SubAgentOrchestrator {
         : undefined,
       // A child reads only its own dependencies, never ones inherited from the parent's options.
       dependencyOutputs: ctx.dependencyOutputs,
+      // Likewise only the knowledge the kernel chose for this child, never the parent's own.
+      inheritedKnowledge: ctx.inheritedKnowledge,
     })
     // #2-B-ii: parent preempt → interrupt the child (cancels its in-flight LLM call).
     linkAbort(ctx.abortSignal, childRunner)

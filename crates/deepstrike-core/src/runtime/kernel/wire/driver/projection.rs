@@ -336,6 +336,8 @@ impl CanonicalOperationDriver {
                 .collect(),
             last_item_id: ctx.last_item_id,
             history_tally: ctx.history_tally.values().copied().collect(),
+            retired_history: ctx.retired_history.iter().copied().collect(),
+            retired_history_omitted: ctx.retired_history_omitted,
             signals: ctx.partitions.signals.clone(),
             messages: ctx
                 .partitions

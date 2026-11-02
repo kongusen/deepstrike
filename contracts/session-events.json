@@ -658,6 +658,8 @@
       ],
       "optional": [
         "history",
+        "history_items",
+        "history_items_omitted",
         "items"
       ],
       "sample": {
@@ -688,7 +690,13 @@
         "history": [
           { "origin": "user", "items": 2, "tokens": 40, "resident_items": 1, "resident_tokens": 12 },
           { "origin": "tool_result", "items": 5, "tokens": 2400, "resident_items": 2, "resident_tokens": 600, "read_back": 1 }
-        ]
+        ],
+        "history_items": [
+          { "id": 3, "origin": "tool_result", "tokens": 900, "injected_turn": 1, "fidelity": "excerpt", "end": "compacted" },
+          { "id": 7, "origin": "tool_result", "tokens": 300, "injected_turn": 3, "fidelity": "handle" },
+          { "id": 8, "origin": "assistant", "tokens": 40, "injected_turn": 4 }
+        ],
+        "history_items_omitted": 2
       }
     },
     {

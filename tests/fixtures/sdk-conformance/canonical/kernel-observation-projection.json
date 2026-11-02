@@ -86,7 +86,12 @@
           ],
           "history": [
             { "origin": "tool_result", "items": 3, "tokens": 900, "resident_items": 1, "resident_tokens": 300, "read_back": 1 }
-          ]
+          ],
+          "history_items": [
+            { "id": 2, "origin": "tool_result", "tokens": 600, "injected_turn": 1, "fidelity": "excerpt", "end": "compacted" },
+            { "id": 5, "origin": "tool_result", "tokens": 300, "injected_turn": 3 }
+          ],
+          "history_items_omitted": 1
         }
       },
       {
@@ -490,7 +495,12 @@
           ],
           "history": [
             { "origin": "tool_result", "items": 3, "tokens": 900, "resident_items": 1, "resident_tokens": 300, "read_back": 1 }
-          ]
+          ],
+          "history_items": [
+            { "id": 2, "origin": "tool_result", "tokens": 600, "injected_turn": 1, "fidelity": "excerpt", "end": "compacted" },
+            { "id": 5, "origin": "tool_result", "tokens": 300, "injected_turn": 3 }
+          ],
+          "history_items_omitted": 1
         },
         "rollbacked_turn_zero": {
           "kind": "rollbacked",

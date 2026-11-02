@@ -1,7 +1,8 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
 use super::item::{
-    Authority, ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, LeaseEvent, OriginTally,
+    Authority, HISTORY_ITEM_DETAIL_CAP, HistoryItemRecord, ItemEnd, ItemId, ItemOrigin,
+    ItemRecord, ItemTag, LeaseEvent, OriginTally,
 };
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
@@ -91,6 +92,11 @@ pub struct LifecycleMetrics {
     pub items: Vec<ItemRecord>,
     /// History items by origin: admitted, still in history, read back.
     pub history: Vec<OriginTally>,
+    /// The latest history items one by one (at most [`HISTORY_ITEM_DETAIL_CAP`]): the retired
+    /// ones in the order they left, then the ones still in history.
+    pub history_items: Vec<HistoryItemRecord>,
+    /// History items too old to be listed in `history_items`.
+    pub history_items_omitted: u32,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -181,6 +187,10 @@ pub struct ContextManager {
     pub(crate) last_item_id: ItemId,
     /// History items admitted and read back, by origin (plan task 4.1).
     pub(crate) history_tally: std::collections::BTreeMap<ItemOrigin, OriginTally>,
+    /// History items that left, latest [`HISTORY_ITEM_DETAIL_CAP`] kept, in the order they left.
+    pub(crate) retired_history: std::collections::VecDeque<HistoryItemRecord>,
+    /// Retired history items dropped from `retired_history` by the cap.
+    pub(crate) retired_history_omitted: u32,
 }
 
 impl ContextManager {
@@ -233,6 +243,8 @@ impl ContextManager {
             cache_invalidated_tokens: 0,
             last_item_id: 0,
             history_tally: std::collections::BTreeMap::new(),
+            retired_history: std::collections::VecDeque::new(),
+            retired_history_omitted: 0,
         }
     }
 
@@ -555,6 +567,15 @@ impl ContextManager {
             target_tokens,
             &self.engine,
         );
+        for row in &archived {
+            let record = HistoryItemRecord::of(
+                row.tag,
+                row.measurement.tokens,
+                row.tag.fidelity,
+                Some(ItemEnd::Compacted),
+            );
+            self.retire_history_item(record);
+        }
         let archived: Vec<CoreMessage> = archived.into_iter().map(|row| row.message).collect();
         if saved > 0 || !archived.is_empty() {
             // The measurement describes the request before this rewrite, not the new context.
@@ -603,9 +624,25 @@ impl ContextManager {
     }
 
     pub fn renew(&mut self) {
-        self.partitions = self
+        let renewed = self
             .renewal
             .renew(&self.partitions, self.max_tokens, &self.engine);
+        let carried: std::collections::HashSet<ItemId> =
+            renewed.history.tags().iter().map(|tag| tag.id).collect();
+        for index in 0..self.partitions.history.len() {
+            let tag = self.partitions.history.tag(index);
+            if !carried.contains(&tag.id) {
+                let tokens = self.partitions.history.measured_tokens(index, &self.engine);
+                let fidelity = self.history_fidelity(index);
+                self.retire_history_item(HistoryItemRecord::of(
+                    tag,
+                    tokens,
+                    fidelity,
+                    Some(ItemEnd::Renewed),
+                ));
+            }
+        }
+        self.partitions = renewed;
         self.sprint += 1;
         self.last_observed_prompt_tokens = None;
         // The renewed history dropped earlier recalls with the rest; recall again for the new sprint.
@@ -679,6 +716,30 @@ impl ContextManager {
         tally.items += 1;
         tally.tokens += u64::from(tokens);
         self.partitions.history.push_tagged(msg, tokens, tag);
+    }
+
+    /// Drop history from `len` on (a rolled-back turn); its items leave as removed.
+    pub fn truncate_history(&mut self, len: usize) {
+        for index in len..self.partitions.history.len() {
+            let tag = self.partitions.history.tag(index);
+            let tokens = self.partitions.history.measured_tokens(index, &self.engine);
+            let fidelity = self.history_fidelity(index);
+            self.retire_history_item(HistoryItemRecord::of(
+                tag,
+                tokens,
+                fidelity,
+                Some(ItemEnd::Removed),
+            ));
+        }
+        self.partitions.history.truncate(len);
+    }
+
+    fn retire_history_item(&mut self, record: HistoryItemRecord) {
+        self.retired_history.push_back(record);
+        if self.retired_history.len() > HISTORY_ITEM_DETAIL_CAP {
+            self.retired_history.pop_front();
+            self.retired_history_omitted += 1;
+        }
     }
 
     fn tally(&mut self, origin: ItemOrigin) -> &mut OriginTally {
@@ -850,7 +911,22 @@ impl ContextManager {
                 .map(|body| u64::from(self.engine.count(body)))
                 .sum();
         }
+        let history_len = self.partitions.history.len();
+        let resident = (0..history_len).map(|index| {
+            HistoryItemRecord::of(
+                self.partitions.history.tag(index),
+                self.partitions.history.measured_tokens(index, &self.engine),
+                self.history_fidelity(index),
+                None,
+            )
+        });
+        let mut history_items: Vec<HistoryItemRecord> =
+            self.retired_history.iter().copied().chain(resident).collect();
+        let overflow = history_items.len().saturating_sub(HISTORY_ITEM_DETAIL_CAP);
+        history_items.drain(..overflow);
         LifecycleMetrics {
+            history_items,
+            history_items_omitted: self.retired_history_omitted + overflow as u32,
             history: history.into_values().collect(),
             knowledge_entries: knowledge.entries.len() as u32,
             knowledge_referenced: referenced,
@@ -935,6 +1011,30 @@ impl ContextManager {
 
     /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
     /// Errs-open: unknown key is a no-op (returns false).
+    /// Plan task 1.1 · scope: the parent's knowledge a child spawned with `inheritance` starts with,
+    /// as `(key, content, tokens, pinned)`. Besides what the scope allows, a child never inherits
+    /// an item whose life is tied to the parent's own state: one leased until a parent event (an
+    /// active skill's body) or one the kernel derived for the parent (the child's kernel derives
+    /// its own).
+    pub fn inheritable_knowledge(
+        &self,
+        inheritance: crate::types::agent::ContextInheritance,
+    ) -> Vec<(Option<String>, String, u32, bool)> {
+        self.partitions
+            .knowledge
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_leaving())
+            .filter(|entry| entry.defaults().scope.inherited_by(inheritance))
+            .filter(|entry| !matches!(entry.lease, crate::context::item::Lease::Until(_)))
+            .filter(|entry| entry.defaults().authority != Authority::Kernel)
+            .filter_map(|entry| {
+                let text = entry.message.content.as_text()?.to_string();
+                Some((entry.key.as_ref().map(ToString::to_string), text, entry.tokens, entry.pinned))
+            })
+            .collect()
+    }
+
     /// Plan task 1.1 · authority: whether the host may upsert `upserts` and remove `removals`. A host
     /// command may not touch an item the kernel or the provider wrote, and may not remove a skill
     /// body while the model's activation holds it (deactivating the skill removes it). Returns the
@@ -1591,6 +1691,67 @@ mod tests {
         mgr.sweep_knowledge_at_boundary();
         assert!(mgr.partitions.knowledge.is_empty());
         assert_eq!(mgr.lifecycle_metrics().items[0].end, Some(ItemEnd::Expired));
+    }
+
+    #[test]
+    fn a_full_child_inherits_the_parents_knowledge_but_not_its_own_state() {
+        use crate::types::agent::ContextInheritance as I;
+        let mut mgr = ContextManager::new(100_000);
+        mgr.push_knowledge_entry(Some("style".into()), CoreMessage::system("no bullets"), 3, true);
+        mgr.push_recalled(vec![("r1".into(), "[MEMORY record_id=r1] orchid".into())]);
+        mgr.activate_skill("debug");
+        mgr.push_knowledge_entry(Some("skill:debug".into()), CoreMessage::system("body"), 3, true);
+        mgr.push_knowledge_item(
+            ItemOrigin::System,
+            Some("governance:denied-tools".into()),
+            CoreMessage::system("denied"),
+            2,
+            true,
+        );
+        mgr.push_knowledge_entry(Some("gone".into()), CoreMessage::system("leaving"), 2, false);
+        mgr.remove_knowledge("gone");
+
+        let keys = |inheritance| -> Vec<Option<String>> {
+            mgr.inheritable_knowledge(inheritance).into_iter().map(|entry| entry.0).collect()
+        };
+        assert_eq!(keys(I::Full), vec![Some("style".to_string()), Some("memory:r1".to_string())]);
+        assert!(keys(I::SystemOnly).is_empty());
+        assert!(keys(I::None).is_empty());
+        assert!(mgr.inheritable_knowledge(I::Full)[0].3, "a pin is inherited");
+    }
+
+    #[test]
+    fn the_report_lists_history_items_and_why_each_left() {
+        use crate::context::item::HISTORY_ITEM_DETAIL_CAP;
+        let mut mgr = ContextManager::new(10_000);
+        for i in 0..6 {
+            mgr.push_history(CoreMessage::user(format!("message {i} ").repeat(80)), 400);
+        }
+        let (_, _, archived, _) = mgr.force_compress();
+        assert!(!archived.is_empty());
+        mgr.truncate_history(mgr.partitions.history.len() - 1);
+        mgr.push_history(CoreMessage::user("after rollback"), 5);
+        mgr.renew();
+
+        let metrics = mgr.lifecycle_metrics();
+        let ends: Vec<_> = metrics.history_items.iter().map(|item| item.end).collect();
+        assert!(ends.contains(&Some(ItemEnd::Compacted)), "{ends:?}");
+        assert!(ends.contains(&Some(ItemEnd::Removed)), "{ends:?}");
+        let mut ids: Vec<_> = metrics.history_items.iter().map(|item| item.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), metrics.history_items.len(), "each item is listed once");
+        assert_eq!(metrics.history_items_omitted, 0);
+
+        // Past the cap only the latest items are listed; the rest are counted.
+        let mut long = ContextManager::new(1_000_000);
+        for i in 0..HISTORY_ITEM_DETAIL_CAP + 10 {
+            long.push_history(CoreMessage::user(format!("m{i}")), 1);
+        }
+        let metrics = long.lifecycle_metrics();
+        assert_eq!(metrics.history_items.len(), HISTORY_ITEM_DETAIL_CAP);
+        assert_eq!(metrics.history_items_omitted, 10);
+        assert_eq!(metrics.history_items.last().unwrap().id, (HISTORY_ITEM_DETAIL_CAP + 10) as u64);
     }
 
     #[test]

@@ -65,6 +65,7 @@
         "input_agent_ids",
         "dependency_outputs",
         "dependency_brief",
+        "inherited_knowledge",
         "token_budget",
         "max_turns",
         "max_wall_ms"

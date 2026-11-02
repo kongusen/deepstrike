@@ -60,7 +60,7 @@ pub struct OriginTally {
     pub read_back: u32,
 }
 
-fn is_zero_u32(value: &u32) -> bool {
+pub(crate) fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
@@ -150,14 +150,42 @@ impl ItemOrigin {
     }
 }
 
+/// How far an item travels: what it belongs to, and so which runs may see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemScope {
+    /// This operation's run.
     Operation,
+    /// The task the run is working on.
     Task,
+    /// One workflow edge: only the downstream node of that edge reads it.
     Edge,
+    /// The session the run belongs to.
     Session,
+    /// The agent's identity, whatever it works on.
     Agent,
+}
+
+impl ItemScope {
+    /// Whether an item of this scope stays across a renewal. A renewal starts a new sprint of the
+    /// same operation and task, so everything but an edge's data does.
+    pub fn survives_renewal(self) -> bool {
+        self != Self::Edge
+    }
+
+    /// Whether a child run spawned with `inheritance` starts with a copy of the parent's item. A
+    /// `system_only` child inherits who the agent is; a `full` child also inherits what the parent
+    /// knows about its operation, task and session. An edge's data reaches only its own
+    /// downstream node, as a dependency output.
+    pub fn inherited_by(self, inheritance: crate::types::agent::ContextInheritance) -> bool {
+        use crate::types::agent::ContextInheritance as I;
+        match (self, inheritance) {
+            (Self::Edge, _) | (_, I::None) => false,
+            (Self::Agent, I::SystemOnly) => true,
+            (_, I::SystemOnly) => false,
+            (_, I::Full) => true,
+        }
+    }
 }
 
 /// How much of the source the item renders: all of it, a structured form, or a handle line the
@@ -255,8 +283,39 @@ pub enum ItemEnd {
     Evicted,
     /// Its lease ran out.
     Expired,
-    /// Removed by name (a host mutation, a deactivated skill, a withdrawn note).
+    /// Removed by name (a host mutation, a deactivated skill, a withdrawn note), or rolled back
+    /// with the turn that added it.
     Removed,
+    /// A history item compaction archived into the compression summary.
+    Compacted,
+    /// A history item a renewal did not carry into the new sprint.
+    Renewed,
+}
+
+/// How many history items the end-of-run report lists one by one; older ones are only counted.
+pub const HISTORY_ITEM_DETAIL_CAP: usize = 128;
+
+/// One history item's lifecycle for the end-of-run report (plan task 4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryItemRecord {
+    pub id: ItemId,
+    pub origin: ItemOrigin,
+    pub tokens: u32,
+    #[serde(default)]
+    pub injected_turn: u32,
+    /// What it rendered when it left, or renders now: full, an excerpt, or a handle.
+    #[serde(default, skip_serializing_if = "Fidelity::is_full")]
+    pub fidelity: Fidelity,
+    /// Why it left; `None` while still in history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<ItemEnd>,
+}
+
+impl HistoryItemRecord {
+    pub fn of(tag: ItemTag, tokens: u32, fidelity: Fidelity, end: Option<ItemEnd>) -> Self {
+        Self { id: tag.id, origin: tag.origin, tokens, injected_turn: tag.injected_turn, fidelity, end }
+    }
 }
 
 /// One knowledge-tier item.
@@ -429,6 +488,20 @@ mod tests {
             serde_json::to_value(skill.lease).unwrap(),
             serde_json::json!({"until": "skill_deactivated"})
         );
+    }
+
+    #[test]
+    fn scope_decides_what_a_child_inherits_and_what_survives_renewal() {
+        use crate::types::agent::ContextInheritance as I;
+        assert!(ItemScope::Agent.inherited_by(I::SystemOnly));
+        assert!(!ItemScope::Operation.inherited_by(I::SystemOnly));
+        for scope in [ItemScope::Operation, ItemScope::Task, ItemScope::Session, ItemScope::Agent] {
+            assert!(scope.inherited_by(I::Full), "{scope:?}");
+            assert!(!scope.inherited_by(I::None), "{scope:?}");
+            assert!(scope.survives_renewal(), "{scope:?}");
+        }
+        assert!(!ItemScope::Edge.inherited_by(I::Full));
+        assert!(!ItemScope::Edge.survives_renewal());
     }
 
     #[test]

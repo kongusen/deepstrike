@@ -275,6 +275,9 @@ class RuntimeOptions:
   # them; the model reads one with ``read_result(call_id="dep:<agent_id>")``. Set by the workflow
   # driver for a node's child run.
   dependency_outputs: dict[str, str] | None = None
+  # Plan task 1.1 · the parent knowledge a child run starts with, chosen by the kernel from the
+  # items' scope and the node's context inheritance. Set by the workflow driver for a node's run.
+  inherited_knowledge: list[dict[str, Any]] | None = None
   skill_dir: str | Path | None = None
   # Host-layer allowlist over the ``skill_dir`` catalog by skill NAME. When set, only scanned
   # skills whose name is listed are fed via ``set_available_skills`` (and eligible for knowledge
@@ -1294,6 +1297,7 @@ class RuntimeRunner:
           # quarantined nodes stay deny-all filtered (they read untrusted content).
           tool_access="filtered" if raw.get("trust") == "quarantined" else "inherit",
           dependency_outputs=dict(raw.get("dependency_outputs") or {}) or None,
+          inherited_knowledge=list(raw.get("inherited_knowledge") or []) or None,
         ))
 
       schema = node.output_schema
@@ -2115,6 +2119,16 @@ class RuntimeRunner:
       for dep_agent_id, dep_content in (self._opts.dependency_outputs or {}).items():
         await apply_host(runtime, self._pending_observations, {
           "kind": "add_dependency_output", "agent_id": dep_agent_id, "content": dep_content,
+        })
+
+    if not resume_mid_run:
+      for entry in self._opts.inherited_knowledge or []:
+        await apply_host(runtime, self._pending_observations, {
+          "kind": "add_knowledge_message",
+          "content": str(entry.get("content") or ""),
+          **({"key": entry["key"]} if entry.get("key") else {}),
+          **({"tokens": int(entry["tokens"])} if entry.get("tokens") is not None else {}),
+          **({"pinned": True} if entry.get("pinned") else {}),
         })
 
     if not resume_mid_run and self._opts.initial_memory:

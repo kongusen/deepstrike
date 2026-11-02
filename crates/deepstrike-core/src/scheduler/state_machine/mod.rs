@@ -1832,6 +1832,8 @@ impl LoopStateMachine {
             recall_expanded: metrics.recall_expanded,
             items: metrics.items,
             history: metrics.history,
+            history_items: metrics.history_items,
+            history_items_omitted: metrics.history_items_omitted,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
@@ -2191,10 +2193,7 @@ impl LoopStateMachine {
     }
 
     pub fn rollback(&mut self, reason: RollbackReason) {
-        self.ctx
-            .partitions
-            .history
-            .truncate(self.checkpoint.history_len);
+        self.ctx.truncate_history(self.checkpoint.history_len);
         self.ctx
             .partitions
             .signals

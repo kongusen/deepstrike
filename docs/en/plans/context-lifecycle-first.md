@@ -159,8 +159,27 @@ all follow this rule.
     archived result carries the item tags. Fixed along the way: rollback used to truncate only the
     message column, leaving measurements, tags and the token count misaligned; it now truncates
     whole rows.
-  - Not done (a later 0.2.79 item): per-item history detail (history is reported as a per-origin
-    tally; listing every item needs a cap or the report of a long run grows too large).
+  - Remaining 0.2.79 items (2026-11-02; task 1.1 complete):
+    - `until(event)` lease: a new `LeaseEvent`; a skill body's lease is `until(skill_deactivated)`,
+      so it leaves when its skill is deactivated (at the next boundary). A pin extends only
+      time-limited leases (turns, boundary, single use), never an event lease.
+    - Authority: a host `seed_knowledge` / `apply_knowledge_mutation` may not overwrite or remove
+      an item the kernel or the provider wrote, nor remove the body of an active skill; such a
+      command is refused whole with `InvalidAuthority`.
+    - Scope: `ItemScope::inherited_by` decides which parent knowledge a child run starts with
+      (`full` inherits operation / task / session / agent items, `system_only` only agent items,
+      edge items never); items on an event lease and kernel-written items are not inherited. The
+      kernel sends them as `inherited_knowledge` in the spawn metadata, and Node / Python / WASM
+      pass them to the child run. A renewal keeps every scope but edge (`survives_renewal`).
+    - Handles in the item table: a handle carries the id of its history item (checkpoint
+      `HandleState.item`, backfilled by call_id for older checkpoints) and is pruned by item id.
+      Fidelity decides rendering: an item whose body is collapsed or paged out renders as its
+      handle preview (`ContextManager::history_fidelity`).
+    - Per-item history detail: the lifecycle report's `history_items` lists the latest 128
+      history items (id, origin, tokens, the fidelity they rendered, and why they left:
+      `compacted` / `renewed` / `removed`), older ones count in `history_items_omitted`; retired
+      records are checkpointed (`retired_history`).
+    - Migration notes: `MIGRATION-0.2.78-to-0.2.79.md`.
 - ~~Original task 1.1: introduce `ContextItem`, the item table and the origin table in the kernel~~
   - Acceptance: `ContextPartitions` becomes a render view over the item table; `KnowledgeEntry`,
     history messages and handles all map to items and the old types are deleted. One table defines
@@ -402,7 +421,8 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next: see "Release plan" below. 0.2.78 merges once CI passes; 0.2.79 follows.
+Next: see "Release plan" below. 0.2.78 is merged into main; 0.2.79 is complete on branch
+`feat/context-items-0.2.79`, awaiting the version bump and PR.
 
 Setting up on another machine:
 
@@ -426,8 +446,8 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 
 | Release | Content | Status |
 |---------|---------|--------|
-| 0.2.78 | Current branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Awaiting merge |
-| 0.2.79 | Finish 1.1 completely: ~~`ContextPartitions` as a render view over the item table, with the compression pipeline operating on items~~ (done); the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | In progress, branch `feat/context-items-0.2.79` |
+| 0.2.78 | Merged into main (PR #4), from branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Merged into main |
+| 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Done on branch `feat/context-items-0.2.79`, awaiting release |
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence and `RelevanceJudge`; 6.2 blackboard; 6.3 Python and WASM host program APIs. One `MIGRATION-0.2.79-to-0.2.80.md` | Not started |
 
 Order inside 0.2.80 (the lab comes before the changes it measures; otherwise a metric change cannot be
