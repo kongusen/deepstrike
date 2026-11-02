@@ -324,6 +324,23 @@
             },
             "end": "expired"
           }
+        ],
+        "history": [
+          {
+            "origin": "user",
+            "items": 2,
+            "tokens": 40,
+            "resident_items": 1,
+            "resident_tokens": 12
+          },
+          {
+            "origin": "tool_result",
+            "items": 5,
+            "tokens": 2400,
+            "resident_items": 2,
+            "resident_tokens": 600,
+            "read_back": 1
+          }
         ]
       },
       "suspended": {
@@ -745,6 +762,7 @@
             "waste_tokens"
           ],
           "optional": [
+            "history",
             "items"
           ],
           "sdks": [

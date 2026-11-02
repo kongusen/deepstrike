@@ -612,6 +612,7 @@ impl CanonicalOperationDriver {
         effect_index: &mut u32,
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        engine.ctx.note_read_back(handle_id.as_str());
         // Plan task 3.1 · a dependency output is held by this kernel: the read answers with the
         // body itself, with no host effect.
         if let Some(agent_id) = handle_id.as_str().strip_prefix("dep:") {

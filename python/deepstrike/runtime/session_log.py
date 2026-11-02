@@ -372,8 +372,18 @@ class ContextItemRecord(TypedDict, total=False):
     end: Literal["evicted", "expired", "removed"]
 
 
+class ContextOriginTally(TypedDict, total=False):
+    origin: str
+    items: int
+    tokens: int
+    resident_items: int
+    resident_tokens: int
+    read_back: int
+
+
 class _ContextLifecycleItems(TypedDict, total=False):
     items: list[ContextItemRecord]
+    history: list[ContextOriginTally]
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

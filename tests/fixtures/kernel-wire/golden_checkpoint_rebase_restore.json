@@ -9,7 +9,7 @@
     "tail_inputs_replayed": 2
   },
   "restored_head": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
-  "state_digest": "sha256:75399d590572fbc30af5dce55ee9f1982fad198df93c0bd05b7b048807dabbb6",
+  "state_digest": "sha256:cf2619f776a22d5695841f72cb648cf3e8227a824e1efd3b99343eb4d9645969",
   "tail_steps": [
     "2",
     "3"

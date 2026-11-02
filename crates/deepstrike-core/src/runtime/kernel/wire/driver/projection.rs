@@ -330,6 +330,11 @@ impl CanonicalOperationDriver {
                 .collect(),
             retired_items: ctx.partitions.knowledge.retired.clone(),
             item_turn: ctx.partitions.knowledge.turn,
+            history_items: (0..ctx.partitions.history.messages.len())
+                .map(|index| ctx.partitions.history.tag(index))
+                .collect(),
+            last_item_id: ctx.last_item_id,
+            history_tally: ctx.history_tally.values().copied().collect(),
             signals: ctx.partitions.signals.clone(),
             messages: ctx
                 .partitions

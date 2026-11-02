@@ -248,6 +248,9 @@ pub enum SessionEvent {
         /// Every knowledge item of the run: origin, use, and why it left (absent while resident).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         items: Vec<crate::context::item::ItemRecord>,
+        /// History items by origin: admitted, still in history at the end, read back.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        history: Vec<crate::context::item::OriginTally>,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

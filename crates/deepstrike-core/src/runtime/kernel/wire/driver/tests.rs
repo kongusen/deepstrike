@@ -11834,6 +11834,14 @@ fn the_lifecycle_report_counts_which_recalls_the_model_read() {
     ];
     assert_eq!(items(&runtime), expected);
     assert_eq!(items(&Runtime::restore_with(None, &runtime.journal)), expected);
+    // Plan task 1.1b · history messages are items with ids that survive a restore too.
+    let tags = |runtime: &Runtime| {
+        let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
+        (0..history.messages.len()).map(|index| history.tag(index)).collect::<Vec<_>>()
+    };
+    let live = tags(&runtime);
+    assert!(live.iter().all(|tag| tag.id > 0));
+    assert_eq!(tags(&Runtime::restore_with(None, &runtime.journal)), live);
 
     let provider = sole_effect(&resumed).effect_id.clone();
     runtime.submit(&provider_answer("in-answer", 1_700_000_005_000, &provider, "done"));
@@ -11851,6 +11859,15 @@ fn the_lifecycle_report_counts_which_recalls_the_model_read() {
     assert_eq!(report.2[0].key.as_deref(), Some("memory:rec-1"));
     assert!(report.2[0].value.expanded);
     assert_eq!(report.2[0].end, None, "still resident at the end of the run");
+    let history = runtime
+        .observations()
+        .iter()
+        .find_map(|observation| match observation {
+            KernelObservation::LifecycleReport { history, .. } => Some(history.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(history.iter().any(|tally| tally.origin == ItemOrigin::Assistant && tally.items > 0));
 }
 
 #[test]

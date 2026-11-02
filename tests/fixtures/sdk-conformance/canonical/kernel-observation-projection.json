@@ -83,6 +83,9 @@
               "value": { "injected_turn": 1, "ref_count": 1, "expanded": true },
               "end": "expired"
             }
+          ],
+          "history": [
+            { "origin": "tool_result", "items": 3, "tokens": 900, "resident_items": 1, "resident_tokens": 300, "read_back": 1 }
           ]
         }
       },
@@ -484,6 +487,9 @@
               "value": { "injected_turn": 1, "ref_count": 1, "expanded": true },
               "end": "expired"
             }
+          ],
+          "history": [
+            { "origin": "tool_result", "items": 3, "tokens": 900, "resident_items": 1, "resident_tokens": 300, "read_back": 1 }
           ]
         },
         "rollbacked_turn_zero": {

@@ -6,7 +6,7 @@ import type {
   ToolSchema,
   MediaSource,
 } from "../types.js"
-import type { ContextItemRecord, RollbackReason } from "./session-log.js"
+import type { ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
 import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
 
 interface TaskUpdate {
@@ -128,6 +128,7 @@ export interface KernelObservation {
   recalled?: number
   recall_expanded?: number
   items?: ContextItemRecord[]
+  history?: ContextOriginTally[]
   archived_count?: number
   turn?: number
   checkpoint_history_len?: number

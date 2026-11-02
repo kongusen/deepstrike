@@ -1,6 +1,6 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
-use super::item::{ItemEnd, ItemOrigin, ItemRecord};
+use super::item::{ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, OriginTally};
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
@@ -87,6 +87,8 @@ pub struct LifecycleMetrics {
     pub recall_expanded: u32,
     /// Every knowledge item of the run: the retired ones in the order they left, then the resident.
     pub items: Vec<ItemRecord>,
+    /// History items by origin: admitted, still in history, read back.
+    pub history: Vec<OriginTally>,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -173,6 +175,10 @@ pub struct ContextManager {
     /// Plan task 3.1 · dependency outputs by agent id, read in full with
     /// `read_result(call_id="dep:<agent_id>")`. Only previews are in the rendered context.
     pub dependency_bodies: std::collections::BTreeMap<String, String>,
+    /// Plan task 1.1b · the last item id handed to a history message.
+    pub(crate) last_item_id: ItemId,
+    /// History items admitted and read back, by origin (plan task 4.1).
+    pub(crate) history_tally: std::collections::BTreeMap<ItemOrigin, OriginTally>,
 }
 
 impl ContextManager {
@@ -223,6 +229,8 @@ impl ContextManager {
             recall_due: false,
             dependency_bodies: std::collections::BTreeMap::new(),
             cache_invalidated_tokens: 0,
+            last_item_id: 0,
+            history_tally: std::collections::BTreeMap::new(),
         }
     }
 
@@ -608,7 +616,38 @@ impl ContextManager {
                 }
             }
         }
-        self.partitions.history.push(msg, tokens);
+        self.last_item_id += 1;
+        let tag = ItemTag {
+            id: self.last_item_id,
+            origin: ItemOrigin::of_message(&msg),
+            injected_turn: self.partitions.knowledge.turn,
+        };
+        let tally = self.tally(tag.origin);
+        tally.items += 1;
+        tally.tokens += u64::from(tokens);
+        self.partitions.history.push_tagged(msg, tokens, tag);
+    }
+
+    fn tally(&mut self, origin: ItemOrigin) -> &mut OriginTally {
+        self.history_tally.entry(origin).or_insert(OriginTally {
+            origin,
+            items: 0,
+            tokens: 0,
+            resident_items: 0,
+            resident_tokens: 0,
+            read_back: 0,
+        })
+    }
+
+    /// The model asked `read_result` for `address`: a dependency output (`dep:<agent_id>`) or an
+    /// earlier tool result by call id. Either is an item it is reading back in full.
+    pub fn note_read_back(&mut self, address: &str) {
+        let origin = if address.starts_with("dep:") {
+            ItemOrigin::DependencyOutput
+        } else {
+            ItemOrigin::ToolResult
+        };
+        self.tally(origin).read_back += 1;
     }
 
     fn alloc_handle_id(&mut self) -> HandleId {
@@ -733,7 +772,33 @@ impl ContextManager {
         let (recalled, recall_expanded) = recalls.fold((0, 0), |(all, expanded), item| {
             (all + 1, expanded + u32::from(item.value.expanded))
         });
+        let mut history = self.history_tally.clone();
+        let partition = &self.partitions.history;
+        for index in 0..partition.messages.len() {
+            let tag = partition.tag(index);
+            if let Some(tally) = history.get_mut(&tag.origin) {
+                tally.resident_items += 1;
+                tally.resident_tokens += u64::from(partition.measured_tokens(index, &self.engine));
+            }
+        }
+        if !self.dependency_bodies.is_empty() {
+            let tally = history.entry(ItemOrigin::DependencyOutput).or_insert(OriginTally {
+                origin: ItemOrigin::DependencyOutput,
+                items: 0,
+                tokens: 0,
+                resident_items: 0,
+                resident_tokens: 0,
+                read_back: 0,
+            });
+            tally.items = self.dependency_bodies.len() as u32;
+            tally.tokens = self
+                .dependency_bodies
+                .values()
+                .map(|body| u64::from(self.engine.count(body)))
+                .sum();
+        }
         LifecycleMetrics {
+            history: history.into_values().collect(),
             knowledge_entries: knowledge.entries.len() as u32,
             knowledge_referenced: referenced,
             regret: knowledge.regret,
@@ -1389,6 +1454,57 @@ mod tests {
         assert_eq!((metrics.recalled, metrics.recall_expanded), (2, 1));
         assert_eq!(metrics.items[0].end, Some(ItemEnd::Expired));
         assert_eq!(metrics.items[0].origin, ItemOrigin::MemoryRecall);
+    }
+
+    #[test]
+    fn history_messages_are_items_whose_identity_survives_renewal() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_history(CoreMessage::user("question"), 5);
+        let mut call = CoreMessage::assistant("reading");
+        call.tool_calls.push(crate::types::message::ToolCall {
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
+        });
+        mgr.push_history(call, 5);
+        mgr.push_history(
+            CoreMessage::tool(vec![ContentPart::ToolResult {
+                call_id: "call-1".into(),
+                output: "body".into(),
+                is_error: false,
+                durable_content: None,
+            }]),
+            7,
+        );
+        let tags: Vec<_> = (0..3).map(|i| mgr.partitions.history.tag(i)).collect();
+        assert_eq!(tags.iter().map(|tag| tag.id).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            tags.iter().map(|tag| tag.origin).collect::<Vec<_>>(),
+            vec![ItemOrigin::User, ItemOrigin::Assistant, ItemOrigin::ToolResult]
+        );
+        mgr.note_read_back("call-1");
+        mgr.note_read_back("dep:wf-node0");
+
+        mgr.renew();
+        let carried: Vec<_> = (0..mgr.partitions.history.messages.len())
+            .map(|i| mgr.partitions.history.tag(i).id)
+            .collect();
+        assert!(carried.iter().all(|id| *id > 0), "renewal carries identity: {carried:?}");
+        mgr.push_history(CoreMessage::user("next"), 3);
+        let last = mgr.partitions.history.messages.len() - 1;
+        assert_eq!(mgr.partitions.history.tag(last).id, 4, "ids are never reused");
+
+        let history = mgr.lifecycle_metrics().history;
+        let tool = history.iter().find(|tally| tally.origin == ItemOrigin::ToolResult).unwrap();
+        assert_eq!((tool.items, tool.tokens, tool.read_back), (1, 7, 1));
+        let dependency = history
+            .iter()
+            .find(|tally| tally.origin == ItemOrigin::DependencyOutput)
+            .unwrap();
+        assert_eq!(dependency.read_back, 1);
+        let user = history.iter().find(|tally| tally.origin == ItemOrigin::User).unwrap();
+        assert_eq!(user.items, 2);
     }
 
     #[test]

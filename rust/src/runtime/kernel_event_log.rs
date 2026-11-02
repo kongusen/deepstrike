@@ -145,8 +145,10 @@ fn project(obs: &Value, turn: u32, opts: &ProjectionOptions) -> Option<Value> {
                 "recalled": or(obs, "recalled", 0.into()),
                 "recall_expanded": or(obs, "recall_expanded", 0.into()),
             });
-            if let Some(items) = obs.get("items").filter(|items| items.as_array().is_some_and(|a| !a.is_empty())) {
-                event["items"] = items.clone();
+            for field in ["items", "history"] {
+                if let Some(rows) = obs.get(field).filter(|rows| rows.as_array().is_some_and(|a| !a.is_empty())) {
+                    event[field] = rows.clone();
+                }
             }
             event
         }

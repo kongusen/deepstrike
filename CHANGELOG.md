@@ -13,6 +13,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `items`: one record per knowledge item with its origin, tokens, injection turn, reference count,
   whether it was expanded or came back after removal, and why it left (`evicted`, `expired`,
   `removed`; absent while resident).
+- `context_lifecycle_reported` also carries `history`: per origin (`user`, `assistant`,
+  `tool_result`, `dependency_output`, …), how many items entered history and their tokens, how many
+  were still there at the end, and how often the model read one back with `read_result`.
+- Every history message has a stable item id and origin, kept through compaction, renewal and
+  checkpoints (`history_items`). Messages restored from a 0.2.78 checkpoint have id 0.
 
 ### Changed
 

@@ -1,5 +1,5 @@
 use super::config::ContextConfig;
-use super::item::{ContextItem, ItemEnd, ItemOrigin, ItemRecord, Lease};
+use super::item::{ContextItem, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease};
 use super::measurement::TokenMeasurement;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
@@ -12,6 +12,9 @@ pub struct Partition {
     pub messages: Vec<CoreMessage>,
     /// Host-side measurements aligned with `messages`; not part of canonical message state.
     pub measurements: Vec<TokenMeasurement>,
+    /// Plan task 1.1b · each message's item identity, aligned with `messages`. A message pushed
+    /// without one reads as [`ItemTag::untracked`].
+    pub items: Vec<ItemTag>,
     pub token_count: u32,
 }
 
@@ -20,21 +23,49 @@ impl Partition {
         Self {
             messages: Vec::new(),
             measurements: Vec::new(),
+            items: Vec::new(),
             token_count: 0,
         }
     }
 
     pub fn push(&mut self, msg: CoreMessage, token_count: u32) {
+        let tag = ItemTag::untracked(&msg);
+        self.push_tagged(msg, token_count, tag);
+    }
+
+    pub fn push_tagged(&mut self, msg: CoreMessage, token_count: u32, tag: ItemTag) {
+        self.align_items();
         let measurement = TokenMeasurement::for_message(&msg, token_count);
         self.token_count += token_count;
         self.messages.push(msg);
         self.measurements.push(measurement);
+        self.items.push(tag);
     }
 
     pub fn clear(&mut self) {
         self.messages.clear();
         self.measurements.clear();
+        self.items.clear();
         self.token_count = 0;
+    }
+
+    /// The item identity of message `index`.
+    pub fn tag(&self, index: usize) -> ItemTag {
+        self.items.get(index).copied().unwrap_or_else(|| {
+            self.messages
+                .get(index)
+                .map(ItemTag::untracked)
+                .unwrap_or(ItemTag { id: 0, origin: ItemOrigin::User, injected_turn: 0 })
+        })
+    }
+
+    /// Pad `items` to `messages` (a message written straight into `messages` has no tag yet).
+    pub fn align_items(&mut self) {
+        while self.items.len() < self.messages.len() {
+            let tag = ItemTag::untracked(&self.messages[self.items.len()]);
+            self.items.push(tag);
+        }
+        self.items.truncate(self.messages.len());
     }
 
     pub fn measured_tokens(&self, index: usize, engine: &ContextTokenEngine) -> u32 {

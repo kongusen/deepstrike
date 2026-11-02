@@ -134,9 +134,10 @@ def _project_kernel_observation(
             "recalled": _get(obs, "recalled", 0),
             "recall_expanded": _get(obs, "recall_expanded", 0),
         }
-        items = _get(obs, "items", None)
-        if items:
-            event["items"] = list(items)
+        for field in ("items", "history"):
+            rows = _get(obs, field, None)
+            if rows:
+                event[field] = list(rows)
         return event
     if kind == "rollbacked":
         return {

@@ -22,6 +22,16 @@ export type RollbackReason =
   | { kind: "user_interrupt" }
   | { kind: "malformed_replay"; reason: string }
 
+/** History items of one origin in a `context_lifecycle_reported` event (plan task 4.1). */
+export interface ContextOriginTally {
+  origin: ContextItemRecord["origin"]
+  items: number
+  tokens: number
+  resident_items?: number
+  resident_tokens?: number
+  read_back?: number
+}
+
 /** One knowledge item's lifecycle in a `context_lifecycle_reported` event (plan task 4.1). */
 export interface ContextItemRecord {
   key?: string
@@ -95,6 +105,8 @@ export type SessionEvent =
       recall_expanded: number
       /** Every knowledge item of the run. Absent when the run had none. */
       items?: ContextItemRecord[]
+      /** History items by origin: admitted, still in history at the end, read back with `read_result`. */
+      history?: ContextOriginTally[]
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

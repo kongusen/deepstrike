@@ -547,6 +547,7 @@ fn apply_utility_plan(
                 message, tokens,
             ));
     }
+    partition.align_items();
     let pairing_was_valid = strict_tool_pairing_is_valid(&partition.messages);
     let archived_indices = plan
         .archived_ranges
@@ -558,10 +559,13 @@ fn apply_utility_plan(
     let mut retained = Vec::new();
     let old_messages = std::mem::take(&mut partition.messages);
     let old_measurements = std::mem::take(&mut partition.measurements);
+    let old_items = std::mem::take(&mut partition.items);
     let mut retained_measurements = Vec::new();
-    for (index, (message, measurement)) in old_messages
+    let mut retained_items = Vec::new();
+    for (index, ((message, measurement), tag)) in old_messages
         .into_iter()
         .zip(old_measurements.into_iter())
+        .zip(old_items.into_iter())
         .enumerate()
     {
         if archived_indices.contains(&index) {
@@ -570,10 +574,12 @@ fn apply_utility_plan(
         } else {
             retained.push(message);
             retained_measurements.push(measurement);
+            retained_items.push(tag);
         }
     }
     partition.messages = retained;
     partition.measurements = retained_measurements;
+    partition.items = retained_items;
     partition.token_count = plan.retained_tokens;
     debug_assert!(
         !pairing_was_valid || strict_tool_pairing_is_valid(&partition.messages),

@@ -1258,6 +1258,15 @@ fn restore_context_vm(
     ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;
     ctx.partitions.knowledge.retired = state.retired_items.clone();
     ctx.partitions.knowledge.turn = state.item_turn;
+    if state.history_items.len() == ctx.partitions.history.messages.len() {
+        ctx.partitions.history.items = state.history_items.clone();
+    }
+    ctx.last_item_id = state.last_item_id;
+    ctx.history_tally = state
+        .history_tally
+        .iter()
+        .map(|tally| (tally.origin, *tally))
+        .collect();
     ctx.recall_top_k = state.recall_top_k;
     ctx.recall_due = state.recall_due;
     ctx.dependency_bodies = state.dependency_bodies.clone();

@@ -9,13 +9,60 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
-use crate::types::message::CoreMessage;
+use crate::types::message::{CoreMessage, Role};
 
 /// Turns a recalled memory index line stays resident after it was recalled or last used.
 pub const RECALL_LEASE_TURNS: u32 = 8;
 
-/// Where an item came from. It decides the item's defaults ([`Self::defaults`]).
+/// An item's identity within one operation: allocated in arrival order, never reused, carried
+/// through compaction, renewal and checkpoints. `0` marks an item the kernel did not admit itself
+/// (a message restored from a checkpoint that predates item ids).
+pub type ItemId = u64;
+
+/// The identity a history message carries as an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemTag {
+    pub id: ItemId,
+    pub origin: ItemOrigin,
+    #[serde(default)]
+    pub injected_turn: u32,
+}
+
+impl ItemTag {
+    /// The tag of a message with no recorded identity: id `0`, origin from its role.
+    pub fn untracked(message: &CoreMessage) -> Self {
+        Self { id: 0, origin: ItemOrigin::of_message(message), injected_turn: 0 }
+    }
+}
+
+/// How many history items of one origin the run admitted, how many are still in history, and how
+/// often the model read one back with `read_result` (plan task 4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OriginTally {
+    pub origin: ItemOrigin,
+    pub items: u32,
+    pub tokens: u64,
+    /// Filled in the end-of-run report only.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub resident_items: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub resident_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub read_back: u32,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Where an item came from. It decides the item's defaults ([`Self::defaults`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemOrigin {
     /// Written by the kernel itself (the governance note on denied tools).
@@ -36,6 +83,16 @@ pub enum ItemOrigin {
 }
 
 impl ItemOrigin {
+    /// The origin of a history message, from its role.
+    pub fn of_message(message: &CoreMessage) -> Self {
+        match message.role {
+            Role::System => Self::System,
+            Role::User => Self::User,
+            Role::Assistant => Self::Assistant,
+            Role::Tool => Self::ToolResult,
+        }
+    }
+
     /// The origin of knowledge a host pushes under `key`: a `skill:` key is a skill body, anything
     /// else is reference material.
     pub fn for_host_key(key: Option<&str>) -> Self {

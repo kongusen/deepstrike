@@ -120,6 +120,7 @@ function projectKernelObservation(
         recalled: obs.recalled ?? 0,
         recall_expanded: obs.recall_expanded ?? 0,
         ...(obs.items && obs.items.length > 0 ? { items: obs.items } : {}),
+        ...(obs.history && obs.history.length > 0 ? { history: obs.history } : {}),
       }
     case "rollbacked":
       return {

@@ -34,7 +34,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
 use super::config::ResolvedOperationConfig;
-use crate::context::item::{ItemEnd, ItemOrigin, ItemRecord, Lease};
+use crate::context::item::{ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease, OriginTally};
 use super::effect::{Digest, KernelEffect, LaunchToken, wire_opaque_ref};
 use super::envelope::OperationLifecycle;
 use super::fault::{KernelFault, KernelFaultCode};
@@ -666,6 +666,16 @@ pub struct ContextVmState {
     /// The turn the item table counts leases against.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub item_turn: u32,
+    /// Plan task 1.1b · the item identity of each history message, aligned with the history
+    /// entries of `messages`. Absent in 0.2.78 checkpoints: those messages restore untracked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_items: Vec<ItemTag>,
+    /// The last item id handed out, so a restored kernel never reissues one.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub last_item_id: u64,
+    /// History items admitted and read back, by origin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_tally: Vec<OriginTally>,
     #[serde(default)]
     pub signals: Vec<String>,
     /// §5q-2 · the stored messages of the system and history partitions, in render order. **The**
@@ -2282,5 +2292,9 @@ mod tests {
 }
 
 fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }

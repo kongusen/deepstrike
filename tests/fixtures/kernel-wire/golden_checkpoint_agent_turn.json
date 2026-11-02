@@ -1,9 +1,9 @@
 {
-  "ack_token": "op-driver-1:checkpoint:3:sha256:78413e24a23a36c6d6ac31665c08ae9ed36d14b9eeba1da8108a190c50b3cf3b",
+  "ack_token": "op-driver-1:checkpoint:3:sha256:c936f974bf49d3c715dde4954e93724dfbd7af17124dc65334a8c17a56ae9c9d",
   "checkpoint": {
     "base_record_digest": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:78413e24a23a36c6d6ac31665c08ae9ed36d14b9eeba1da8108a190c50b3cf3b",
+    "checkpoint_digest": "sha256:c936f974bf49d3c715dde4954e93724dfbd7af17124dc65334a8c17a56ae9c9d",
     "covered_transaction_head_digest": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
     "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
     "logical_state": {
@@ -21,6 +21,23 @@
             "residency": "resident",
             "source": "call-1",
             "tokens": 4
+          }
+        ],
+        "history_items": [
+          {
+            "id": 1,
+            "injected_turn": 0,
+            "origin": "user"
+          },
+          {
+            "id": 2,
+            "injected_turn": 0,
+            "origin": "assistant"
+          },
+          {
+            "id": 3,
+            "injected_turn": 0,
+            "origin": "tool_result"
           }
         ],
         "history_len": 3,
@@ -50,6 +67,23 @@
             "tokens": 4
           }
         ],
+        "history_tally": [
+          {
+            "items": 1,
+            "origin": "tool_result",
+            "tokens": 4
+          },
+          {
+            "items": 1,
+            "origin": "user",
+            "tokens": 11
+          },
+          {
+            "items": 1,
+            "origin": "assistant",
+            "tokens": 1
+          }
+        ],
         "knowledge": [],
         "knowledge_budget_warned": false,
         "knowledge_reference_step": 3,
@@ -57,6 +91,7 @@
         "knowledge_wasted_tokens": 0,
         "last_activity_ms": "1700000002000",
         "last_compact_ms": null,
+        "last_item_id": 3,
         "messages": [
           {
             "body": {
@@ -718,13 +753,13 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:1d4865c8d5cc3799a9d33870fbe9ef78620e13c68ac5f854e151163346af0a03",
+    "state_digest": "sha256:2f6540ab7ac3899246d0bc548585d0acc1ac757d49b1f05797062f3f1d8dd43f",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
   },
   "covered_head": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
   "description": "A full-state logical checkpoint taken mid-turn (spec 12.1, 12.3). base == through == the durable head, so the bounded tail is empty and a restore replays nothing before the post-checkpoint records. The logical state is partitioned four ways and the header repeats none of it: the pending `call_provider` effect, the replay ledger and the terminal slot live in `transition`, the task table in `scheduler`, the handle table in `context_vm`, the live policy and the provider-tool causation in `syscall`.",
-  "state_digest": "sha256:1d4865c8d5cc3799a9d33870fbe9ef78620e13c68ac5f854e151163346af0a03",
+  "state_digest": "sha256:2f6540ab7ac3899246d0bc548585d0acc1ac757d49b1f05797062f3f1d8dd43f",
   "through_step_seq": "3"
 }

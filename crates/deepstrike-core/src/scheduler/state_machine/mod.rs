@@ -1831,6 +1831,7 @@ impl LoopStateMachine {
             recalled: metrics.recalled,
             recall_expanded: metrics.recall_expanded,
             items: metrics.items,
+            history: metrics.history,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
