@@ -1,6 +1,6 @@
 {
   "id": "kernel-projection.host-to-kernel.messageToKernelMessage",
-  "version": "0.2.77",
+  "version": "0.2.78",
   "protocol": {
     "family": "host-to-kernel",
     "direction": "project",

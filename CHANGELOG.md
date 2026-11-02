@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.78] - 2026-11-02
+
 ### Added
 
 - Added a durable file-backed memory candidate ledger for Node, Python, and Rust. It provides
@@ -62,7 +64,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A workflow node's child run holds its dependencies' outputs in its own kernel
   (`initial_context.dependencies`). When the brief clips an output, it says so and the model reads
   the whole output with `read_result(call_id="dep:<agent_id>")`, answered by the kernel without a
-  host effect. A new `dependencyMode: "handle"` shows only a 600-character preview of each output.
+  host effect. The default `dependencyMode: "handle"` shows only a 600-character preview of each
+  output, so a node's starting context no longer grows with its fan-in; `"full"` inlines each output
+  up to `maxTokens` as before.
   Only an output the brief clipped is sent in the spawn's `dependency_outputs`; an output the brief
   shows whole is not offered through `read_result`.
 - On turn 1 the `→ focus:` footer repeats only the goal's first paragraph, clipped to 240
@@ -77,8 +81,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   memory scope is set, not only when `pre_query_memory` is.
 - The kernel writes the dependency section of a workflow node's brief and sends it as
   `dependency_brief` with the spawn. Node, Python, WASM and Rust append it to the goal. The Rust
-  SDK previously sent no dependency outputs at all. A node's `context.dependencyMode` is `full`
-  (default), `reference` or `none`, and `context.maxTokens` caps each dependency. Before this
+  SDK previously sent no dependency outputs at all. A node's `context.dependencyMode` is `handle`
+  (default), `full`, `reference` or `none`, and `context.maxTokens` caps each dependency. Before this
   change, a policy on a node submitted at runtime was applied to the wrong node.
 - Sub-agents with the `plan` or `implement` role now default to `system_only` context inheritance,
   like `explore` and `verify`. A child starts from the system prompt and its brief. Pass
