@@ -429,6 +429,121 @@ all follow this rule.
     interface as Node. Replay keeps using `DynamicWorkflowReplayFact` as a recorded input (D1);
     byte equality across SDKs is not required.
 
+### Stage 7: the item graph (0.2.81)
+
+**Why.** Items already relate to each other in directed ways, but every relation hides in a
+position, a counter or a key convention instead of being stored as a first-class edge:
+
+| Relation (direction) | Represented today by | Gap |
+|---|---|---|
+| tool result → the call it answers (`answers`) | message positions (`units::unit_boundaries`) | compaction, rendering, renewal and provider summary coverage all rely on position to keep a transaction whole |
+| history item → the knowledge it references (`references{grade}`) | counters on the referenced item (`strong_refs` / `lexical_refs`) | which message referenced it is lost, so regret and waste cannot be attributed |
+| read → the item read back (`reads_back`: `read_result`, `memory(record_id)`) | a per-origin count | what was read back, and why, is lost |
+| provider_summary / compaction summary → the items it covers (`summarizes`) | covered items simply retire | a summary's sources cannot be traced or paged back |
+| a child run's inherited copy → the parent item (`inherited_from`); downstream → a dependency output (`depends_on`) | not recorded; the DAG lives only at the workflow level | data flow across runs is cut off from items |
+
+**Model.** Every item (history, knowledge, provider_summary) has an `ItemId`. An edge is
+`ItemEdge { from, to, relation, turn }` over a small fixed set of relations; this is not a general
+graph store. Constraints:
+- edges come only from recorded input (D1), so replay rebuilds the same graph;
+- edges are checkpointed and bounded: every edge whose ends are both present, plus the edges into
+  the latest `HISTORY_ITEM_DETAIL_CAP` retired items;
+- report first, change behavior later: edges take part in decisions only after the lab shows a
+  gain (the same lab-first order as 0.2.80).
+
+- [x] Task 7.0 (2026-11-02): `benchmark/context-lifecycle/knowledge-pressure.mjs`: the ledger
+  audit's two rules live only in memory, among ten distractors (several also about audits and
+  ledgers), with a 4% knowledge budget and a 7000-token window. Trials carry `oracle` counts (the
+  scenario knows which items are required): `required_dropped`, `required_unreferenced`,
+  `distractor_refs`, `distractor_resident_tokens`, reported and gated by the lab as
+  `oracle.<name>`. The 0.2.80 baseline (DeepSeek, 12 tasks, `results/knowledge.jsonl`): 9/12
+  correct, regret 0, waste_tokens 24, 0.67 read-backs; the required rules were never evicted and
+  always referenced; distractors were credited 33 references on average and 246 tokens of them were
+  still resident at the end. The finding: under this budget 0.2.80 does not lose required items;
+  the gap is the evidence. Lexical overlap counts distractors as used, so the kernel's own waste
+  (24) is far below the real idle residency (246). Task 7.3's target follows: lower
+  `oracle.distractor_refs` and `oracle.distractor_resident_tokens` while `required_dropped` stays 0
+  and success does not drop.
+- ~~Original task 7.0: benchmark first~~
+  - Acceptance: a new `knowledge-pressure` scenario: a tight knowledge budget, many irrelevant
+    entries and a few the answer needs (memory recall included), with the answer depending on the
+    needed ones; a baseline on 0.2.80 (success, regret, waste, read-backs). The ledger and fan-out
+    scenarios stay as regressions.
+  - Files: `benchmark/context-lifecycle/`
+
+- [x] Task 7.1 (2026-11-02): knowledge items share one id allocator with history (an older
+  checkpoint's slots take ids on restore, in slot order); new `context/graph.rs`, with the edge table
+  checkpointed (`item_edges`): every edge between resident items is kept, of the rest only the
+  latest 128. Recorded edges: `answers`, `references_strong` / `references_lexical`, `reads_back`
+  (the assistant item whose `read_result` / `memory(record_id)` call read an item back → that item; a memory search hit is not a read) and
+  `summarizes` (provider summary → each covered item). The lifecycle report gains `edges`,
+  `edges_omitted` and `waste_items`, and item records carry `id`; the four SDK projections and the
+  contract follow. Goldens change only in checkpoint / report fields and their digests. Where it
+  differs from the acceptance: the kernel's own compaction creates no summary item, so `summarizes`
+  comes from provider summaries only; and a regretted item is put back by a kernel recall, with no
+  reading item, so regret is located by the item record's `id` and `paged_in_after_evict` plus the
+  edges into it rather than by "a read-back edge".
+- ~~Original task 7.1: every item has an id; the edge table only reports~~
+  - Acceptance: knowledge items take an `ItemId` from the same allocator (checkpointed; an older
+    slot without one is assigned one on restore). The manager holds the edge table and records
+    `answers` (tool result → the assistant item holding the call), `references{strong|lexical}`
+    (history → knowledge, replacing bare counters), `reads_back` (`read_result` /
+    `memory(record_id)` → target) and `summarizes` (summary → covered item). The lifecycle report
+    gains capped `edges`; regret names the read-back edge that brought an evicted item back, and
+    waste lists knowledge with no incoming edge. Rendering and compaction do not change: goldens
+    change only in checkpoint and report fields.
+  - Files: `context/item.rs` (`ItemEdge`, `Relation`), new `context/graph.rs`,
+    `context/manager.rs`, `context/partitions.rs`, `runtime/kernel/wire/checkpoint.rs`; the
+    session-event registry and the four SDK projections
+
+- [x] Task 7.2 (decided against, 2026-11-02): `unit_boundaries` already pairs tool results with
+  calls by `call_id`, not by position, and it also keeps the user turn and the trailing answer in
+  the unit, which `answers` edges cannot express. Rebuilding units from edge components would add
+  no information and could not keep rendering byte-identical. `answers` edges stay in the report,
+  for attribution.
+- ~~Original task 7.2: transaction units come from `answers` edges~~
+  - Acceptance: compaction, the renderer, renewal, provider summary coverage and held history all
+    take "units that must not be split" from the connected components of `answers` edges;
+    position-based `unit_boundaries` is deleted (or kept only as the fallback for older
+    checkpoints).
+  - Verification: the random-transcript pairing property tests still pass; existing goldens render
+    byte for byte the same.
+
+- [x] Task 7.3 (2026-11-02): evidence counts by its source. Lexical overlap counts as use only in
+  the model's own words and the user's; tool output counts only when it names the item (key or
+  record id); a memory hit (the record's own text) never counts. A new `expands` edge (memory hit →
+  the recall it expands) carries the model's use of a hit's content one hop to the recall. An item
+  a resident history item strongly references or read back neither expires nor yields to the
+  budget. Results (DeepSeek, 12 tasks, against 0.2.80): the `knowledge-pressure` gate passes,
+  with distractor references down from 33 to 9.6, self-reported waste up from 24 to 156 (real idle
+  residency 233), no required rule dropped, and 9/12 → 10/12 correct; the fan-out full and handle
+  gates pass (12/12); ledger's first 12 scored 10/12 against 11/12 and failed the gate (both misses
+  arithmetic, with the rule resident and referenced throughout); with 12 more tasks on each side
+  it is 22/24 against 20/24 (one 0.2.80 run ended in an error) and the gate passes. Where it differs from the acceptance: the retention
+  score still uses reference counts (which now hold only counted evidence) rather than a separate
+  weighted sum of resident in-edges, and the one-hop propagation runs along `expands` edges.
+- ~~Original task 7.3: retention and eviction along edges~~
+  - Acceptance: an item's retention score adds its incoming edges from items still present (strong
+    weighs more than lexical, one hop only, integer weights, deterministic); knowledge-budget
+    eviction and recall lease expiry consult incoming edges — an entry a present item strongly
+    references is neither evicted nor expired.
+  - Verification: `deepstrike-lab gate` on `knowledge-pressure`: regret and waste no higher than
+    the 7.0 baseline, success not lower; ledger and fan-out do not regress.
+
+- [x] Task 7.4 (2026-11-02): a spawn's `inherited_knowledge` entries carry
+  `inherited_from { operation, item }`, `KnowledgeEntry` accepts the field, and all four SDKs pass it
+  to the child. The child records an `inherited_from` external edge, and
+  `read_result("dep:<agent>")` records a `depends_on` external edge (the reading assistant item →
+  the dependency agent). The lifecycle report gains `external_edges` and `parent_items_used` (the
+  parent items the child used). External edges are checkpointed (`item_external_edges`), the latest
+  128 kept. Also fixes Python's initial context dropping `pinned`.
+- ~~Original task 7.4: edges across runs (report only)~~
+  - Acceptance: inherited knowledge carries `inherited_from { operation, item }` and the child run
+    records the edge; dependency-output reads are recorded as `depends_on` / `reads_back`. A child
+    run's lifecycle report names which parent items it used.
+  - Files: `orchestration/workflow`, `runtime/kernel/wire/driver/continuation.rs`, the four SDKs'
+    `inherited_knowledge`
+
 ## Handoff (2026-11-02)
 
 Branch `feat/context-lifecycle-stage0`. Everything below is committed (`fda3aeb6` onward):
@@ -461,8 +576,9 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next: 0.2.78 and 0.2.79 are released. 0.2.80 is complete on branch `feat/0.2.80`, awaiting the
-version bump and PR.
+Next: 0.2.78–0.2.81 are released and stages 0–7 are done. Deferred: the model `RelevanceJudge`
+(another source of in-edge weight, compared on `knowledge-pressure`) and Anthropic reporting
+compaction facts.
 
 Setting up on another machine:
 
@@ -486,9 +602,15 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 
 | Release | Content | Status |
 |---------|---------|--------|
-| 0.2.78 | Merged into main (PR #4), from branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Merged into main |
-| 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Done on branch `feat/context-items-0.2.79`, awaiting release |
-| 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Done on branch `feat/0.2.80`, awaiting release (deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
+| 0.2.78 | Merged into main (PR #4), from branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Released |
+| 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Released (PR #5) |
+| 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
+| 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
+
+0.2.81 internal order: 7.0 → 7.1 → 7.2 → 7.3, with 7.4 interleavable with 7.2 / 7.3. 7.1 and 7.2
+leave rendering unchanged; only 7.3 changes decisions and must pass the lab gate first. If the model
+`RelevanceJudge` is built, it comes after 7.3 as another source of incoming-edge weight, compared on
+the same scenario.
 
 Order inside 0.2.80 (the lab comes before the changes it measures; otherwise a metric change cannot be
 attributed):
@@ -544,7 +666,7 @@ touches the related code.
 ```text
 stage0 ──► stage1 ──► stage2 ──► stage3 ──► stage6
               ├──► stage5
-              └──► stage4.2/4.3
+              └──► stage4.2/4.3 ──► stage7 (item graph)
 stage4.1 runs in parallel with stage1 and produces the baseline first
 ```
 
@@ -566,6 +688,9 @@ their dependencies.
 | Durable items wait for a boundary to be promoted and may arrive too late | an `urgent` switch with its cost recorded; watch regret |
 | In handle mode sub-agents do not page in on their own | better previews and an explicit hint in the brief; evaluate the default edge mode by regret and success rate |
 | Deleting NodeKind makes existing declarative WorkflowSpecs unrunnable | accept the break; the migration notes give rewrite examples, and loading an old spec errors and points at them |
+| The item graph makes checkpoints and reports larger | edges are bounded (both ends present, plus the latest retired batch), and report edges are capped |
+| Judging every history message against every knowledge item to build edges adds cost | reuse the 4.2 distinctive-term sets, cache them per item; the lab records kernel time per turn |
+| Propagating along edges amplifies one misjudged reference | one hop only, strong weighs more than lexical; 7.3 must pass the lab gate |
 
 ## Success metrics
 
@@ -577,3 +702,5 @@ their dependencies.
 - Changing one lifecycle policy touches one place in the kernel (a PR check item)
 - fan-out→synthesize: downstream initial tokens independent of fan-out width
 - With server compaction on, the kernel's estimate deviates from measured tokens by <10%
+- Item graph (0.2.81): on `knowledge-pressure`, regret and waste below the 0.2.80 baseline with
+  success not lower; every regret and every wasted item points at a specific edge in the report

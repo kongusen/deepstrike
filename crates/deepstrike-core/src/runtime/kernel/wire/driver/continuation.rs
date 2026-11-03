@@ -431,7 +431,7 @@ impl CanonicalOperationDriver {
                 serde_json::Value::Array(
                     inherited
                         .into_iter()
-                        .map(|(key, content, tokens, pinned)| {
+                        .map(|(key, content, tokens, pinned, item)| {
                             let mut entry = serde_json::Map::new();
                             entry.insert("content".into(), content.into());
                             if let Some(key) = key {
@@ -440,6 +440,16 @@ impl CanonicalOperationDriver {
                             entry.insert("tokens".into(), tokens.into());
                             if pinned {
                                 entry.insert("pinned".into(), true.into());
+                            }
+                            // Plan task 7.4 · which parent item the child's copy comes from.
+                            if item != 0 {
+                                entry.insert(
+                                    "inherited_from".into(),
+                                    serde_json::json!({
+                                        "operation": operation_id.as_str(),
+                                        "item": item,
+                                    }),
+                                );
                             }
                             serde_json::Value::Object(entry)
                         })

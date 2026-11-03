@@ -675,6 +675,14 @@ pub struct ContextVmState {
     /// The last item id handed out, so a restored kernel never reissues one.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub last_item_id: u64,
+    /// Plan task 7.1 · the item graph, and the edges pruning dropped from it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item_edges: Vec<crate::context::item::ItemEdge>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub item_edges_omitted: u32,
+    /// Plan task 7.4 · edges to items of other runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item_external_edges: Vec<crate::context::item::ExternalEdge>,
     /// History items admitted and read back, by origin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history_tally: Vec<OriginTally>,
@@ -933,6 +941,9 @@ pub struct SkillLeaseState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KnowledgeSlotState {
+    /// Plan task 7.1 · the item id. Absent (an older checkpoint) ⇒ allocated on restore.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub id: u64,
     /// `None` = an unkeyed append; keyed entries upsert.
     #[serde(default)]
     pub key: Option<String>,

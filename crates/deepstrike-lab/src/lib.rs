@@ -34,6 +34,12 @@ pub struct Trial {
     /// Every `context_lifecycle_reported` event of the task's runs (a workflow has one per node).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lifecycle: Vec<LifecycleReport>,
+    /// Ground truth only the scenario knows (which items the answer needed, which were noise),
+    /// as named counts. The kernel's own regret and waste rest on the evidence it gathered; these
+    /// do not, so a change to that evidence cannot grade itself. Read as `oracle.<name>`, lower is
+    /// better.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub oracle: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -146,6 +152,8 @@ pub struct Summary {
     /// Σ|estimated − observed| / Σ observed: the error weighted by request size, which is what
     /// compaction and renewal decisions feel (a small first request barely matters to them).
     pub estimate_error_weighted: Option<f64>,
+    /// Mean of each oracle count per trial, over the trials that report it.
+    pub oracle: BTreeMap<String, f64>,
 }
 
 impl Summary {
@@ -167,7 +175,7 @@ impl Summary {
             "estimate_error" => return self.estimate_error,
             "estimate_error_max" => return self.estimate_error_max,
             "estimate_error_weighted" => return self.estimate_error_weighted,
-            _ => return None,
+            name => return name.strip_prefix("oracle.").and_then(|key| self.oracle.get(key).copied()),
         })
     }
 }
@@ -235,6 +243,12 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
         .map(|e| (e.estimated as f64 - e.observed as f64).abs())
         .sum();
     let succeeded = trials.iter().filter(|trial| trial.success).count() as u64;
+    let mut oracle_sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+    for (key, value) in trials.iter().flat_map(|trial| trial.oracle.iter()) {
+        let (total, count) = oracle_sums.entry(key.clone()).or_default();
+        *total += value;
+        *count += 1.0;
+    }
     Summary {
         scenario: scenario.to_string(),
         variant: variant.to_string(),
@@ -262,6 +276,10 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
             .then(|| errors.iter().sum::<f64>() / errors.len() as f64),
         estimate_error_max: errors.iter().copied().reduce(f64::max),
         estimate_error_weighted: (observed_total > 0.0).then(|| error_total / observed_total),
+        oracle: oracle_sums
+            .into_iter()
+            .map(|(key, (total, count))| (key, total / count))
+            .collect(),
     }
 }
 
@@ -384,7 +402,16 @@ pub fn markdown(summaries: &[Summary], baseline: Option<&str>) -> String {
         });
         out.push_str(&trials_row);
         out.push('\n');
-        for metric in REPORT_METRICS {
+        let oracle_metrics: std::collections::BTreeSet<String> = columns
+            .iter()
+            .flat_map(|s| s.oracle.keys().map(|key| format!("oracle.{key}")))
+            .collect();
+        let metrics = REPORT_METRICS
+            .iter()
+            .map(|metric| metric.to_string())
+            .chain(oracle_metrics);
+        for metric in metrics {
+            let metric = metric.as_str();
             // A count that stayed zero everywhere says nothing; a rate that was measured does.
             let shown = |value: Option<f64>| match value {
                 Some(v) => v != 0.0 || is_ratio(metric),
@@ -457,6 +484,36 @@ mod tests {
             }],
             ..Trial::default()
         }
+    }
+
+    #[test]
+    fn oracle_counts_summarize_gate_and_report_by_name() {
+        let with_oracle = |variant: &str, task: &str, dropped: f64| Trial {
+            oracle: BTreeMap::from([("required_dropped".to_string(), dropped)]),
+            ..trial(variant, task, true, 0, 100)
+        };
+        let trials = parse_trials(
+            &[
+                with_oracle("base", "a", 1.0),
+                with_oracle("base", "b", 2.0),
+                with_oracle("cand", "a", 2.0),
+                with_oracle("cand", "b", 2.0),
+            ]
+            .iter()
+            .map(|trial| serde_json::to_string(trial).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        )
+        .unwrap();
+        let summaries = summarize(&trials);
+        assert_eq!(summaries[0].metric("oracle.required_dropped"), Some(1.5));
+        assert_eq!(summaries[0].metric("oracle.missing"), None);
+        let gate = Gate { no_worse: vec!["oracle.required_dropped".into()], ..Gate::default() };
+        let failures = gate.check(&summaries, "base", "cand");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].metric, "oracle.required_dropped");
+        let table = markdown(&summaries, Some("base"));
+        assert!(table.contains("| oracle.required_dropped | 1.50 | 2 | +33.3% |"), "{table}");
     }
 
     #[test]

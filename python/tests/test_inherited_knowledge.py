@@ -33,3 +33,36 @@ async def test_inherited_knowledge_renders_in_the_child():
     async for _ in runner.run(goal="write the summary", session_id="inherit"):
         pass
     assert "HOUSE_STYLE forbids bullet lists" in provider.seen
+
+
+class AnsweringProvider:
+    async def complete(self, context, tools, extensions=None):
+        raise NotImplementedError
+
+    async def stream(self, context, tools, extensions=None, state=None):
+        yield TextDelta(delta="Summary written in prose, as the HOUSE_STYLE forbids bullet lists.")
+
+
+@pytest.mark.asyncio
+async def test_the_child_reports_which_inherited_parent_items_it_used():
+    log = InMemorySessionLog()
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=AnsweringProvider(),
+        session_log=log,
+        execution_plane=LocalExecutionPlane(),
+        max_tokens=4096,
+        max_turns=2,
+        inherited_knowledge=[
+            {"content": "HOUSE_STYLE forbids bullet lists", "key": "style", "tokens": 6, "pinned": True,
+             "inherited_from": {"operation": "op-parent", "item": 4}},
+            {"content": "orchid storage layout notes", "key": "notes", "tokens": 5,
+             "inherited_from": {"operation": "op-parent", "item": 5}},
+        ],
+    ))
+    async for _ in runner.run(goal="write the summary", session_id="inherit-edges"):
+        pass
+    events = [entry.event if hasattr(entry, "event") else entry["event"] for entry in await log.read("inherit-edges")]
+    report = next(event for event in events if event["kind"] == "context_lifecycle_reported")
+    assert [(edge["relation"], edge["to"]["item"]) for edge in report["external_edges"]] == [
+        ("inherited_from", 4), ("inherited_from", 5)]
+    assert report["parent_items_used"] == [{"operation": "op-parent", "item": 4}]

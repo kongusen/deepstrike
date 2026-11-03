@@ -365,11 +365,38 @@ class ContextRenewedEvent(TypedDict):
 
 
 class ContextItemRecord(TypedDict, total=False):
+    id: int
     key: str
     origin: str
     tokens: int
     value: dict[str, Any]
     end: Literal["evicted", "expired", "removed", "compacted", "renewed"]
+
+
+# One directed edge of the item graph: ``from`` answers, references, reads back or summarizes
+# ``to``. ``from`` is a keyword, hence the functional form.
+ContextItemEdge = TypedDict("ContextItemEdge", {
+    "from": int,
+    "to": int,
+    "relation": Literal["answers", "references_strong", "references_lexical", "reads_back", "summarizes", "expands"],
+    "turn": int,
+})
+
+
+class ContextExternalItem(TypedDict, total=False):
+    """An item of another run: a parent operation's item, or a workflow dependency's output."""
+    operation: str
+    agent: str
+    item: int
+
+
+# An edge from an item of this run to an item of another run.
+ContextExternalEdge = TypedDict("ContextExternalEdge", {
+    "from": int,
+    "to": ContextExternalItem,
+    "relation": Literal["inherited_from", "depends_on"],
+    "turn": int,
+})
 
 
 class ContextHistoryItemRecord(TypedDict, total=False):
@@ -395,6 +422,11 @@ class _ContextLifecycleItems(TypedDict, total=False):
     history: list[ContextOriginTally]
     history_items: list[ContextHistoryItemRecord]
     history_items_omitted: int
+    edges: list[ContextItemEdge]
+    edges_omitted: int
+    waste_items: list[int]
+    external_edges: list[ContextExternalEdge]
+    parent_items_used: list[ContextExternalItem]
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

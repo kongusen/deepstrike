@@ -1226,6 +1226,7 @@ fn restore_context_vm(
             slot.pinned,
             slot.injected_turn,
         );
+        entry.id = slot.id;
         if let Some(lease) = slot.lease {
             entry.lease = lease;
         }
@@ -1268,6 +1269,18 @@ fn restore_context_vm(
     ctx.partitions.knowledge.retired = state.retired_items.clone();
     ctx.partitions.knowledge.turn = state.item_turn;
     ctx.last_item_id = state.last_item_id;
+    // A knowledge slot from a checkpoint older than item ids takes the next ones, in slot order.
+    for index in 0..ctx.partitions.knowledge.entries.len() {
+        if ctx.partitions.knowledge.entries[index].id == 0 {
+            let id = ctx.alloc_item_id();
+            ctx.partitions.knowledge.entries[index].id = id;
+        }
+    }
+    ctx.graph.restore(
+        state.item_edges.clone(),
+        state.item_external_edges.clone(),
+        state.item_edges_omitted,
+    );
     ctx.retired_history = state.retired_history.iter().copied().collect();
     for entry in &state.item_replays {
         ctx.keep_item_replay(entry.item, entry.replay.clone());
@@ -2392,17 +2405,20 @@ fn seed_knowledge(engine: &mut LoopStateMachine, entries: &[super::root::Knowled
     if entries.is_empty() {
         return;
     }
-    let entries: Vec<crate::mm::PageInEntry> = entries
-        .iter()
-        .map(|entry| crate::mm::PageInEntry {
+    for entry in entries {
+        engine.apply_page_in(&[crate::mm::PageInEntry {
             content: entry.content.clone(),
             tokens: entry.tokens,
             source: None,
             key: entry.key.clone(),
             pinned: entry.pinned,
-        })
-        .collect();
-    engine.apply_page_in(&entries);
+        }]);
+        if let Some(source) = &entry.inherited_from {
+            engine
+                .ctx
+                .note_inherited_from(entry.key.as_deref(), source.clone());
+        }
+    }
 }
 
 /// §7.7 · project one logical signal onto the runtime signal the in-kernel router works with.

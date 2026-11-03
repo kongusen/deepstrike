@@ -1533,6 +1533,7 @@ export class CanonicalRunnerRuntime {
               ...(event.key ? { key: event.key } : {}),
               ...(event.tokens !== undefined ? { tokens: Number(event.tokens) } : {}),
               ...(event.pinned ? { pinned: true } : {}),
+              ...(event.inherited_from ? { inherited_from: event.inherited_from } : {}),
             }],
           },
         }
@@ -1870,6 +1871,7 @@ export class CanonicalRunnerRuntime {
           ...(event.key ? { key: event.key } : {}),
           ...(event.tokens !== undefined ? { tokens: Number(event.tokens) } : {}),
           ...(event.pinned ? { pinned: true } : {}),
+          ...(event.inherited_from ? { inherited_from: event.inherited_from } : {}),
         })
         return true
       case "set_available_skills":

@@ -209,6 +209,48 @@ ContextItem {
 - ~~原任务 6.3：补齐 SDK~~
   - 验收：宿主程序 API 按 Python、Rust、WASM 的顺序移植，接口与 Node 一致。重放沿用 `DynamicWorkflowReplayFact` 作为已记录输入（D1），不需要跨 SDK 字节一致。
 
+### 阶段 7：item 图（0.2.81）
+
+**为什么。** item 之间本来就有带方向的关系，现在都藏在位置、计数或 key 约定里，没有作为一等的边存下来：
+
+| 关系（方向） | 现在的表示 | 缺口 |
+|---|---|---|
+| tool result → 它回答的 call（`answers`） | 按消息位置推断（`units::unit_boundaries`） | 压缩、渲染、renewal、provider 摘要覆盖都靠位置保证"不拆交易" |
+| history item → 它引用的 knowledge（`references{grade}`） | 只在被引用的条目上计数（`strong_refs` / `lexical_refs`） | 不知道是哪条消息引用了它，regret / waste 无法归因 |
+| 读取 → 被读回的 item（`reads_back`：`read_result`、`memory(record_id)`） | 按 origin 汇总的次数 | 读回了谁、为什么读回都丢了 |
+| provider_summary / 压缩摘要 → 被覆盖的 items（`summarizes`） | 被覆盖的 item 直接退场 | 摘要的来源不可查，无法按需取回 |
+| 子 run 继承的副本 → 父 item（`inherited_from`）；下游 → 依赖输出（`depends_on`） | 没有记录；DAG 只在工作流层 | 跨 run 的数据流与 item 断开 |
+
+**模型。** 每个 item（history、knowledge、provider_summary）都有 `ItemId`。边是 `ItemEdge { from, to, relation, turn }`，relation 是一个固定的小集合，不做通用图库。约束：
+- 边只由已记录的输入产生（D1），重放得到同一张图；
+- 边进 checkpoint，数量有上限：两端都在场的边全部保留，指向已退场 item 的边只保留最近 `HISTORY_ITEM_DETAIL_CAP` 条；
+- 先只上报不改行为，lab 证明有收益后再让边参与决策（与 0.2.80 相同的 lab 先行顺序）。
+
+- [x] 任务 7.0（2026-11-02）：`benchmark/context-lifecycle/knowledge-pressure.mjs`：账本审计的两条规则只在 memory 里，另有十条干扰记录（多条同样涉及 audit / ledger），knowledge 预算 4%，窗口 7000。trial 带 `oracle`（场景知道哪些条目是必需的）：`required_dropped`、`required_unreferenced`、`distractor_refs`、`distractor_resident_tokens`，lab 以 `oracle.<name>` 报告和 gate。0.2.80 基线（DeepSeek，12 题，`results/knowledge.jsonl`）：正确 9/12，regret 0，waste_tokens 24，读回 0.67；必需规则从未被淘汰、始终被引用；干扰项平均被记 33 次引用，结束时仍有 246 token 在场。结论：在这个预算下 0.2.80 不丢必需条目，缺口在证据：词法重叠把干扰项也算作"用过"，kernel 自报的 waste（24）远低于真实的无用驻留（246）。7.3 的目标据此改为降低 `oracle.distractor_refs` / `oracle.distractor_resident_tokens`，同时 `required_dropped` 保持 0、正确率不降。
+- ~~原任务 7.0：基准先行~~
+  - 验收：新增 `knowledge-pressure` 场景：knowledge 预算偏紧，种入大量无关条目和少量答题必需的条目（含 memory recall），答案依赖必需条目；在 0.2.80 上跑出基线（成功率、regret、waste、读回次数）。现有 ledger / fan-out 场景照常作为回归。
+  - 文件：`benchmark/context-lifecycle/`
+
+- [x] 任务 7.1（2026-11-02）：knowledge item 与 history 共用一个 id 分配器（旧 checkpoint 的 slot 恢复时按顺序补发）；新增 `context/graph.rs`，边表进 checkpoint（`item_edges`），两端在场的边全留、其余只留最近 128 条。记录的边：`answers`、`references_strong` / `references_lexical`、`reads_back`（发出 `read_result` / `memory(record_id)` 调用的 assistant item；memory 搜索命中不算读回 → 被读回的 item）、`summarizes`（provider 摘要 → 被覆盖的 item）。lifecycle report 增加 `edges`、`edges_omitted`、`waste_items`，item 记录带 `id`；四端 SDK 投影与 contract 已同步。golden 只有 checkpoint / report 字段和摘要值变化。与验收的出入：kernel 自己的压缩不产生摘要 item，所以 `summarizes` 只来自 provider 摘要；regret 的条目由 kernel recall 重新放入，没有发起读取的 item，因此 regret 用 item 记录的 `id` + `paged_in_after_evict` 加上指向它的边来定位，而不是"某条读回边"。
+- ~~原任务 7.1：所有 item 都有 id，边表只上报~~
+  - 验收：knowledge item 从同一个分配器取 `ItemId`（checkpoint 携带，缺 id 的旧 slot 恢复时补发）。manager 持有边表，产生 `answers`（tool result → call 所在的 assistant item）、`references{strong|lexical}`（history → knowledge，取代只计数）、`reads_back`（`read_result` / `memory(record_id)` → 目标）、`summarizes`（摘要 → 被覆盖的 item）。lifecycle report 增加有上限的 `edges`，regret 记录是哪条读回边把被淘汰的 item 拉回来的，waste 列出没有任何入边的 knowledge。渲染与压缩不变：golden 只在 checkpoint / report 字段上变化。
+  - 文件：`context/item.rs`（`ItemEdge`、`Relation`）、新增 `context/graph.rs`、`context/manager.rs`、`context/partitions.rs`、`runtime/kernel/wire/checkpoint.rs`；session event 注册表与四端 SDK 投影
+
+- [x] 任务 7.2（2026-11-02 决定不做）：`unit_boundaries` 本来就按 `call_id` 配对 tool result 与 call，不依赖位置；它还把用户消息和收尾回答并入同一单元，这是 `answers` 边表达不了的。改成按边的连通分量既拿不到新信息，又做不到渲染逐字节不变。`answers` 边保留在报告里，供归因使用。
+- ~~原任务 7.2：交易单元来自 `answers` 边~~
+  - 验收：压缩、renderer、renewal、provider 摘要覆盖范围、held history 都按 `answers` 边的连通分量确定"不可拆开的单元"，删除按位置推断的 `unit_boundaries`（或降为恢复旧 checkpoint 的兜底）。
+  - 验证：随机 transcript 的配对性质测试照常通过；现有 golden 的渲染结果逐字节不变。
+
+- [x] 任务 7.3（2026-11-02）：证据按来源计：词法重叠只在模型自己的话和用户消息里算"用过"，工具输出只有点名（key / record id）才算，memory 命中（记录原文）不算；新增 `expands` 边（memory 命中 → 它展开的 recall），模型用到命中内容时，使用沿这条边传一跳记到 recall 上；被在场 history item 强引用或读回的条目不过期、不被预算淘汰。结果（DeepSeek，12 题，对 0.2.80）：`knowledge-pressure` gate 通过，干扰项引用 33 → 9.6，自报 waste 24 → 156（真实无用驻留 233），必需规则 0 丢失，正确 9/12 → 10/12；fan-out full / handle gate 通过（12/12）；ledger 首批 10/12 对 11/12 未过 gate（两题均为算术错误，规则全程在场且被引用），两边各加测 12 题后 22/24 对 20/24（0.2.80 有一题运行报错），gate 通过。与验收的出入：保留分数仍用引用计数（计数已只含有效证据），没有另算"在场入边加权"；只传一跳的传播落在 `expands` 边上。
+- ~~原任务 7.3：沿边传播的保留与淘汰~~
+  - 验收：item 的保留分数加上来自仍在场 item 的入边（强引用权重高于词法，只传一跳，整数权重，确定性）；knowledge 预算淘汰与 recall lease 到期都看入边——仍被在场 item 强引用的条目不淘汰、不过期。
+  - 验证：`deepstrike-lab gate` 在 `knowledge-pressure` 上 regret、waste 不高于 7.0 基线，成功率不降；ledger / fan-out 不回退。
+
+- [x] 任务 7.4（2026-11-02）：派生的 `inherited_knowledge` 条目带 `inherited_from { operation, item }`，`KnowledgeEntry` 接受这个字段，四端 SDK 原样传给子 run；子 run 记 `inherited_from` 外部边，`read_result("dep:<agent>")` 记 `depends_on` 外部边（读取方的 assistant item → 依赖 agent）。lifecycle report 增加 `external_edges` 与 `parent_items_used`（子 run 用到的父 item）。外部边进 checkpoint（`item_external_edges`），最多保留最近 128 条。顺带修复 Python 起始上下文丢 `pinned`。
+- ~~原任务 7.4：跨 run 的边（只上报）~~
+  - 验收：继承下发的 knowledge 带 `inherited_from { operation, item }`，子 run 的 item 记录这条边；依赖输出读回记为 `depends_on` / `reads_back`。子 run 的 lifecycle report 能指出父 run 的哪些 item 被用到。
+  - 文件：`orchestration/workflow`、`runtime/kernel/wire/driver/continuation.rs`、四端 SDK 的 `inherited_knowledge`
+
 ## 交接（2026-11-02）
 
 分支 `feat/context-lifecycle-stage0`。以下各项都已提交（`fda3aeb6` 及之后）：
@@ -223,7 +265,7 @@ ContextItem {
 - ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
 - `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
 
-下一步：0.2.78、0.2.79 已发布。0.2.80 在分支 `feat/0.2.80` 上完成，待升版本号、开 PR。
+下一步：0.2.78–0.2.81 已发布，阶段 0–7 完成。暂缓项：模型版 `RelevanceJudge`（作为入边权重的另一来源，用 `knowledge-pressure` 对比）、Anthropic 上报 compaction fact。
 
 换设备时的环境准备：
 
@@ -239,9 +281,12 @@ ContextItem {
 
 | 版本 | 内容 | 状态 |
 |------|------|------|
-| 0.2.78 | 已合入 main（PR #4）；原分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1、6.1；1.1a 与 1.1b 的 item 身份部分；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 已合入 main |
-| 0.2.79 | 1.1 收尾：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 已完成，分支 `feat/context-items-0.2.79`，待发布 |
-| 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已完成，分支 `feat/0.2.80`，待发布（暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
+| 0.2.78 | 已发布（PR #4）；原分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1、6.1；1.1a 与 1.1b 的 item 身份部分；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 已发布 |
+| 0.2.79 | 1.1 收尾：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 已发布（PR #5） |
+| 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
+| 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
+
+0.2.81 内部顺序：7.0 → 7.1 → 7.2 → 7.3，7.4 可与 7.2 / 7.3 穿插。7.1 与 7.2 不改变渲染结果，只有 7.3 改变决策，必须先过 lab gate。模型版 `RelevanceJudge` 若做，放在 7.3 之后，作为入边权重的另一来源，用同一个场景对比。
 
 0.2.80 内部顺序（lab 先于被衡量的改动，否则分不清指标变化来自哪一项）：
 
@@ -280,7 +325,7 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 ```text
 阶段0 ──► 阶段1 ──► 阶段2 ──► 阶段3 ──► 阶段6
              ├──► 阶段5
-             └──► 阶段4.2/4.3
+             └──► 阶段4.2/4.3 ──► 阶段7（item 图）
 阶段4.1 与阶段1 并行，最先产出基线
 ```
 
@@ -300,6 +345,9 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 | durable item 延迟到 boundary 才提升，可能来得太晚 | `urgent` 开关并记录代价；用 regret 观察 |
 | handle 模式下子 agent 不主动 page-in | 提升 preview 质量、在 brief 中显式提示；用 regret 和成功率评估默认 edge mode |
 | 删除 NodeKind 会让现有声明式 WorkflowSpec 无法运行 | 接受这个破坏；迁移文档提供改写示例，加载旧 spec 时报错并指向文档 |
+| item 图让 checkpoint 和报告变大 | 边数量设上限（两端在场 + 最近退场的一批），报告里的边有上限 |
+| 每条 history 消息都要对全部 knowledge 判断引用，建边增加开销 | 沿用 4.2 的特征词集合，按 item 缓存词集；lab 记录每轮 kernel 耗时 |
+| 沿边传播放大了一次误判的引用 | 只传一跳、强引用权重高于词法；7.3 必须过 lab gate |
 
 ## 成功指标
 
@@ -308,3 +356,4 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 - 改一条生命周期策略只需改 kernel 一处（作为 PR 检查项）
 - fan-out→synthesize：下游初始 token 与 fan-out 宽度无关
 - 开启 server compaction 时，kernel 估算与实测 token 偏差 <10%
+- item 图（0.2.81）：`knowledge-pressure` 场景的 regret 与 waste 低于 0.2.80 基线，成功率不降；每个 regret 和 waste 都能在报告里指到具体的边

@@ -1834,6 +1834,11 @@ impl LoopStateMachine {
             history: metrics.history,
             history_items: metrics.history_items,
             history_items_omitted: metrics.history_items_omitted,
+            edges: metrics.edges,
+            edges_omitted: metrics.edges_omitted,
+            waste_items: metrics.waste_items,
+            external_edges: metrics.external_edges,
+            parent_items_used: metrics.parent_items_used,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,

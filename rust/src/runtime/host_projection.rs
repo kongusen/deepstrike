@@ -24,6 +24,9 @@ pub struct InheritedKnowledge {
     pub tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Plan task 7.4 · the parent run's item this is a copy of; reported as an `inherited_from` edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_from: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

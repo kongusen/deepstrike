@@ -77,6 +77,7 @@
           "recall_expanded": 1,
           "items": [
             {
+              "id": 1,
               "key": "memory:rec-1",
               "origin": "memory_recall",
               "tokens": 18,
@@ -91,7 +92,17 @@
             { "id": 2, "origin": "tool_result", "tokens": 600, "injected_turn": 1, "fidelity": "excerpt", "end": "compacted" },
             { "id": 5, "origin": "tool_result", "tokens": 300, "injected_turn": 3 }
           ],
-          "history_items_omitted": 1
+          "history_items_omitted": 1,
+          "edges": [
+            { "from": 5, "to": 4, "relation": "answers", "turn": 3 },
+            { "from": 4, "to": 1, "relation": "references_strong", "turn": 3 }
+          ],
+          "edges_omitted": 2,
+          "waste_items": [3],
+          "external_edges": [
+            { "from": 1, "to": { "operation": "op-parent", "item": 6 }, "relation": "inherited_from", "turn": 0 }
+          ],
+          "parent_items_used": [{ "operation": "op-parent", "item": 6 }]
         }
       },
       {
@@ -486,6 +497,7 @@
           "recall_expanded": 1,
           "items": [
             {
+              "id": 1,
               "key": "memory:rec-1",
               "origin": "memory_recall",
               "tokens": 18,
@@ -500,7 +512,17 @@
             { "id": 2, "origin": "tool_result", "tokens": 600, "injected_turn": 1, "fidelity": "excerpt", "end": "compacted" },
             { "id": 5, "origin": "tool_result", "tokens": 300, "injected_turn": 3 }
           ],
-          "history_items_omitted": 1
+          "history_items_omitted": 1,
+          "edges": [
+            { "from": 5, "to": 4, "relation": "answers", "turn": 3 },
+            { "from": 4, "to": 1, "relation": "references_strong", "turn": 3 }
+          ],
+          "edges_omitted": 2,
+          "waste_items": [3],
+          "external_edges": [
+            { "from": 1, "to": { "operation": "op-parent", "item": 6 }, "relation": "inherited_from", "turn": 0 }
+          ],
+          "parent_items_used": [{ "operation": "op-parent", "item": 6 }]
         },
         "rollbacked_turn_zero": {
           "kind": "rollbacked",

@@ -256,6 +256,19 @@ pub enum SessionEvent {
         history_items: Vec<crate::context::item::HistoryItemRecord>,
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
         history_items_omitted: u32,
+        /// The item graph: resident edges, then the latest edges touching a retired item.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        edges: Vec<crate::context::item::ItemEdge>,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        edges_omitted: u32,
+        /// Knowledge items nothing referenced or read back.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        waste_items: Vec<crate::context::item::ItemId>,
+        /// Plan task 7.4 · edges to items of other runs, and the parent items this run used.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        external_edges: Vec<crate::context::item::ExternalEdge>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        parent_items_used: Vec<crate::context::item::ExternalItem>,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

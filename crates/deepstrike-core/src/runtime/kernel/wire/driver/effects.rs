@@ -209,6 +209,13 @@ impl CanonicalOperationDriver {
                         ));
                         continue;
                     }
+                    // Plan task 7.1 · the model fetched a record the kernel recalled. A search hit
+                    // is not a read: a search returns its top hits whether or not they are used.
+                    if query.record_id.is_some() {
+                        self.engine_mut()?
+                            .ctx
+                            .note_memory_read(recall.record_ref.as_str());
+                    }
                     // §22.13 · the host answers with records, never with authority: the recall is
                     // rendered into history as content the model reads, and nothing about it
                     // rewrites this operation's binding, trust or provenance.

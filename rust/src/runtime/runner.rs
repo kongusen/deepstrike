@@ -1301,6 +1301,9 @@ impl RuntimeRunner {
                     if entry.pinned {
                         event["pinned"] = serde_json::Value::Bool(true);
                     }
+                    if let Some(source) = &entry.inherited_from {
+                        event["inherited_from"] = source.clone();
+                    }
                     kernel_apply(&kernel, &mut pending_observations, event).await?;
                 }
                 for mem in &self.opts.initial_memory {

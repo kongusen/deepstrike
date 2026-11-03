@@ -304,6 +304,7 @@
         "recall_expanded": 1,
         "items": [
           {
+            "id": 1,
             "key": "memory:rec-1",
             "origin": "memory_recall",
             "tokens": 18,
@@ -315,6 +316,7 @@
             }
           },
           {
+            "id": 2,
             "key": "memory:rec-2",
             "origin": "memory_recall",
             "tokens": 16,
@@ -365,7 +367,56 @@
             "injected_turn": 4
           }
         ],
-        "history_items_omitted": 2
+        "history_items_omitted": 2,
+        "edges": [
+          {
+            "from": 7,
+            "to": 6,
+            "relation": "answers",
+            "turn": 3
+          },
+          {
+            "from": 6,
+            "to": 1,
+            "relation": "references_strong",
+            "turn": 3
+          },
+          {
+            "from": 8,
+            "to": 7,
+            "relation": "reads_back",
+            "turn": 4
+          }
+        ],
+        "edges_omitted": 1,
+        "waste_items": [
+          2
+        ],
+        "external_edges": [
+          {
+            "from": 1,
+            "to": {
+              "operation": "op-parent",
+              "item": 4
+            },
+            "relation": "inherited_from",
+            "turn": 0
+          },
+          {
+            "from": 8,
+            "to": {
+              "agent": "wf-node0"
+            },
+            "relation": "depends_on",
+            "turn": 4
+          }
+        ],
+        "parent_items_used": [
+          {
+            "operation": "op-parent",
+            "item": 4
+          }
+        ]
       },
       "suspended": {
         "kind": "suspended",
@@ -786,10 +837,15 @@
             "waste_tokens"
           ],
           "optional": [
+            "edges",
+            "edges_omitted",
+            "external_edges",
             "history",
             "history_items",
             "history_items_omitted",
-            "items"
+            "items",
+            "parent_items_used",
+            "waste_items"
           ],
           "sdks": [
             "node",
