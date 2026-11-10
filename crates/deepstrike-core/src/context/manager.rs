@@ -2163,7 +2163,15 @@ impl ContextManager {
                 .all()
                 .iter()
                 .any(|h| !h.residency.occupies_context());
-        if !any_evicted && !self.cache_ledger.read_result_offered {
+        // Plan task 8.3 · offered from the first tool result on, while the prefix is still small:
+        // the toolset heads the cached prefix, so a tool that first appears when a result is
+        // evicted late in a long run breaks the whole cache at its largest. Once offered it stays.
+        let any_tool_result = self
+            .handles
+            .all()
+            .iter()
+            .any(|h| matches!(h.kind, HandleKind::ToolResult));
+        if !any_evicted && !any_tool_result && !self.cache_ledger.read_result_offered {
             return None;
         }
         Some(ToolSchema {
@@ -2342,12 +2350,12 @@ mod tests {
         assert_eq!(collapsed(&warm), 3);
     }
 
-    /// Plan task 8.3 · once offered, `read_result` stays in the toolset.
+    /// Plan task 8.3 · `read_result` is offered from the first tool result on and stays.
     #[test]
     fn read_result_stays_offered_once_offered() {
         let mut mgr = ContextManager::new(100_000);
         mgr.push_history(CoreMessage::user("go"), 5);
-        assert!(mgr.read_result_tool_schema().is_none(), "nothing evicted, nothing offered");
+        assert!(mgr.read_result_tool_schema().is_none(), "no tool result yet, nothing offered");
         let offered = vec![ToolSchema {
             name: CompactString::new(READ_RESULT_TOOL_NAME),
             description: String::new(),
@@ -2355,10 +2363,15 @@ mod tests {
         }];
         mgr.note_request_sent(&mgr.render(), &offered, 1);
         assert!(mgr.read_result_tool_schema().is_some(), "the toolset does not shrink back");
+
+        // Offered from the first tool result on, before anything is evicted.
+        let mut fresh = ContextManager::new(100_000);
+        fresh.push_history(tool_result_msg("c1", "page body"), 5);
+        assert!(fresh.read_result_tool_schema().is_some());
     }
 
-    /// Plan task 8.0 · the ledger attributes real render changes: a compaction and a changed
-    /// toolset; and (plan task 8.3) old narration no longer breaks the prefix between boundaries.
+    /// Plan task 8.0 · the ledger attributes real render changes: old narration leaving the
+    /// protected window, a compaction, and a changed toolset.
     #[test]
     fn the_cache_ledger_attributes_render_breaks() {
         use crate::context::cache_ledger::BreakCause;
@@ -2392,9 +2405,10 @@ mod tests {
         step(&mut mgr, 2);
         assert_eq!(mgr.note_request_sent(&mgr.render(), &toolset, 2), None, "an append keeps the prefix");
         step(&mut mgr, 3);
-        // Step 1's narration has left the protected window, but no compaction boundary has frozen
-        // it yet (plan task 8.3): it stays verbatim, and the prefix holds.
-        assert_eq!(mgr.note_request_sent(&mgr.render(), &toolset, 3), None, "narration waits for a boundary");
+        // Step 1's narration has left the protected window and renders as the stub now.
+        let found = mgr.note_request_sent(&mgr.render(), &toolset, 3).expect("narration breaks");
+        assert_eq!(found.cause, BreakCause::Narration);
+        assert!(found.kept_tokens > 0 && found.lost_tokens > 0);
 
         step(&mut mgr, 4);
         mgr.cache_ledger.note_cause(BreakCause::of_compaction(PressureAction::AutoCompact));
@@ -2408,7 +2422,7 @@ mod tests {
         assert_eq!((found.cause, found.kept_tokens), (BreakCause::Toolset, 0));
 
         let metrics = mgr.lifecycle_metrics();
-        assert_eq!(metrics.prefix_breaks.len(), 2);
+        assert_eq!(metrics.prefix_breaks.len(), 3);
         assert_eq!(
             metrics.cache_loss_tokens,
             metrics.prefix_breaks.iter().map(|b| u64::from(b.lost_tokens)).sum::<u64>(),
