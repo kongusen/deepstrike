@@ -18,40 +18,51 @@ function turn(index: number, narration: string, final = false, reasoning = true)
 }
 
 // The kernel collapses an old turn's narration to a stub at render time; the reasoning streamed
-// with that turn must still be found and replayed, or DeepSeek's replay check fails the run. Since
-// plan task 8.3 narration collapses only behind a compaction boundary, so the run is long enough,
-// and its tool results large enough, for the window to compact.
+// with that turn must still be found and replayed, or DeepSeek's replay check fails the run.
 test("a narrated tool turn keeps its reasoning after the kernel collapses the narration", async () => {
   const provider = deepseek({ apiKey: "k", model: "deepseek-flash" })
-  const TURNS = 16
-  const narrated = (i: number) => i >= 3 && i <= 8
   const turns = [
-    ...Array.from({ length: TURNS }, (_, i) =>
-      turn(i, narrated(i) ? `Step ${i}: let me probe the next value so I can see what it returns.` : "")),
-    turn(TURNS, "done", true),
+    turn(0, "Let me start by probing the first value so I can see what it returns."),
+    ...Array.from({ length: 4 }, (_, i) => turn(i + 1, "")),
+    turn(5, "done", true),
   ]
-  const collapsed: Array<{ call: string; reasoning: unknown }> = []
+  const replayed: Array<{ content: string; reasoning: unknown }> = []
   let call = 0
   ;(provider as any).client = {
     chat: { completions: { create: async (params: { messages: Array<Record<string, unknown>> }) => {
-      for (const message of params.messages) {
-        if (message.role === "assistant" && String(message.content).startsWith("[earlier narration collapsed")) {
-          const calls = message.tool_calls as Array<{ id: string }> | undefined
-          collapsed.push({ call: calls?.[0]?.id ?? "", reasoning: message.reasoning_content })
-        }
-      }
+      const first = params.messages.find(message => message.role === "assistant")
+      if (first) replayed.push({ content: String(first.content), reasoning: first.reasoning_content })
       const chunks = turns[call++]
       return (async function* () { yield* chunks })()
     } } },
   }
-  const probe = tool("probe", "probe", { type: "object", properties: { n: { type: "number" } } }, async () => "value ".repeat(600))
-  const agent = createAgent({
-    name: "a", model: "deepseek-flash", tools: [probe], maxTokens: 12_000,
-    runtimeBinding: { providerFor: () => provider },
-  })
+  const probe = tool("probe", "probe", { type: "object", properties: { n: { type: "number" } } }, async () => "ok")
+  const agent = createAgent({ name: "a", model: "deepseek-flash", tools: [probe], runtimeBinding: { providerFor: () => provider } })
 
-  await expect(agent.run("probe many times")).resolves.toMatchObject({ status: "completed" })
+  await expect(agent.run("probe five times")).resolves.toMatchObject({ status: "completed" })
+  const collapsed = replayed.filter(entry => entry.content.startsWith("[earlier narration collapsed"))
   expect(collapsed.length).toBeGreaterThan(0)
-  // Each collapsed turn replays the reasoning streamed with that very turn.
-  expect(collapsed.every(entry => entry.reasoning === `thinking ${entry.call.replace("call_", "")}`)).toBe(true)
+  expect(collapsed.every(entry => entry.reasoning === "thinking 0")).toBe(true)
+})
+
+// DeepSeek sometimes answers a tool-call turn without any reasoning. Thinking mode requires the
+// field on every replayed tool-call turn and accepts it empty, so the turn replays it empty.
+test("a tool turn the model answered without reasoning replays empty reasoning", async () => {
+  const provider = deepseek({ apiKey: "k", model: "deepseek-flash" })
+  const turns = [turn(0, "Checking.", false, false), turn(1, "done", true)]
+  const replayed: unknown[] = []
+  let call = 0
+  ;(provider as any).client = {
+    chat: { completions: { create: async (params: { messages: Array<Record<string, unknown>> }) => {
+      const first = params.messages.find(message => message.role === "assistant")
+      if (first) replayed.push(first.reasoning_content)
+      const chunks = turns[call++]
+      return (async function* () { yield* chunks })()
+    } } },
+  }
+  const probe = tool("probe", "probe", { type: "object", properties: { n: { type: "number" } } }, async () => "ok")
+  const agent = createAgent({ name: "a", model: "deepseek-flash", tools: [probe], runtimeBinding: { providerFor: () => provider } })
+
+  await expect(agent.run("probe once")).resolves.toMatchObject({ status: "completed" })
+  expect(replayed).toEqual([""])
 })

@@ -291,12 +291,22 @@ ContextItem {
   - 验证：用现有三份 results 重算，0.2.79 → 0.2.81 的 ledger 在 `weighted_cost` 上应显示回退（上表的未命中输入 +19%）。
   - 文件：`crates/deepstrike-lab/src/lib.rs`、`main.rs`
 
-- [ ] 任务 8.2：长任务基准 `long-horizon`
+- [x] 任务 8.2（2026-11-11）：`long-horizon.mjs`：事故调查任务。评分规则只写在开头读的 `brief.md` 里（要数的错误码、要跳过的请求 id、只在最后用到的倍数和值班徽章号），之后读 40 个各约 3.5k token 的日志，窗口 100k。`--dry` 不调模型、只打印题目事实，`--rescore` 从已记录的答案重算 oracle，`--concurrency` 并行。基线（DeepSeek，30 题，8.3 之前的代码）：正确 12/30，平均 40 次调用、170 万输入 token、压缩 5.6 次；kernel 自报缓存损失与实测偏差 4.6%；按原因 micro 164k、collapse 133k、narration 78k、toolset 9k。与验收的出入：
+    - `early_fact_lost` 30 题全是 0：brief 被压缩掉后，模型会重读（平均 1.47 次）。可以重新读取的事实总能找回来，所以加长任务也让它不为 0。真正丢的是模型自己算出的中间计数：答错的题都保留了 brief 的公式（答案减去徽章号能被倍数整除），30 题里有 11 题少计。为此新增 oracle：`formula_broken`（答案不符合 brief 的公式）、`count_error`、`undercount`。
+    - 模型常在一次调用里并行读多个文件，所以单题调用数为 15–40，不是每题至少 40 轮；压缩照样发生（每题 2–17 次）。
+    - 渲染器的预算外丢弃（`budget_drop`）在所有场景的实测中都没有出现，8.3 不处理这一项。
   - 验收：新增 `benchmark/context-lifecycle/long-horizon.mjs`：窗口 ≥ 100k、每题 ≥ 40 轮，脚本化的工具环境返回大量输出（多账户账本或代码库排查）。答案依赖前 10 轮里出现、之后不再重复的事实，因此必然经过压缩或 renewal。oracle：`early_fact_lost`（必需事实在答题时既不在可见上下文中、也没有被读回）、`compactions`、`renewals`。在 0.2.81 上跑出基线，每个变体至少 30 题。现有三个场景照常作为回归。
   - 验证：基线运行中至少触发一次 auto 或 renewal；`early_fact_lost` 有非零基线，否则加长任务直到有。
   - 文件：`benchmark/context-lifecycle/`
 
-- [ ] 任务 8.3：缓存感知的压缩
+- [ ] 任务 8.3（2026-11-11，三个变体均未通过 gate，未合入；候选保留在分支 `exp/8.3c`）。同一基线（`0.2.82-8.0` / `0.2.82-baseline`，每个场景 30 题）下的实测：
+    - 修正计划里的公式：原文两边都乘了 (1 − 折扣)，这个因子互相约掉。正确的账是：收益 = 释放 token × 摊销调用数 × 读取折扣（被释放的 token 原本只按缓存价计费），代价 = 断点后 token × (1 − 折扣)。按默认值，中段压缩几乎永远不划算。
+    - 8.3（轻量层成本闸门 + 叙述只在边界折叠 + 批量折叠工具结果 + `read_result` 一旦暴露不撤）：ledger 通过（成本 −39%，正确 23/30 → 27/30），knowledge-pressure 样本功效不足（均值有利、区间跨 0），long-horizon 成本 +20%，30 题里 6 题跑到轮数上限。闸门推迟轻量层后，运行会一路涨到硬性层，而硬性层会归档整轮对话，不是就地截短旧工具结果。模型因此丢掉自己的累计计数，重读文件和 brief（重读 1.47 → 3.23 次）。成本账只算了缓存，没算信息损失。
+    - 8.3b（去掉闸门）：long-horizon 成本 −0.7%、正确 8/30（不显著），仍有 5 题跑到轮数上限。toolset 损失从 8.8k 升到 22.9k：批量折叠推迟了第一次换出，`read_result` 在前缀最大时才第一次出现。
+    - 跑到轮数上限的那些运行，结尾都在把 DeepSeek 的工具调用标记当作普通文本输出。旧叙述保留原文直到边界，这类泄漏的标记就会在上下文里停留多轮。两个变体合计 60 题里 11 题跑到上限，基线 30 题里只有 1 题。
+    - 8.3c（恢复每轮折叠叙述，`read_result` 从第一个工具结果起就提供并保持）：实测时 provider 账户余额耗尽，ledger 16/30、long-horizon 10/30 以 `402 Insufficient Balance` 中断，数据无效，移到 `results/partial-8.3c.jsonl`。
+    - 结论：本版本默认渲染行为回到 8.0；代码见 `exp/8.3c`（`c8240078`）。下次实测从 8.3c 开始，long-horizon 与 ledger 各 30 题。
+    - 已排除的方向：轻量层的成本闸门（以信息损失换缓存）、叙述只在边界折叠（循环风险）。
   - 验收：压缩与渲染投影都先算账再执行：一个会产生 prefix 断点的动作，只有在“释放的 token × 摊销调用数 × (1 − 缓存读取折扣)”大于“断点之后的 token × (1 − 缓存读取折扣)”时才执行。`ContextPolicy` 增加 `cache_read_discount_ppm`（默认 100_000）和 `amortize_calls`（默认 8）；窗口硬上限优先于此规则，超出上限时照常压缩。具体改动：
     - 叙述折叠不再在每轮渲染时逐个执行，改为在 boundary 或压缩时批量执行（修 Q13）；
     - 预算外丢弃最旧单元时，一次丢到 `target_after_compress`，而不是每轮丢一个；
@@ -304,7 +314,11 @@ ContextItem {
   - 验证：`deepstrike-lab gate` 在 ledger、knowledge-pressure、long-horizon 上，`weighted_cost` 下降、正确率不降（8.1 的配对规则）；fan-out 不回退。golden 会变化，需要重新 bless 并在 MIGRATION 中说明。
   - 文件：`context/compression.rs`、`context/renderer.rs`、`context/pressure.rs`、`context/policy.rs`、`context/config.rs`
 
-- [ ] 任务 8.4：模型摘要作为 effect（取决于 8.2 的数据）
+- [x] 任务 8.4（2026-11-11，按前置条件不做）：long-horizon 四个变体共 120 题（其中 8.3c 只有部分有效）：
+    - `early_fact_lost` 只出现过 5 次：8.3b 1 次，8.3c 4 次（8.3c 数据无效）；基线和 8.3 都是 0。brief 被压缩掉后，模型会重读（平均 1.2–3.2 次）。
+    - 答错的主要原因是计数偏差，而且与压缩不相关：基线中答对的题平均压缩 6.1 次，少计的题只有 3.7 次；少计在只有 2 次压缩、4 个归档条目的运行里也会出现。
+    - `RuleSummarizer` 按关键词分槽，确实留不住“到目前为止共 7 个”这样的累计计数；但数据显示这不是失败的主因，模型摘要换不来正确率。
+    - 前置条件不成立，此任务不做。若以后的场景显示失败集中在被摘要覆盖的范围内，再按原验收实施。
   - 前置条件：long-horizon 基线中，`early_fact_lost` 主要发生在 `RuleSummarizer` 摘要覆盖的范围内。否则此任务不做，并记录数据。
   - 验收：auto 压缩时，kernel 发出 `summarize` effect（输入为要归档的 item 范围，带 token 上限），宿主调用模型，摘要作为已记录的 fact 回到 kernel（D1，重放得到同一张图），写成一个 `summary` item，带 `summarizes` 边指向被覆盖的 item。effect 失败或超时时退回 `RuleSummarizer`。`summarizes` 边从此也来自 kernel 自己的压缩，被覆盖的原文可以沿这条边读回。
   - 验证：long-horizon 上 `early_fact_lost` 下降、正确率不降，`weighted_cost`（含摘要调用本身）不升。
@@ -346,7 +360,7 @@ ContextItem {
 | 0.2.79 | 1.1 收尾：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 已发布（PR #5） |
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
-| 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 计划中 |
+| 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入（`exp/8.3c` 待实测）；8.4 按前置条件不做 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 

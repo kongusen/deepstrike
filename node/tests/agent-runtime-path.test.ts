@@ -28,9 +28,7 @@ describe("public Agent runtime path", () => {
 
     const result = await agent.run("look up a fact")
 
-    // Plan task 8.3: `read_result` is offered from the first tool result on, while the cached
-    // prefix is still small, so it never joins the toolset late in a long run.
-    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["lookup"], ["lookup", "read_result"]])
+    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["lookup"], ["lookup"]])
     expect(calls).toBe(1)
     expect(result).toMatchObject({ status: "completed", output: "found" })
   })
@@ -155,8 +153,7 @@ describe("public Agent runtime path", () => {
         expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", name: "mcp_echo", content: "mcp-result", isError: false }))
       }
       expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name).sort())).toEqual(
-        // Each run's second request follows a tool result, so it offers `read_result` (plan task 8.3).
-        Array.from({ length: 4 }, (_, request) => request % 2 ? ["local", "mcp_echo", "read_result"] : ["local", "mcp_echo"]),
+        Array.from({ length: 4 }, () => ["local", "mcp_echo"]),
       )
     } finally {
       await agent.close()

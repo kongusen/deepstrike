@@ -638,7 +638,24 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
     regression on `weighted_cost` (uncached input +19% in the table above).
   - Files: `crates/deepstrike-lab/src/lib.rs`, `main.rs`
 
-- [ ] Task 8.2: the `long-horizon` benchmark
+- [x] Task 8.2 (2026-11-11): `long-horizon.mjs`, an incident investigation. The scoring rules live
+  only in `brief.md`, read first (the error code to count, request ids to skip, and a multiplier
+  and on-call badge number needed only at the end); then 40 logs of about 3.5k tokens each against a
+  100k window. `--dry` prints the task facts without a model, `--rescore` recomputes oracles from
+  recorded answers, `--concurrency` runs tasks in parallel. Baseline (DeepSeek, 30 tasks, code before
+  8.3): 12/30 correct, 40 calls, 1.7M input tokens and 5.6 compactions per task on average; kernel
+  cache loss within 4.6% of measured; by cause micro 164k, collapse 133k, narration 78k, toolset
+  9k. Differences from the acceptance:
+    - `early_fact_lost` is 0 in all 30 runs: when compaction takes the brief, the model reads it
+      again (1.47 times a task). A fact that can be re-read is always recovered, so lengthening the
+      task cannot make it non-zero. What runs lose is their own tallies: every wrong answer keeps
+      the brief's formula (answer minus badge divides by the multiplier), and 11 of 30 undercount.
+      New oracles: `formula_broken` (the answer does not have the brief's form), `count_error`,
+      `undercount`.
+    - The model often reads several files in one call, so a task takes 15–40 calls rather than 40+
+      turns; compaction still happens (2–17 times a task).
+    - The renderer's over-budget drop (`budget_drop`) appeared in no measured run in any scenario,
+      so 8.3 leaves it alone.
   - Acceptance: new `benchmark/context-lifecycle/long-horizon.mjs`: a window of at least 100k and
     at least 40 turns per task, with a scripted tool environment that returns large outputs (a
     multi-account ledger or a repository investigation). The answer depends on facts that appear in
@@ -650,7 +667,34 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
     `early_fact_lost` has a non-zero baseline — otherwise lengthen the task until it does.
   - Files: `benchmark/context-lifecycle/`
 
-- [ ] Task 8.3: cache-aware compaction
+- [ ] Task 8.3 (2026-11-11; none of three variants passed the gate; not merged, candidate kept on
+  branch `exp/8.3c`). Measured against the same baselines (`0.2.82-8.0` / `0.2.82-baseline`, 30
+  tasks per scenario):
+    - The plan's formula was wrong: it multiplied both sides by (1 − discount), which cancels. The
+      right account: the saving is freed tokens × amortized calls × the read discount (freed tokens
+      were only ever billed at the cached price), and the cost is tokens after the break ×
+      (1 − discount). At the defaults a mid-history rewrite almost never pays.
+    - 8.3 (light-tier cost gate + narration collapse only at boundaries + batched tool-result
+      collapse + sticky `read_result`): ledger passes (cost −39%, success 23/30 → 27/30);
+      knowledge-pressure lacks power (favorable means, intervals across 0); long-horizon cost
+      +20%, and 6 of 30 runs hit the turn limit. Deferring the light tiers lets the run climb to
+      the hard tier, which archives whole turns instead of excerpting old tool results in place, so
+      the model loses its own tallies and re-reads files and the brief (1.47 → 3.23 times). The
+      cost account priced the cache and not the information.
+    - 8.3b (gate removed): long-horizon cost −0.7%, success 8/30 (not significant), still 5 of 30
+      at the turn limit. Toolset loss rose 8.8k → 22.9k: batching delayed the first eviction, so
+      `read_result` first appeared when the prefix was largest.
+    - The turn-limited runs end writing DeepSeek's tool-call markup as plain text; keeping old
+      narration verbatim until a boundary leaves such leaked text in view for many turns. 11 of 60
+      runs across the two variants hit the limit, against 1 of 30 in the baseline.
+    - 8.3c (narration collapses per turn again; `read_result` offered from the first tool result on
+      and kept): the provider account ran out of balance during the runs, and 16 of 30 ledger and
+      10 of 30 long-horizon runs ended in `402 Insufficient Balance`. The data is invalid and moved
+      to `results/partial-8.3c.jsonl`.
+    - Outcome: this release keeps 8.0's rendering by default; the code is on `exp/8.3c`
+      (`c8240078`). The next measurement starts from 8.3c, 30 tasks each on long-horizon and ledger.
+    - Ruled out: a cost gate on the light tiers (it trades information for cache), and narration
+      collapse only at boundaries (loop risk).
   - Acceptance: compaction and render-time projections do the arithmetic before acting: an action
     that creates a prefix break runs only if "tokens freed × amortized calls × (1 − cache read
     discount)" exceeds "tokens after the break × (1 − cache read discount)". `ContextPolicy` gains
@@ -668,7 +712,18 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
   - Files: `context/compression.rs`, `context/renderer.rs`, `context/pressure.rs`,
     `context/policy.rs`, `context/config.rs`
 
-- [ ] Task 8.4: model summaries as an effect (depends on 8.2 data)
+- [x] Task 8.4 (2026-11-11; not done, precondition not met): long-horizon, four variants, 120 runs
+  (8.3c only partly valid):
+    - `early_fact_lost` fired 5 times in all: once in 8.3b and 4 times in 8.3c (whose data is
+      invalid); it is 0 in the baseline and in 8.3. When compaction takes the brief, the model reads
+      it again (1.2–3.2 times a task).
+    - Wrong answers are mostly miscounts, and they do not follow compaction: correct baseline runs
+      averaged 6.1 compactions, undercounting ones 3.7; undercounts occur with 2 compactions and 4
+      archived items.
+    - `RuleSummarizer` is keyword-slotted and does drop running tallies such as "7 so far", but
+      the data says that is not what fails runs, so a model summary would not buy accuracy.
+    - The precondition does not hold, so the task is not done. If a later scenario shows failures
+      concentrated in summarized ranges, implement it per the original acceptance.
   - Precondition: in the long-horizon baseline, `early_fact_lost` happens mostly inside ranges
     covered by `RuleSummarizer` summaries. Otherwise skip this task and record the data.
   - Acceptance: on auto compaction the kernel emits a `summarize` effect (the item range to
@@ -748,7 +803,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Released (PR #5) |
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
-| 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | Planned |
+| 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate and is not merged (`exp/8.3c` awaits measurement); 8.4 not done, precondition not met |
 
 0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
 rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that

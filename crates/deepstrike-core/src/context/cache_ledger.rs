@@ -175,10 +175,6 @@ pub struct CacheLedger {
     /// break, but part of what a provider counts as uncached.
     #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
     pub tail_tokens: u64,
-    /// Plan task 8.3 · `read_result` has been offered to the model; it stays in the toolset from
-    /// then on, so the toolset (the head of the prefix) does not change again when residency does.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub read_result_offered: bool,
 }
 
 impl CacheLedger {

@@ -1,7 +1,7 @@
 {
   "description": "One whole agent turn cycle on the canonical wire (spec 7.9 · Task 12): configure → atomic agent start → provider result carrying a tool call → tool results → final provider answer → agent terminal. Every step after the start is a single `ResolveEffect` input, and each one publishes exactly the next effect the loop is waiting on — until the last, whose disposition is the terminal itself and which publishes nothing.",
   "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
-  "head_digest": "sha256:0f3270a780a1d3b8b252a193eb03b0b6ff02b7430085c4cb53a0f4eef4f76d88",
+  "head_digest": "sha256:bbd044496fa10b9dc0afc1fa34fefceff5918cef8d0f30696839dd49045d3dfa",
   "links": [
     {
       "envelope": {
@@ -354,8 +354,8 @@
         "input_id": "in-results",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:ee0e33e24fbc61591e256bdf83d397083be20e628520a0bf6a912bc118aff743",
-        "record_digest": "sha256:a215b904f6d170e1e59f69ddaa0cebf2729c77e0ec78126714d161836bf4e23b",
-        "step_digest": "sha256:b5297aaf56cc2e428b983cb8c7879e1daeda9d396c48e8b820145c6e70c45e30",
+        "record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
+        "step_digest": "sha256:e2491404277fa09bc9525e4f2aa7933c9b4e333830bdd811374ad2ed1da26e9e",
         "step_seq": "3"
       },
       "step": {
@@ -365,7 +365,7 @@
               "causation_input_id": "in-results",
               "effect": {
                 "context": {
-                  "estimated_tokens": 434,
+                  "estimated_tokens": 291,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                     "role": "user"
@@ -435,29 +435,6 @@
                   },
                   {
                     "name": "search"
-                  },
-                  {
-                    "description": "Re-read the full content of a tool result that was truncated to save context (marked '[Output truncated: … call the read_result tool …]'), or of a dependency output (call_id \"dep:<agent_id>\"). Pass that call_id; use offset/max_bytes to page through large content.",
-                    "name": "read_result",
-                    "parameters": {
-                      "properties": {
-                        "call_id": {
-                          "type": "string"
-                        },
-                        "max_bytes": {
-                          "description": "Max bytes to return (default 4000).",
-                          "type": "integer"
-                        },
-                        "offset": {
-                          "description": "Byte offset to start from (default 0).",
-                          "type": "integer"
-                        }
-                      },
-                      "required": [
-                        "call_id"
-                      ],
-                      "type": "object"
-                    }
                   },
                   {
                     "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
@@ -538,9 +515,9 @@
         "input_digest": "sha256:2775633498351ebb9a99cc2b6dffb425012a04201368f71633f5bd6dde9e9028",
         "input_id": "in-answer",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:a215b904f6d170e1e59f69ddaa0cebf2729c77e0ec78126714d161836bf4e23b",
-        "record_digest": "sha256:0f3270a780a1d3b8b252a193eb03b0b6ff02b7430085c4cb53a0f4eef4f76d88",
-        "step_digest": "sha256:d0c5d665b0111af1b6a085cbe8b8577bc4fcac0d54bb175c0d50dbafa85c8735",
+        "previous_record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
+        "record_digest": "sha256:bbd044496fa10b9dc0afc1fa34fefceff5918cef8d0f30696839dd49045d3dfa",
+        "step_digest": "sha256:fd7b7bb9afaf01b8a521b52789666a2526bcd21c9d372265196259eb9a760364",
         "step_seq": "4"
       },
       "step": {
@@ -569,7 +546,7 @@
         },
         "observations": [
           {
-            "cache_loss_tokens": 260,
+            "cache_loss_tokens": 0,
             "cache_tail_tokens": 24,
             "edges": [
               {
@@ -631,14 +608,6 @@
             "kind": "lifecycle_report",
             "knowledge_entries": 0,
             "knowledge_referenced": 0,
-            "prefix_breaks": [
-              {
-                "cause": "toolset",
-                "kept_tokens": 0,
-                "lost_tokens": 260,
-                "turn": 1
-              }
-            ],
             "recall_expanded": 0,
             "recalled": 0,
             "regret": 0,

@@ -1,7 +1,7 @@
 {
   "description": "The §7.10 external-payload arc (Task 13): configure → agent start → a provider turn calling one host tool → an **external** tool result → the model's `read_result` page-in → the loaded body. Read the records: the persisted body appears in exactly one place on this whole chain — the `payload_loaded` outcome the host sent when the kernel asked for it. It is in no effect the kernel published and in no accepted input the kernel did not ask for, which is what §25.10 means by \"large bodies do not enter the journal\". What the kernel holds instead is the reference: an opaque `payload_ref` it never interprets, a digest it checks the restored body against, and a bounded preview that is the only part to occupy context.",
   "genesis_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
-  "head_digest": "sha256:d7e2874d91c72c798422b4f90ca857048273905fa5a3f3a8041b15ddb943698b",
+  "head_digest": "sha256:16bfdb29fabeced42dbd52a2e3ea07e565b4c1dbd5dd9e53ae286900440fe2d6",
   "links": [
     {
       "envelope": {
@@ -619,8 +619,8 @@
         "input_id": "in-loaded",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:293cfe93af8e94d01c1ff5651cde5773ff4342a52f0812f613455577110bb876",
-        "record_digest": "sha256:d7e2874d91c72c798422b4f90ca857048273905fa5a3f3a8041b15ddb943698b",
-        "step_digest": "sha256:2c6029772ac5ecce979baddca378e72b59533b90b2c0b4cd14e1fab104508638",
+        "record_digest": "sha256:16bfdb29fabeced42dbd52a2e3ea07e565b4c1dbd5dd9e53ae286900440fe2d6",
+        "step_digest": "sha256:2acf1b5b917128419da98750094c25b8f01584976c027247f45835f137fea2fc",
         "step_seq": "5"
       },
       "step": {
@@ -630,7 +630,7 @@
               "causation_input_id": "in-loaded",
               "effect": {
                 "context": {
-                  "estimated_tokens": 482,
+                  "estimated_tokens": 339,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                     "role": "user"
@@ -725,29 +725,6 @@
                   },
                   {
                     "name": "search"
-                  },
-                  {
-                    "description": "Re-read the full content of a tool result that was truncated to save context (marked '[Output truncated: … call the read_result tool …]'), or of a dependency output (call_id \"dep:<agent_id>\"). Pass that call_id; use offset/max_bytes to page through large content.",
-                    "name": "read_result",
-                    "parameters": {
-                      "properties": {
-                        "call_id": {
-                          "type": "string"
-                        },
-                        "max_bytes": {
-                          "description": "Max bytes to return (default 4000).",
-                          "type": "integer"
-                        },
-                        "offset": {
-                          "description": "Byte offset to start from (default 0).",
-                          "type": "integer"
-                        }
-                      },
-                      "required": [
-                        "call_id"
-                      ],
-                      "type": "object"
-                    }
                   },
                   {
                     "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",

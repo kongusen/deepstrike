@@ -398,31 +398,6 @@ impl ContextManager {
             .filter(|h| matches!(h.kind, HandleKind::ToolResult))
             .count();
         let cutoff = total.saturating_sub(keep);
-        // Plan task 8.3 · collapsing rewrites each result in place, breaking the cached prefix at
-        // the earliest one. Decide for the whole batch: collapse every candidate if what they free
-        // pays for what the break re-sends, or if pressure is at the hard tier; otherwise wait and
-        // let the batch grow.
-        let candidates: Vec<(u32, ItemId)> = self
-            .handles
-            .all()
-            .iter()
-            .filter(|h| matches!(h.kind, HandleKind::ToolResult))
-            .take(cutoff)
-            .filter(|h| matches!(h.residency, Residency::Resident))
-            .map(|h| (h.tokens, h.item))
-            .collect();
-        if candidates.is_empty() {
-            return;
-        }
-        let freed: u32 = candidates.iter().map(|(tokens, _)| *tokens).sum();
-        let earliest = candidates
-            .iter()
-            .filter_map(|(_, item)| self.history_position(*item))
-            .min();
-        let lost = earliest.map_or(0, |index| self.cached_tokens_from(index));
-        if self.rho() < self.config.auto_threshold && !self.rewrite_pays(freed, lost) {
-            return;
-        }
         for (i, handle) in self.handles.tool_result_handles_mut().enumerate() {
             // Only fold the reversible Resident → Collapsed axis; never clobber a handle that has
             // been externalized or paged out, and never reverse an existing collapse mid-generation.
@@ -689,33 +664,6 @@ impl ContextManager {
             }
             other => other,
         }
-    }
-
-    /// Plan task 8.3 · whether a rewrite that frees `freed` tokens and re-sends `lost` cached
-    /// tokens pays for itself. The freed tokens sat in the cached prefix, so each later request
-    /// saves only their cached price (`cache_read_discount`), over `amortize_calls` requests; the
-    /// break re-sends `lost` tokens once at full price instead of cached.
-    pub fn rewrite_pays(&self, freed: u32, lost: u32) -> bool {
-        let discount = self.config.cache_read_discount.clamp(0.0, 1.0);
-        f64::from(freed) * f64::from(self.config.amortize_calls) * discount
-            >= f64::from(lost) * (1.0 - discount)
-    }
-
-    /// Tokens the last request held cached from history position `index` on: what a rewrite
-    /// there would re-send. 0 before any request was sent.
-    pub fn cached_tokens_from(&self, index: usize) -> u32 {
-        if self.cache_ledger.sent.is_none() {
-            return 0;
-        }
-        (index..self.partitions.history.len())
-            .map(|i| self.partitions.history.measured_tokens(i, &self.engine))
-            .sum()
-    }
-
-    fn history_position(&self, item: ItemId) -> Option<usize> {
-        (item != 0)
-            .then(|| self.partitions.history.tags().iter().position(|tag| tag.id == item))
-            .flatten()
     }
 
     pub fn compress(
@@ -1458,9 +1406,6 @@ impl ContextManager {
     ) -> Option<super::cache_ledger::PrefixBreak> {
         use super::cache_ledger::{Segment, SentPrefix, SentTurn};
         self.mark_prefix_sent();
-        if tools.iter().any(|tool| tool.name == READ_RESULT_TOOL_NAME) {
-            self.cache_ledger.read_result_offered = true;
-        }
         let prev = self.cache_ledger.sent.as_ref();
         let known: std::collections::HashMap<&str, u32> = prev
             .into_iter()
@@ -2163,15 +2108,7 @@ impl ContextManager {
                 .all()
                 .iter()
                 .any(|h| !h.residency.occupies_context());
-        // Plan task 8.3 · offered from the first tool result on, while the prefix is still small:
-        // the toolset heads the cached prefix, so a tool that first appears when a result is
-        // evicted late in a long run breaks the whole cache at its largest. Once offered it stays.
-        let any_tool_result = self
-            .handles
-            .all()
-            .iter()
-            .any(|h| matches!(h.kind, HandleKind::ToolResult));
-        if !any_evicted && !any_tool_result && !self.cache_ledger.read_result_offered {
+        if !any_evicted {
             return None;
         }
         Some(ToolSchema {
@@ -2286,89 +2223,6 @@ Scope, identity, provenance, and timestamps are derived for you.".to_string(),
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Plan task 8.3 · the rewrite cost rule: freed tokens save only their cached price over
-    /// the amortization horizon; the break re-sends the lost tokens once at full price.
-    #[test]
-    fn a_rewrite_pays_only_when_its_cached_savings_beat_the_break() {
-        let mgr = ContextManager::new(100_000);
-        // 1000 freed × 8 calls × 0.1 = 800 ≥ 800 lost × 0.9 = 720.
-        assert!(mgr.rewrite_pays(1000, 800));
-        // An early break re-sending most of the history does not pay for a small saving.
-        assert!(!mgr.rewrite_pays(500, 8000));
-        // A break that re-sends nothing (cold cache, or a tail-only rewrite) always pays.
-        assert!(mgr.rewrite_pays(1, 0));
-    }
-
-    /// Plan task 8.3 · old tool results collapse as one batch, and only when the batch pays for
-    /// the cache it breaks, unless pressure is at the hard tier.
-    #[test]
-    fn tool_results_collapse_in_a_batch_only_when_it_pays() {
-        let fill = |mgr: &mut ContextManager| {
-            mgr.push_history(CoreMessage::user("audit the ledger"), 5);
-            for n in 0..8 {
-                let mut call = CoreMessage::assistant("");
-                call.tool_calls = vec![crate::types::message::ToolCall {
-                    id: format!("c{n}").into(),
-                    name: "read".into(),
-                    arguments: serde_json::json!({ "page": n }),
-                }];
-                mgr.push_history(call, 10);
-                mgr.push_history(tool_result_msg(&format!("c{n}"), &"ledger row ".repeat(60)), 120);
-            }
-        };
-        let collapsed = |mgr: &ContextManager| {
-            mgr.handles
-                .all()
-                .iter()
-                .filter(|h| matches!(h.residency, Residency::Collapsed))
-                .count()
-        };
-        let pressured = || {
-            let mut mgr = ContextManager::new(1_200);
-            mgr.config.collapse_threshold = 0.05;
-            mgr.config.auto_threshold = 0.99;
-            mgr
-        };
-
-        // Cold cache: nothing was sent, nothing to lose — collapse as before.
-        let mut cold = pressured();
-        fill(&mut cold);
-        cold.recompute_handle_residency();
-        assert_eq!(collapsed(&cold), 3, "all but the five preserved results");
-
-        // Warm cache: three old results free far less than the break would re-send.
-        let mut warm = pressured();
-        fill(&mut warm);
-        warm.note_request_sent(&warm.render(), &[], 1);
-        warm.recompute_handle_residency();
-        assert_eq!(collapsed(&warm), 0, "the batch waits");
-
-        // At the hard tier the window wins over the cache.
-        warm.config.auto_threshold = 0.06;
-        warm.recompute_handle_residency();
-        assert_eq!(collapsed(&warm), 3);
-    }
-
-    /// Plan task 8.3 · `read_result` is offered from the first tool result on and stays.
-    #[test]
-    fn read_result_stays_offered_once_offered() {
-        let mut mgr = ContextManager::new(100_000);
-        mgr.push_history(CoreMessage::user("go"), 5);
-        assert!(mgr.read_result_tool_schema().is_none(), "no tool result yet, nothing offered");
-        let offered = vec![ToolSchema {
-            name: CompactString::new(READ_RESULT_TOOL_NAME),
-            description: String::new(),
-            parameters: serde_json::json!({ "type": "object" }),
-        }];
-        mgr.note_request_sent(&mgr.render(), &offered, 1);
-        assert!(mgr.read_result_tool_schema().is_some(), "the toolset does not shrink back");
-
-        // Offered from the first tool result on, before anything is evicted.
-        let mut fresh = ContextManager::new(100_000);
-        fresh.push_history(tool_result_msg("c1", "page body"), 5);
-        assert!(fresh.read_result_tool_schema().is_some());
-    }
 
     /// Plan task 8.0 · the ledger attributes real render changes: old narration leaving the
     /// protected window, a compaction, and a changed toolset.

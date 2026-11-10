@@ -1,26 +1,16 @@
 {
-  "ack_token": "op-driver-1:checkpoint:3:sha256:77742dc4502d4f0c122082c7d7d8eb5f426b3a34df9f22ab166236b48096105b",
+  "ack_token": "op-driver-1:checkpoint:3:sha256:a0b6dd541fda7ee26714a082c8d689044346031c19113e6aff9d1f28e3fab3fe",
   "checkpoint": {
-    "base_record_digest": "sha256:a215b904f6d170e1e59f69ddaa0cebf2729c77e0ec78126714d161836bf4e23b",
+    "base_record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:77742dc4502d4f0c122082c7d7d8eb5f426b3a34df9f22ab166236b48096105b",
-    "covered_transaction_head_digest": "sha256:a215b904f6d170e1e59f69ddaa0cebf2729c77e0ec78126714d161836bf4e23b",
+    "checkpoint_digest": "sha256:a0b6dd541fda7ee26714a082c8d689044346031c19113e6aff9d1f28e3fab3fe",
+    "covered_transaction_head_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
     "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
         "cache_invalidated_tokens": 0,
         "cache_ledger": {
-          "breaks": [
-            {
-              "cause": "toolset",
-              "kept_tokens": 0,
-              "lost_tokens": 260,
-              "turn": 1
-            }
-          ],
-          "lost_tokens": 260,
-          "read_result_offered": true,
           "sent": {
             "knowledge": {
               "hash": "cbf29ce484222325",
@@ -32,8 +22,8 @@
             },
             "tail": 27,
             "tools": {
-              "hash": "98f1e15fde4caf53",
-              "tokens": 390
+              "hash": "1ad7f9d4fa4273e0",
+              "tokens": 247
             },
             "turns": [
               {
@@ -146,7 +136,7 @@
         "last_activity_ms": "1700000002000",
         "last_compact_ms": null,
         "last_item_id": 3,
-        "last_request_estimate": 434,
+        "last_request_estimate": 291,
         "messages": [
           {
             "body": {
@@ -509,7 +499,7 @@
           },
           {
             "input_id": "in-results",
-            "record_digest": "sha256:a215b904f6d170e1e59f69ddaa0cebf2729c77e0ec78126714d161836bf4e23b",
+            "record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
             "step_seq": "3"
           },
           {
@@ -530,7 +520,7 @@
             "causation_input_id": "in-results",
             "effect": {
               "context": {
-                "estimated_tokens": 434,
+                "estimated_tokens": 291,
                 "state_turn": {
                   "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                   "role": "user"
@@ -600,29 +590,6 @@
                 },
                 {
                   "name": "search"
-                },
-                {
-                  "description": "Re-read the full content of a tool result that was truncated to save context (marked '[Output truncated: … call the read_result tool …]'), or of a dependency output (call_id \"dep:<agent_id>\"). Pass that call_id; use offset/max_bytes to page through large content.",
-                  "name": "read_result",
-                  "parameters": {
-                    "properties": {
-                      "call_id": {
-                        "type": "string"
-                      },
-                      "max_bytes": {
-                        "description": "Max bytes to return (default 4000).",
-                        "type": "integer"
-                      },
-                      "offset": {
-                        "description": "Byte offset to start from (default 0).",
-                        "type": "integer"
-                      }
-                    },
-                    "required": [
-                      "call_id"
-                    ],
-                    "type": "object"
-                  }
                 },
                 {
                   "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
@@ -835,13 +802,13 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:dbe6dbd518826e791a34da4ed9a32a16573bcaeb0299da58e43dda34076abf91",
+    "state_digest": "sha256:b350f40f46d04d16a8b4599654cca2053e6416aa6a5e1efe8c822cc8a1d36002",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
   },
-  "covered_head": "sha256:a215b904f6d170e1e59f69ddaa0cebf2729c77e0ec78126714d161836bf4e23b",
+  "covered_head": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
   "description": "A full-state logical checkpoint taken mid-turn (spec 12.1, 12.3). base == through == the durable head, so the bounded tail is empty and a restore replays nothing before the post-checkpoint records. The logical state is partitioned four ways and the header repeats none of it: the pending `call_provider` effect, the replay ledger and the terminal slot live in `transition`, the task table in `scheduler`, the handle table in `context_vm`, the live policy and the provider-tool causation in `syscall`.",
-  "state_digest": "sha256:dbe6dbd518826e791a34da4ed9a32a16573bcaeb0299da58e43dda34076abf91",
+  "state_digest": "sha256:b350f40f46d04d16a8b4599654cca2053e6416aa6a5e1efe8c822cc8a1d36002",
   "through_step_seq": "3"
 }

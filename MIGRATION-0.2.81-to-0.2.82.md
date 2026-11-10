@@ -20,7 +20,8 @@ written by 0.2.82 carry the new optional field `cache_ledger`; 0.2.81 cannot rea
   `cache_tail_tokens`. A consumer that validates the event strictly should accept them. The break
   causes are `toolset`, `system`, `promotion`, `collapse`, `reprojection`, `narration`,
   `budget_drop`, `snip`, `micro`, `auto`, `renewal`, `provider` and `other`.
-- Rendering, compaction and provider requests are unchanged.
+- Rendering, compaction and provider requests are unchanged. Cache-aware compaction (plan task
+  8.3) was measured and is not part of this release; see the plan.
 
 ## Benchmarks
 
@@ -28,3 +29,6 @@ Trials gain `cost.requests[]` (each request's `input_tokens`, `cache_read_tokens
 `cache_write_tokens`, `output_tokens`, and `run` when a trial has several runs). Trials recorded by
 0.2.81 have no request detail: `deepstrike-lab` shows no `observed_cache_loss_tokens` or
 `cache_loss_error` for them, and `gate --max-cache-loss-error` fails a candidate without it.
+Trials also gain `model` and `cost.cache_write_tokens`, which `weighted_cost` prices; a trial
+without them is priced at the default prices with no cache writes. `gate --paired` needs at least
+`--min-pairs` (30) runs of the same tasks under both variants.

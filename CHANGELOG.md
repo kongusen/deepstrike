@@ -21,6 +21,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   previous request's input not read from cache, less `cache_tail_tokens`), `cache_loss_error`
   (the kernel's account against it, size-weighted) and the kernel's loss by cause as
   `cache_loss.<cause>`. `gate --max-cache-loss-error <fraction>` bounds the error.
+- `deepstrike-lab` prices trials (plan task 8.1): `weighted_cost` charges uncached input, cache
+  reads, cache writes and output by the trial's model (`--prices <json>`; relative units by
+  default) and heads the report. `gate --paired metric:tolerance` compares the two variants task by
+  task with a fixed-seed bootstrap 95% interval (absolute tolerance for success, relative to the
+  baseline mean for costs) and fails with "insufficient samples" below `--min-pairs` (30). Trials
+  carry `model` and `cache_write_tokens`.
+- `long-horizon` live benchmark (plan task 8.2): an incident investigation whose scoring rules
+  live only in a brief read first, followed by 40 logs of about 3.5k tokens each against a 100k
+  window. Oracles `formula_broken`, `count_error`, `undercount`, `early_fact_lost`,
+  `brief_rereads`, `compactions`, `renewals`; `--dry`, `--rescore` and `--concurrency`.
 
 ### Changed
 
