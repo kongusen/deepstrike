@@ -98,6 +98,7 @@ async function runTask(task) {
     error,
     provider,
     events: recorder.events,
+    model,
   })
 }
 

@@ -21,6 +21,9 @@ pub struct Trial {
     pub scenario: String,
     pub variant: String,
     pub task: String,
+    /// The model that ran the task, for pricing (plan task 8.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default)]
     pub success: bool,
     /// Why the task could not be graded (a provider error, a run that did not complete).
@@ -56,6 +59,9 @@ pub struct Cost {
     pub output_tokens: u64,
     #[serde(default)]
     pub cache_read_tokens: u64,
+    /// Prompt tokens written to cache, summed (a subset of `input_tokens`, like cache reads).
+    #[serde(default)]
+    pub cache_write_tokens: u64,
     /// Plan task 8.0 · each provider request's usage, in the order sent. Absent on trials
     /// recorded before 0.2.82.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -77,6 +83,67 @@ pub struct RequestCost {
     pub cache_write_tokens: u64,
     #[serde(default)]
     pub output_tokens: u64,
+}
+
+/// Plan task 8.1 · price per token of each class. `input_tokens` counts the whole prompt, so the
+/// uncached part is `input − cache_read − cache_write`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Prices {
+    pub input: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+    pub output: f64,
+}
+
+impl Default for Prices {
+    /// Relative units (uncached input = 1), not real prices.
+    fn default() -> Self {
+        Self { input: 1.0, cache_read: 0.1, cache_write: 1.0, output: 4.0 }
+    }
+}
+
+/// Prices by model, with a fallback. Read from JSON: `{ "default": {..}, "<model>": {..} }`; keys
+/// starting with `_` are comments.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PriceTable {
+    pub default: Prices,
+    pub models: BTreeMap<String, Prices>,
+}
+
+impl PriceTable {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let raw: BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(text).map_err(|error| error.to_string())?;
+        let mut table = PriceTable::default();
+        for (key, value) in raw {
+            if key.starts_with('_') {
+                continue;
+            }
+            let prices: Prices =
+                serde_json::from_value(value).map_err(|error| format!("{key}: {error}"))?;
+            if key == "default" {
+                table.default = prices;
+            } else {
+                table.models.insert(key, prices);
+            }
+        }
+        Ok(table)
+    }
+
+    pub fn for_model(&self, model: Option<&str>) -> Prices {
+        model.and_then(|model| self.models.get(model)).copied().unwrap_or(self.default)
+    }
+}
+
+/// Plan task 8.1 · what the trial cost at `prices`.
+pub fn weighted_cost(trial: &Trial, prices: &PriceTable) -> f64 {
+    let p = prices.for_model(trial.model.as_deref());
+    let c = &trial.cost;
+    let uncached = c.input_tokens.saturating_sub(c.cache_read_tokens + c.cache_write_tokens);
+    uncached as f64 * p.input
+        + c.cache_read_tokens as f64 * p.cache_read
+        + c.cache_write_tokens as f64 * p.cache_write
+        + c.output_tokens as f64 * p.output
 }
 
 /// Plan task 8.0 · what the provider says the trial lost to broken prefixes: for each request
@@ -187,6 +254,8 @@ pub struct Summary {
     pub succeeded: u64,
     pub errors: u64,
     pub success_rate: f64,
+    /// Plan task 8.1 · mean [`weighted_cost`] per trial: the primary cost metric.
+    pub weighted_cost: f64,
     pub sent_chars: f64,
     pub calls: f64,
     pub input_tokens: f64,
@@ -226,6 +295,7 @@ impl Summary {
     pub fn metric(&self, name: &str) -> Option<f64> {
         Some(match name {
             "success_rate" => self.success_rate,
+            "weighted_cost" => self.weighted_cost,
             "sent_chars" => self.sent_chars,
             "calls" => self.calls,
             "input_tokens" => self.input_tokens,
@@ -258,6 +328,7 @@ pub const HIGHER_IS_BETTER: &[&str] = &["success_rate", "recall_hit_rate"];
 /// The metrics a report shows, in order.
 pub const REPORT_METRICS: &[&str] = &[
     "success_rate",
+    "weighted_cost",
     "sent_chars",
     "calls",
     "input_tokens",
@@ -274,8 +345,13 @@ pub const REPORT_METRICS: &[&str] = &[
     "estimate_error_weighted",
 ];
 
-/// Summarize every (scenario, variant) pair, ordered by scenario then variant.
+/// Summarize every (scenario, variant) pair at the default (relative) prices.
 pub fn summarize(trials: &[Trial]) -> Vec<Summary> {
+    summarize_with(trials, &PriceTable::default())
+}
+
+/// Summarize every (scenario, variant) pair, ordered by scenario then variant.
+pub fn summarize_with(trials: &[Trial], prices: &PriceTable) -> Vec<Summary> {
     let mut groups: BTreeMap<(&str, &str), Vec<&Trial>> = BTreeMap::new();
     for trial in trials {
         groups
@@ -285,11 +361,11 @@ pub fn summarize(trials: &[Trial]) -> Vec<Summary> {
     }
     groups
         .into_iter()
-        .map(|((scenario, variant), trials)| summarize_group(scenario, variant, &trials))
+        .map(|((scenario, variant), trials)| summarize_group(scenario, variant, &trials, prices))
         .collect()
 }
 
-fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary {
+fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial], prices: &PriceTable) -> Summary {
     let n = trials.len() as f64;
     let mean = |value: &dyn Fn(&Trial) -> u64| trials.iter().map(|t| value(t) as f64).sum::<f64>() / n;
     let reports = || trials.iter().flat_map(|trial| trial.lifecycle.iter());
@@ -343,6 +419,7 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
         succeeded,
         errors: trials.iter().filter(|trial| trial.error.is_some()).count() as u64,
         success_rate: succeeded as f64 / n,
+        weighted_cost: trials.iter().map(|trial| weighted_cost(trial, prices)).sum::<f64>() / n,
         sent_chars: mean(&|t| t.cost.sent_chars),
         calls: mean(&|t| t.cost.calls),
         input_tokens: mean(&|t| t.cost.input_tokens),
@@ -387,6 +464,184 @@ pub struct Gate {
     pub max_estimate_error: Option<f64>,
     /// Plan task 8.0 · upper bound on the candidate's [`Summary::cache_loss_error`].
     pub max_cache_loss_error: Option<f64>,
+    /// Plan task 8.1 · metrics compared task by task, with a bootstrap confidence interval.
+    pub paired: Vec<PairedCheck>,
+    /// Fewer pairs than this and a paired check fails as "insufficient samples".
+    pub min_pairs: usize,
+}
+
+/// Plan task 8.1 · a paired check: the candidate is "no worse" on `metric` only if the 95%
+/// interval of its per-task difference from the baseline stays within `tolerance` on the worse
+/// side. For a metric where higher is better (success) the tolerance is absolute: the lower bound
+/// of `candidate − baseline` must be ≥ −tolerance (0.05 = five points). For any other metric it is
+/// relative to the baseline mean: the upper bound of `(candidate − baseline) / mean(baseline)` must
+/// be ≤ tolerance (0.0 = not significantly more expensive).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairedCheck {
+    pub metric: String,
+    pub tolerance: f64,
+}
+
+impl PairedCheck {
+    /// `metric:tolerance`, e.g. `success_rate:0.05`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let (metric, tolerance) = text
+            .split_once(':')
+            .ok_or_else(|| format!("{text:?}: expected <metric>:<tolerance>"))?;
+        let tolerance = tolerance.trim().parse::<f64>().map_err(|e| format!("{text:?}: {e}"))?;
+        Ok(Self { metric: metric.trim().to_string(), tolerance })
+    }
+}
+
+/// Default for [`Gate::min_pairs`].
+pub const MIN_PAIRS: usize = 30;
+
+/// One task's value of a metric, for pairing. `None` when the trial does not measure it.
+pub fn trial_metric(trial: &Trial, metric: &str, prices: &PriceTable) -> Option<f64> {
+    let sum = |value: &dyn Fn(&LifecycleReport) -> u64| {
+        trial.lifecycle.iter().map(|report| value(report) as f64).sum::<f64>()
+    };
+    Some(match metric {
+        "success_rate" => f64::from(u8::from(trial.success)),
+        "weighted_cost" => weighted_cost(trial, prices),
+        "sent_chars" => trial.cost.sent_chars as f64,
+        "calls" => trial.cost.calls as f64,
+        "input_tokens" => trial.cost.input_tokens as f64,
+        "output_tokens" => trial.cost.output_tokens as f64,
+        "cache_read_tokens" => trial.cost.cache_read_tokens as f64,
+        "regret" => sum(&|r| r.regret),
+        "waste_tokens" => sum(&|r| r.waste_tokens),
+        "cache_loss_tokens" => sum(&|r| r.cache_loss_tokens),
+        "observed_cache_loss_tokens" => observed_cache_loss(trial)? as f64,
+        name => return name.strip_prefix("oracle.").and_then(|key| trial.oracle.get(key).copied()),
+    })
+}
+
+/// Pair the two variants' trials of `scenario` by task: the k-th run of a task under one variant
+/// with its k-th run under the other. Unpaired runs are left out.
+pub fn pair_trials<'a>(
+    trials: &'a [Trial],
+    scenario: &str,
+    baseline: &str,
+    candidate: &str,
+) -> Vec<(&'a Trial, &'a Trial)> {
+    let runs = |variant: &str| {
+        let mut by_task: BTreeMap<&str, Vec<&'a Trial>> = BTreeMap::new();
+        for trial in trials.iter().filter(|t| t.scenario == scenario && t.variant == variant) {
+            by_task.entry(trial.task.as_str()).or_default().push(trial);
+        }
+        by_task
+    };
+    let (base, cand) = (runs(baseline), runs(candidate));
+    base.iter()
+        .filter_map(|(task, base_runs)| cand.get(task).map(|cand_runs| (base_runs, cand_runs)))
+        .flat_map(|(base_runs, cand_runs)| base_runs.iter().copied().zip(cand_runs.iter().copied()))
+        .collect()
+}
+
+/// The 95% percentile-bootstrap interval of the mean of `diffs`, from a fixed seed so the same
+/// trials always give the same interval.
+pub fn bootstrap_interval(diffs: &[f64]) -> (f64, f64) {
+    const RESAMPLES: usize = 2000;
+    if diffs.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let n = diffs.len();
+    let mut means: Vec<f64> = (0..RESAMPLES)
+        .map(|_| (0..n).map(|_| diffs[(next() % n as u64) as usize]).sum::<f64>() / n as f64)
+        .collect();
+    means.sort_by(f64::total_cmp);
+    let at = |q: f64| means[((RESAMPLES as f64 - 1.0) * q).round() as usize];
+    (at(0.025), at(0.975))
+}
+
+/// The result of one paired check in one scenario.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairedResult {
+    pub pairs: usize,
+    /// Mean per-task difference (relative to the baseline mean for lower-is-better metrics).
+    pub mean: f64,
+    pub low: f64,
+    pub high: f64,
+}
+
+/// Compare `metric` task by task. Differences are `candidate − baseline`; for a lower-is-better
+/// metric they are divided by the baseline mean, so the interval reads as a relative change.
+pub fn paired_result(pairs: &[(&Trial, &Trial)], metric: &str, prices: &PriceTable) -> PairedResult {
+    let values: Vec<(f64, f64)> = pairs
+        .iter()
+        .filter_map(|(b, c)| Some((trial_metric(b, metric, prices)?, trial_metric(c, metric, prices)?)))
+        .collect();
+    let base_mean = values.iter().map(|(b, _)| b).sum::<f64>() / values.len().max(1) as f64;
+    let scale = if HIGHER_IS_BETTER.contains(&metric) || base_mean == 0.0 { 1.0 } else { base_mean };
+    let diffs: Vec<f64> = values.iter().map(|(b, c)| (c - b) / scale).collect();
+    let (low, high) = bootstrap_interval(&diffs);
+    PairedResult {
+        pairs: diffs.len(),
+        mean: diffs.iter().sum::<f64>() / diffs.len().max(1) as f64,
+        low,
+        high,
+    }
+}
+
+impl Gate {
+    /// The summary checks of [`Gate::check`] plus the paired checks, which need the trials.
+    pub fn check_trials(
+        &self,
+        trials: &[Trial],
+        prices: &PriceTable,
+        baseline: &str,
+        candidate: &str,
+    ) -> Vec<GateFailure> {
+        let summaries = summarize_with(trials, prices);
+        let mut failures = self.check(&summaries, baseline, candidate);
+        if self.paired.is_empty() {
+            return failures;
+        }
+        let mut scenarios: Vec<&str> = summaries
+            .iter()
+            .filter(|s| s.variant == baseline || s.variant == candidate)
+            .map(|s| s.scenario.as_str())
+            .collect();
+        scenarios.dedup();
+        let min_pairs = if self.min_pairs == 0 { MIN_PAIRS } else { self.min_pairs };
+        for scenario in scenarios {
+            let pairs = pair_trials(trials, scenario, baseline, candidate);
+            for check in &self.paired {
+                let result = paired_result(&pairs, &check.metric, prices);
+                let fail = |detail: String| GateFailure {
+                    scenario: scenario.to_string(),
+                    metric: format!("paired {}", check.metric),
+                    detail,
+                };
+                if result.pairs < min_pairs {
+                    failures.push(fail(format!(
+                        "insufficient samples: {} pairs, need {min_pairs}",
+                        result.pairs
+                    )));
+                    continue;
+                }
+                let higher_better = HIGHER_IS_BETTER.contains(&check.metric.as_str());
+                let interval = format!(
+                    "mean {:+.4}, 95% CI [{:+.4}, {:+.4}] over {} pairs",
+                    result.mean, result.low, result.high, result.pairs
+                );
+                if higher_better && result.low < -check.tolerance {
+                    failures.push(fail(format!("{interval}: lower bound below -{}", check.tolerance)));
+                } else if !higher_better && result.high > check.tolerance {
+                    failures.push(fail(format!("{interval}: upper bound above +{}", check.tolerance)));
+                }
+            }
+        }
+        failures
+    }
 }
 
 /// One failed check.
@@ -740,5 +995,81 @@ mod tests {
         let table = markdown(&summaries, None);
         assert!(table.contains("| cache_loss_error | – | 4.0% |"), "{table}");
         assert!(table.contains("| cache_loss.narration |"), "{table}");
+    }
+
+    #[test]
+    fn weighted_cost_prices_each_token_class_by_model() {
+        let mut t = trial("v", "t", true, 0, 0);
+        t.model = Some("m".into());
+        t.cost = Cost {
+            input_tokens: 1000,
+            cache_read_tokens: 600,
+            cache_write_tokens: 100,
+            output_tokens: 50,
+            ..Cost::default()
+        };
+        // Default relative prices: 300 uncached + 60 read + 100 written + 200 output.
+        assert!((weighted_cost(&t, &PriceTable::default()) - 660.0).abs() < 1e-9);
+        let table = PriceTable::parse(
+            r#"{"_comment":"x","default":{"input":1,"cache_read":0.1,"cache_write":1,"output":4},
+                "m":{"input":2,"cache_read":0.5,"cache_write":2,"output":8}}"#,
+        )
+        .unwrap();
+        assert!((weighted_cost(&t, &table) - (600.0 + 300.0 + 200.0 + 400.0)).abs() < 1e-9);
+        assert!(PriceTable::parse(r#"{"m":{"input":1}}"#).is_err());
+    }
+
+    #[test]
+    fn the_paired_gate_needs_enough_pairs_and_reads_the_interval() {
+        let run = |variant: &str, task: usize, success: bool, input: u64| Trial {
+            cost: Cost { input_tokens: input, ..Cost::default() },
+            ..trial(variant, &format!("t{task}"), success, 0, 0)
+        };
+        let mut trials = Vec::new();
+        for task in 0..40 {
+            // Both variants fail one task in forty, different ones; the candidate is 20% cheaper.
+            trials.push(run("base", task, task != 3, 1000));
+            trials.push(run("cand", task, task != 7, 800));
+        }
+        trials.push(run("cand", 99, true, 1)); // unpaired: ignored
+        assert_eq!(pair_trials(&trials, "long-task", "base", "cand").len(), 40);
+        let prices = PriceTable::default();
+        let gate = Gate {
+            paired: vec![
+                PairedCheck::parse("success_rate:0.10").unwrap(),
+                PairedCheck::parse("weighted_cost:0").unwrap(),
+            ],
+            ..Gate::default()
+        };
+        assert_eq!(gate.check_trials(&trials, &prices, "base", "cand"), vec![]);
+        // Reversed, the cost check fails: +25% with no spread.
+        let failures = gate.check_trials(&trials, &prices, "cand", "base");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].metric, "paired weighted_cost");
+        // One discordant pair each way already spans ±7.5 points at forty pairs, so a five-point
+        // tolerance cannot pass any run with noise; ten points can.
+        let five = Gate { paired: vec![PairedCheck::parse("success_rate:0.05").unwrap()], ..Gate::default() };
+        assert_eq!(five.check_trials(&trials, &prices, "base", "cand").len(), 1);
+        // Three net losses do fail at ten points.
+        let mut lost = trials.clone();
+        for task in ["t10", "t11", "t12"] {
+            lost.iter_mut().find(|t| t.variant == "cand" && t.task == task).unwrap().success = false;
+        }
+        let failures = gate.check_trials(&lost, &prices, "base", "cand");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].metric, "paired success_rate");
+        let few = Gate { min_pairs: 50, ..gate.clone() };
+        let failures = few.check_trials(&trials, &prices, "base", "cand");
+        assert!(failures.iter().all(|f| f.detail.starts_with("insufficient samples: 40 pairs")), "{failures:?}");
+        assert!(PairedCheck::parse("success_rate").is_err());
+    }
+
+    #[test]
+    fn the_bootstrap_is_deterministic_and_brackets_the_mean() {
+        let diffs: Vec<f64> = (0..30).map(|i| f64::from(i % 5) - 2.0).collect();
+        let (low, high) = bootstrap_interval(&diffs);
+        assert_eq!(bootstrap_interval(&diffs), (low, high));
+        assert!(low < 0.0 && high > 0.0 && low > -1.5 && high < 1.5, "{low} {high}");
+        assert_eq!(bootstrap_interval(&[0.5; 10]), (0.5, 0.5));
     }
 }

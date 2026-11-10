@@ -4,13 +4,15 @@
 //!   deepstrike-lab gate <trials.jsonl>... --baseline <variant> --candidate <variant>
 //!                       [--no-worse <metric,...>] [--max-estimate-error <fraction>]
 //!                       [--max-cache-loss-error <fraction>]
+//!                       [--paired <metric:tolerance,...>] [--min-pairs N]
+//!   both take [--prices <prices.json>] (default: relative units, uncached input = 1)
 //!
 //! `report` prints a Markdown table per scenario (or the summaries as JSON). `gate` prints each
 //! failed check and exits 1 if there is one.
 
 use std::process::ExitCode;
 
-use deepstrike_lab::{Gate, markdown, parse_trials, summarize};
+use deepstrike_lab::{Gate, MIN_PAIRS, PairedCheck, PriceTable, markdown, parse_trials, summarize_with};
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -46,7 +48,14 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
         let text = std::fs::read_to_string(file).map_err(|error| format!("{file}: {error}"))?;
         trials.extend(parse_trials(&text).map_err(|error| format!("{file}: {error}"))?);
     }
-    let summaries = summarize(&trials);
+    let prices = match flags.get("prices") {
+        Some(file) => PriceTable::parse(
+            &std::fs::read_to_string(file).map_err(|error| format!("{file}: {error}"))?,
+        )
+        .map_err(|error| format!("{file}: {error}"))?,
+        None => PriceTable::default(),
+    };
+    let summaries = summarize_with(&trials, &prices);
     match command.as_str() {
         "report" if json => {
             println!("{}", serde_json::to_string_pretty(&summaries).map_err(|e| e.to_string())?);
@@ -74,8 +83,18 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
                         bound.parse::<f64>().map_err(|e| format!("--max-cache-loss-error: {e}"))
                     })
                     .transpose()?,
+                paired: flags
+                    .get("paired")
+                    .map(|list| list.split(',').map(PairedCheck::parse).collect::<Result<Vec<_>, _>>())
+                    .transpose()?
+                    .unwrap_or_default(),
+                min_pairs: flags
+                    .get("min-pairs")
+                    .map(|n| n.parse::<usize>().map_err(|e| format!("--min-pairs: {e}")))
+                    .transpose()?
+                    .unwrap_or(MIN_PAIRS),
             };
-            let failures = gate.check(&summaries, baseline, candidate);
+            let failures = gate.check_trials(&trials, &prices, baseline, candidate);
             for failure in &failures {
                 println!("FAIL {} {}: {}", failure.scenario, failure.metric, failure.detail);
             }
@@ -93,6 +112,7 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
 fn usage() -> String {
     "usage: deepstrike-lab report <trials.jsonl>... [--baseline <variant>] [--json]\n       \
      deepstrike-lab gate <trials.jsonl>... --baseline <v> --candidate <v> \
-     [--no-worse m1,m2] [--max-estimate-error 0.10] [--max-cache-loss-error 0.15]"
+     [--no-worse m1,m2] [--max-estimate-error 0.10] [--max-cache-loss-error 0.15] \
+     [--paired success_rate:0.05,weighted_cost:0] [--min-pairs 30] [--prices prices.json]"
         .to_string()
 }

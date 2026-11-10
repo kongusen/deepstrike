@@ -1,0 +1,4 @@
+{
+  "_comment": "deepstrike-lab price table (plan task 8.1): price per token class, by trial model, `default` for any other. These defaults are RELATIVE units (uncached input = 1), not real prices: replace or add a model entry with the provider's published prices (any unit, used consistently) before reading weighted_cost as money.",
+  "default": { "input": 1.0, "cache_read": 0.1, "cache_write": 1.0, "output": 4.0 }
+}

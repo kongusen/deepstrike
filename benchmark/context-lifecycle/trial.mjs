@@ -167,7 +167,7 @@ export function recordingSessionLog(inner) {
 }
 
 /** One trial line from a task run's recorded session events. */
-export function trialFrom({ scenario, variant, task, success, error, provider, events }) {
+export function trialFrom({ scenario, variant, task, success, error, provider, events, model }) {
   const attempts = events.filter(event => event.kind === "provider_attempt")
   const usage = attempts.map(attempt => attempt.usage).filter(Boolean)
   const sum = key => usage.reduce((total, entry) => total + (Number(entry[key]) || 0), 0)
@@ -185,6 +185,8 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
     scenario,
     variant,
     task,
+    // The lab prices a trial by its model (plan task 8.1).
+    ...(model ? { model } : {}),
     success,
     ...(error ? { error } : {}),
     cost: {
@@ -193,6 +195,7 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
       input_tokens: sum("inputTokens"),
       output_tokens: sum("outputTokens"),
       cache_read_tokens: sum("cacheReadInputTokens"),
+      cache_write_tokens: sum("cacheCreationInputTokens"),
       requests: requestCosts(attempts),
     },
     token_estimates: tokenEstimates,
