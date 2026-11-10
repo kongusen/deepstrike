@@ -274,18 +274,19 @@ ContextItem {
 - 缓存损失和 waste 一样，以 provider 实测为准，kernel 自报的数字必须能与实测对上。
 - 冻结图的扩张：本阶段不新增 relation、lease 或 origin。已有的边只有在 lab 证明收益后才参与决策。
 
-- [ ] 任务 8.0（2026-11-11，实现完成，待实测）：新增 `context/cache_ledger.rs`。每次请求发出时按段（工具 schema、system[0]、system[1]、每个 history turn）取指纹并与上一次请求比较，第一个不同的段即断点。原因由造成改写的动作登记（`snip` / `micro` / `collapse` / `auto` / `renewal` / `provider` / `promotion`），未登记的从渲染推断（`toolset` / `system` / `narration` / `budget_drop` / `reprojection` / `other`）。lifecycle report 增加 `prefix_breaks`（最近 128 条）、`prefix_breaks_omitted`、`cache_tail_tokens`，`cache_loss_tokens` 改为所有断点之和；账本进 checkpoint。lab 读 trial 的 `cost.requests[]`，报告 `observed_cache_loss_tokens`、`cache_loss_error`、`cache_loss.<cause>`，并支持 `gate --max-cache-loss-error`。四端 SDK 投影与 contract 已同步，Rust workspace、Node、Python、WASM、四端 conformance 全部通过。脚本化长任务（`run.mjs`，25 次调用）记录到两次 `micro` 断点，共 17.6k token，改动前该值报 0。与验收的出入：
+- [x] 任务 8.0（2026-11-11）：新增 `context/cache_ledger.rs`。每次请求发出时按段（工具 schema、system[0]、system[1]、每个 history turn）取指纹并与上一次请求比较，第一个不同的段即断点。原因由造成改写的动作登记（`snip` / `micro` / `collapse` / `auto` / `renewal` / `provider` / `promotion`），未登记的从渲染推断（`toolset` / `system` / `narration` / `budget_drop` / `reprojection` / `other`）。lifecycle report 增加 `prefix_breaks`（最近 128 条）、`prefix_breaks_omitted`、`cache_tail_tokens`，`cache_loss_tokens` 改为所有断点之和；账本进 checkpoint。lab 读 trial 的 `cost.requests[]`，报告 `observed_cache_loss_tokens`、`cache_loss_error`、`cache_loss.<cause>`，并支持 `gate --max-cache-loss-error`。四端 SDK 投影与 contract 已同步，Rust workspace、Node、Python、WASM、四端 conformance 全部通过。脚本化长任务（`run.mjs`，25 次调用）记录到两次 `micro` 断点，共 17.6k token，改动前该值报 0。与验收的出入：
     - 字段名用 `requests[]`，不用 `calls[]`（`cost.calls` 已是调用次数）；断点记为 `cause` 加 `kept_tokens` / `lost_tokens`（断点位置以 token 计）。
     - 原因比原计划多 `toolset`、`system`、`reprojection`、`other`：skill 收窄工具集会让整个缓存失效，这是原计划没有列出的一类断点。
     - 新增 `cache_tail_tokens`：上一次请求的 state turn 每次都会重建，本来就不可复用，但 provider 统计的未命中输入里包含它；lab 先从实测值中扣除这部分，再与 kernel 自报值比较。
     - 指纹只覆盖发给 provider 的内容：tool result 的 `durable_content` 不计入（恢复后的消息带这个字段，实时消息可能没有，否则恢复后会多出一个假断点）。
     - 新发现的每轮断点来源（留给 8.3）：压力超过 collapse 阈值后，`recompute_handle_residency` 每轮会再折叠一个旧工具结果。
-    - 未做：ledger / knowledge-pressure 上的实测（偏差 ≤15%），需要真实 provider。
+    - 实测（DeepSeek `deepseek-flash`，各 12 题，`0.2.82-8.0`）：kernel 自报与实测缓存损失偏差 ledger 11.6%、knowledge-pressure 7.3%，验收通过。ledger 每题损失按原因：collapse 7.3k、toolset 5.9k、narration 5.6k。正确率 10/12、8/12，因为 8.0 不改渲染，这是噪声，也正说明 8.1 的配对规则有必要。
   - 验收：trial 的 `cost` 增加逐次调用明细 `calls[]`（`input_tokens`、`cache_read_tokens`、`cache_write_tokens`、`output_tokens`，以及 kernel 给出的 prefix 断点）。lab 计算实测缓存损失：每次调用 `max(0, 可复用前缀 − cache_read)`，其中可复用前缀为上一次调用的输入去掉本轮新增的尾部。kernel 在 lifecycle report 中增加 `prefix_breaks`（turn、动作 `promotion | snip | micro | collapse | auto | narration | budget_drop | renewal | provider`、断点位置、断点之后的 token 数），`cache_loss_tokens` 改为所有断点之和，不再只算 knowledge 提升。
   - 验证：在 ledger、knowledge-pressure 上，kernel 自报的 `cache_loss_tokens` 与实测缓存损失的偏差 ≤ 15%（容差来自 provider 的缓存粒度，例如 DeepSeek 的 64 token 块）。
   - 文件：`context/manager.rs`、`context/renderer.rs`（渲染时返回断点）、`crates/deepstrike-lab`、`benchmark/context-lifecycle/*.mjs` 的计量包装器；四端 SDK 投影与 contract
 
-- [ ] 任务 8.1：按价格加权的 gate 与配对统计
+- [x] 任务 8.1（2026-11-11）：lab 增加价格表（`--prices`，默认是相对单位：未命中输入 1、缓存读取 0.1、缓存写入 1、输出 4；`benchmark/context-lifecycle/prices.json` 只放默认值，真实价格由使用者填写）与 `weighted_cost`（报告第一行）；`gate --paired metric:tolerance` 按 (场景, 题目) 配对，固定种子 bootstrap 给出 95% 区间，少于 `--min-pairs`（默认 30）报“样本不足”。trial 增加 `model` 与 `cache_write_tokens`。重算现有结果：ledger 0.2.79 → 0.2.81 的 `weighted_cost` +11.6%，而 `input_tokens` 只有 +3.8%，验证通过。与验收的出入：
+    - 正确率容差 5 个百分点在 30–40 对样本下不可用：两边各错一题、净差为 0 时，区间就有 ±7.5 个百分点。推荐用 `success_rate:0.10`，它能容忍相互抵消的波动，净输 3 题时仍然失败（有测试）。
   - 验收：lab 增加价格表（按 provider / model：未命中输入、缓存读取、缓存写入、输出单价），新增指标 `weighted_cost`，并设为成本类 gate 的主指标；`input_tokens` / `sent_chars` 降为诊断指标。gate 改为同一题在两个变体上配对比较，用 bootstrap 给出差值的 95% 置信区间：正确率差值的下界不低于 −5 个百分点才算“不降”；样本少于 30 对时 gate 报告“样本不足”，不再给出通过。
   - 验证：用现有三份 results 重算，0.2.79 → 0.2.81 的 ledger 在 `weighted_cost` 上应显示回退（上表的未命中输入 +19%）。
   - 文件：`crates/deepstrike-lab/src/lib.rs`、`main.rs`

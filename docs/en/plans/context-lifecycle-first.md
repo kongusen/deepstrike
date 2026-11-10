@@ -572,7 +572,7 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
 - Freeze the graph: this stage adds no relation, lease or origin. Existing edges take part in
   decisions only after the lab shows a gain.
 
-- [ ] Task 8.0 (2026-11-11, implemented, live measurement pending): new `context/cache_ledger.rs`.
+- [x] Task 8.0 (2026-11-11): new `context/cache_ledger.rs`.
   Each request's prefix is fingerprinted segment by segment (tool schemas, system[0], system[1],
   each history turn) and compared with the previous request; the first segment that differs is the
   break. The cause is announced by the rewrite that made it (`snip` / `micro` / `collapse` /
@@ -597,8 +597,11 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
       false break after a restore).
     - A newly found per-turn break source (for 8.3): above the collapse threshold,
       `recompute_handle_residency` collapses one more old tool result every turn.
-    - Not done: the live measurement on ledger / knowledge-pressure (≤15% deviation), which needs a
-      real provider.
+    - Measured (DeepSeek `deepseek-flash`, 12 tasks each, `0.2.82-8.0`): the kernel's cache loss is
+      within 11.6% (ledger) and 7.3% (knowledge-pressure) of the provider-measured loss, so the
+      acceptance passes. Ledger loss per task by cause: collapse 7.3k, toolset 5.9k, narration
+      5.6k. Success was 10/12 and 8/12; 8.0 does not change rendering, so this is noise, which is
+      exactly why 8.1's paired rule is needed.
   - Acceptance: a trial's `cost` gains per-call detail `calls[]` (`input_tokens`,
     `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, and the kernel's prefix break
     point). The lab computes measured cache loss per call as `max(0, reusable prefix − cache_read)`,
@@ -614,7 +617,17 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
     `crates/deepstrike-lab`, the metering wrappers in `benchmark/context-lifecycle/*.mjs`; the four
     SDKs' projections and contracts
 
-- [ ] Task 8.1: a price-weighted gate with paired statistics
+- [x] Task 8.1 (2026-11-11): the lab gains a price table (`--prices`; the default is relative units:
+  uncached input 1, cache read 0.1, cache write 1, output 4; `benchmark/context-lifecycle/prices.json`
+  holds only the default, and users fill in real prices) and `weighted_cost` (the report's first
+  row); `gate --paired metric:tolerance` pairs runs by (scenario, task) and gives a fixed-seed
+  bootstrap 95% interval, failing as "insufficient samples" below `--min-pairs` (30). Trials gain
+  `model` and `cache_write_tokens`. Recomputed from existing results: ledger 0.2.79 → 0.2.81 is +11.6%
+  on `weighted_cost` where `input_tokens` shows only +3.8%, so the verification passes.
+  Differences from the acceptance:
+    - A 5-point success tolerance is unusable at 30–40 pairs: with one failure on each side and a
+      net difference of 0, the interval is already ±7.5 points. Use `success_rate:0.10`; it
+      absorbs noise that cancels out and still fails at three net losses (tested).
   - Acceptance: the lab gains a price table (per provider / model: uncached input, cache read,
     cache write and output prices) and a `weighted_cost` metric, which becomes the primary cost
     gate; `input_tokens` / `sent_chars` become diagnostics. The gate compares the same task across

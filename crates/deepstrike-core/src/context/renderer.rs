@@ -485,7 +485,13 @@ pub fn render_projected(
                 if is_protected {
                     None
                 } else {
-                    project_assistant_narration(msg, collapse_narration)
+                    // Plan task 8.3 · narration collapses only inside the frozen region (history
+                    // before the last compaction boundary), so it rewrites the prefix once per
+                    // boundary instead of once per turn as each unit leaves the protected window.
+                    project_assistant_narration(
+                        msg,
+                        collapse_narration && message_index < frozen_history_len,
+                    )
                 }
             });
             let effective = projected.clone().unwrap_or_else(|| msg.clone());
@@ -1166,8 +1172,15 @@ mod tests {
             c.history.push(CoreMessage::user(format!("recent {i}")), 5);
         }
 
-        // collapse ON (preserve window = 4, so the oldest narration turn is past it)
-        let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
+        // Plan task 8.3 · before any compaction boundary nothing is frozen, so narration stays
+        // verbatim even past the protected window: collapsing it now would rewrite the cached
+        // prefix once per turn.
+        let unfrozen = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
+        assert!(unfrozen.turns.iter().all(|m| m.content.as_text() != Some(NARRATION_STUB)));
+
+        // collapse ON (preserve window = 4, so the oldest narration turn is past it), and the
+        // narration lies before the last boundary (frozen region = the first two messages).
+        let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 2, true);
         let narration = rc
             .turns
             .iter()
@@ -1278,9 +1291,9 @@ mod tests {
             c.history.push(CoreMessage::user(format!("recent {i}")), 5);
         }
 
-        let verbatim = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, false)
+        let verbatim = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 3, false)
             .prefix_fingerprint();
-        let collapsed = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true)
+        let collapsed = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 3, true)
             .prefix_fingerprint();
         // turn 0 ("start") is byte-stable; drift begins at the collapsed narration turn (index 1).
         assert_eq!(

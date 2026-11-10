@@ -103,6 +103,13 @@ pub struct ContextConfig {
     /// The provider compacts natively, so the kernel runs neither context collapse nor auto-compact.
     /// Renewal is never delegated: it is decided on the full local history and stays the safety net.
     pub delegate_compaction: bool,
+
+    // ── Plan task 8.3: cache-aware rewrites ──────────────────────────────────
+    /// Price of a cached input token relative to an uncached one (0.1 = a tenth).
+    pub cache_read_discount: f64,
+    /// Requests a token freed by a rewrite is expected to stay out of: the horizon its saving is
+    /// counted over.
+    pub amortize_calls: u32,
 }
 
 impl Default for ContextConfig {
@@ -127,6 +134,8 @@ impl Default for ContextConfig {
             knowledge_budget_ratio: 0.25,
             delegate_tool_result_clearing: false,
             delegate_compaction: false,
+            cache_read_discount: 0.1,
+            amortize_calls: 8,
         }
     }
 }
