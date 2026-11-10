@@ -382,7 +382,7 @@ describe("E2E mechanism contract tests", () => {
   // saving 0 tokens and never reducing context. emitUsage:false lets the Rust
   // engine use count_message() (char/4), giving correct 300t values for 1200-char
   // messages, which SnipCompact correctly truncates.
-  it("K09 defers the light tiers under a warm cache, compacts once and retains the preserved tail", async () => {
+  it("K09 triggers all four compression tiers and retains content in preserved tail", async () => {
     // spc_011-C-01 note: this test's `fill` tool used to do `char.repeat(size)` — a single
     // repeated character. That was fine under the old char/4 approximation (every char "costs"
     // the same regardless of content), but the real BPE-backed default engine (011-C-01)
@@ -430,10 +430,7 @@ describe("E2E mechanism contract tests", () => {
       //   turn N: tool message with seed result
       // That's 3 messages. AutoCompact keeps last 4, so all 3 + the previous asst
       // message are preserved. seed-result (containing RETAIN_ANCHOR) is in last-4.
-      // Plan task 8.3: with the light tiers deferred under a warm cache there may be no collapse
-      // marker before the hard tier, so a request nearing the window also starts this phase.
-      const nearWindow = (context.estimatedTokens ?? 0) > 3000
-      if ((text.includes("[Compressed: context_collapse]") || nearWindow) && !anchorSeeded) {
+      if (text.includes("[Compressed: context_collapse]") && !anchorSeeded) {
         anchorSeeded = true
         phase3BigFillDone = true
         return [
@@ -512,12 +509,10 @@ describe("E2E mechanism contract tests", () => {
     const compressedEvents = events.filter(e => e.event.kind === "compressed")
     const actions = compressedEvents.map(e => (e.event as any).action as string)
 
-    // Plan task 8.3: under a warm prompt cache the light tiers (snip, micro) rewrite the cached
-    // prefix for too little saving, so the kernel defers them; the window's hard tier compacts
-    // once instead of the ladder breaking the cache at every rung. (Each tier's own mechanics are
-    // covered by the kernel's compression tests.)
-    expect(actions).not.toContain("snip_compact")
-    expect(actions).not.toContain("micro_compact")
+    // All four tiers must have fired as distinct kernel events
+    expect(actions).toContain("snip_compact")
+    expect(actions).toContain("micro_compact")
+    expect(actions).toContain("context_collapse")
     expect(actions).toContain("auto_compact")
 
     // Anchor tool must have been called

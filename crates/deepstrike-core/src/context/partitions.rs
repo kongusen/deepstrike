@@ -803,7 +803,6 @@ fn is_han(character: char) -> bool {
 ///   Slot 4 — History   (history):   what the agent has done; conversation turns,
 ///                                    tool calls and results. Compression pipeline target.
 ///                                    Maps to: messages[1..N].
-#[derive(Clone)]
 pub struct ContextPartitions {
     pub system: Partition,
     pub knowledge: KnowledgePartition,

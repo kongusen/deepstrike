@@ -1512,17 +1512,6 @@ impl LoopStateMachine {
                     if matches!(op, crate::mm::EvictionOp::TimeDecayMicro) && idle_decay {
                         continue;
                     }
-                    // Plan task 8.3 · the pressure-driven light tiers run only when they pay for
-                    // the cache they break; collapse and auto-compact are the window's hard limit
-                    // and always run. (Idle decay ran above: by then the cache has expired.)
-                    let light = match op {
-                        crate::mm::EvictionOp::Snip { .. } => Some(crate::context::pressure::PressureAction::SnipCompact),
-                        crate::mm::EvictionOp::TimeDecayMicro => Some(crate::context::pressure::PressureAction::MicroCompact),
-                        _ => None,
-                    };
-                    if light.is_some_and(|action| !self.ctx.compaction_pays(action)) {
-                        continue;
-                    }
                     self.execute_eviction_op(op);
                 }
 

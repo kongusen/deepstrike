@@ -718,23 +718,6 @@ impl ContextManager {
             .flatten()
     }
 
-    /// Plan task 8.3 · whether compaction tier `action` pays now: run it on a copy and price the
-    /// break it would make. A pass that breaks nothing always pays.
-    pub fn compaction_pays(&self, action: PressureAction) -> bool {
-        let mut trial = self.partitions.clone();
-        let (saved, _, _, cache_at) = self.compression.compress(
-            &mut trial,
-            action,
-            self.max_tokens,
-            self.config.target_tokens(self.max_tokens),
-            &self.engine,
-        );
-        match cache_at {
-            None => true,
-            Some(index) => saved > 0 && self.rewrite_pays(saved, self.cached_tokens_from(index)),
-        }
-    }
-
     pub fn compress(
         &mut self,
         action: PressureAction,
