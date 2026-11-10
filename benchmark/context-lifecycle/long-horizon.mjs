@@ -12,7 +12,10 @@
 // the run must compact or renew long after the brief was read. The answer is
 // `count × multiplier + badge`, graded by exact match.
 //
-// Oracles (lower is better): `early_fact_lost` is 1 when the last request the model answered from
+// Oracles (lower is better): `formula_broken` is 1 when the final number does not have the brief's
+// form `n × multiplier + badge` (an early fact was lost or misapplied); otherwise `count_error` is
+// |n − true count| and `undercount` is 1 when n fell short — the run lost tallies it had made, which
+// no file can give back (unlike the brief, which the model can read again). `early_fact_lost` is 1 when the last request the model answered from
 // no longer showed the badge number anywhere (history, task state or knowledge) — the brief's
 // end-only fact did not survive; `brief_rereads` counts reads of the brief after the first;
 // `compactions` and `renewals` count the kernel's compaction and renewal events, so a run that never
@@ -105,6 +108,36 @@ function task(index) {
   }
 }
 
+/** The answer-derived oracles: did the final number keep the brief's form, and how far was its count. */
+function answerOracles(t, answer) {
+  const numbers = answer.replace(/,/g, "").match(/\d+/g) ?? []
+  const last = numbers.length ? Number(numbers[numbers.length - 1]) : NaN
+  const implied = (last - t.badge) / t.multiplier
+  const formed = Number.isInteger(implied) && implied >= 0
+  return {
+    formula_broken: formed ? 0 : 1,
+    count_error: formed ? Math.abs(implied - t.count) : t.count,
+    undercount: formed && implied < t.count ? 1 : 0,
+  }
+}
+
+// `--rescore <file>`: recompute the answer-derived oracles of recorded long-horizon trials in place
+// (they depend only on the recorded answer and the task's facts).
+if (process.argv.includes("--rescore")) {
+  const { readFile, writeFile } = await import("node:fs/promises")
+  const file = resolve(arg("--rescore"))
+  const lines = (await readFile(file, "utf8")).split("\n").filter(line => line.trim())
+  const rescored = lines.map(line => {
+    const trial = JSON.parse(line)
+    if (trial.scenario !== "long-horizon") return line
+    const t = task(Number(trial.task.split("#")[1]))
+    return JSON.stringify({ ...trial, oracle: { ...trial.oracle, ...answerOracles(t, trial.answer ?? "") } })
+  })
+  await writeFile(file, rescored.join("\n") + "\n")
+  console.error(`rescored ${rescored.length} trials`)
+  process.exit(0)
+}
+
 // `--dry`: print each task's facts and sizes, call no model.
 if (process.argv.includes("--dry")) {
   for (let index = start; index < start + taskCount; index++) {
@@ -176,9 +209,11 @@ async function runTask(index) {
       brief_rereads: Math.max(0, briefReads - 1),
       compactions: recorder.events.filter(event => event.kind === "compressed").length,
       renewals: recorder.events.filter(event => event.kind === "context_renewed").length,
+      ...answerOracles(t, answer),
     },
     expected: t.expected,
-    answer: answer.slice(-80),
+    // The tail of the reply: the final number is in it, and `--rescore` reads it back.
+    answer: answer.slice(-200),
   }
 }
 
