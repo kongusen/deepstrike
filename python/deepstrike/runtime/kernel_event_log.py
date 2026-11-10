@@ -135,11 +135,12 @@ def _project_kernel_observation(
             "recall_expanded": _get(obs, "recall_expanded", 0),
         }
         for field in ("items", "history", "history_items", "edges", "waste_items", "external_edges",
-                      "parent_items_used"):
+                      "parent_items_used", "prefix_breaks"):
             rows = _get(obs, field, None)
             if rows:
                 event[field] = list(rows)
-        for field in ("history_items_omitted", "edges_omitted"):
+        for field in ("history_items_omitted", "edges_omitted", "prefix_breaks_omitted",
+                      "cache_tail_tokens"):
             if _get(obs, field, 0):
                 event[field] = obs[field]
         return event

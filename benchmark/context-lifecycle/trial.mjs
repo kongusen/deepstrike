@@ -152,6 +152,9 @@ export function recordingSessionLog(inner) {
       get(target, property) {
         if (property === "append") {
           return async (sessionId, event) => {
+            // The run a provider attempt belongs to, so the lab compares each request with the
+            // previous request of the same run (plan task 8.0). Not enumerable: never serialized.
+            Object.defineProperty(event, "__session", { value: sessionId, enumerable: false })
             events.push(event)
             return target.append(sessionId, event)
           }
@@ -190,11 +193,27 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
       input_tokens: sum("inputTokens"),
       output_tokens: sum("outputTokens"),
       cache_read_tokens: sum("cacheReadInputTokens"),
+      requests: requestCosts(attempts),
     },
     token_estimates: tokenEstimates,
     ...(provider.trace?.length ? { trace: provider.trace } : {}),
     lifecycle: events.filter(event => event.kind === "context_lifecycle_reported"),
   }
+}
+
+/** Plan task 8.0 · each provider request's usage in the order sent, with the run (session) that
+ *  sent it, for the lab's measured cache loss. */
+function requestCosts(attempts) {
+  const sessions = new Set(attempts.map(attempt => attempt.__session))
+  return attempts
+    .filter(attempt => attempt.usage)
+    .map(attempt => ({
+      ...(sessions.size > 1 && attempt.__session ? { run: String(attempt.__session) } : {}),
+      input_tokens: Number(attempt.usage.inputTokens) || 0,
+      cache_read_tokens: Number(attempt.usage.cacheReadInputTokens) || 0,
+      cache_write_tokens: Number(attempt.usage.cacheCreationInputTokens) || 0,
+      output_tokens: Number(attempt.usage.outputTokens) || 0,
+    }))
 }
 
 /** The pre-call measurement of each provider effect. The SDK records a second, post-call

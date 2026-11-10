@@ -1263,6 +1263,7 @@ fn restore_context_vm(
         state.knowledge_budget_warned,
     );
     ctx.restore_cache_checkpoint_state(state.prefix_sent, state.cache_invalidated_tokens);
+    ctx.cache_ledger = state.cache_ledger.clone();
     ctx.partitions.knowledge.evicted_keys = state.evicted_knowledge_keys.iter().cloned().collect();
     ctx.partitions.knowledge.regret = state.knowledge_regret;
     ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;

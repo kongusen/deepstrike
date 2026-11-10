@@ -232,7 +232,7 @@ pub enum SessionEvent {
         handoff_ref: String,
     },
     /// End-of-run context lifecycle metrics: knowledge regret, never-referenced knowledge
-    /// tokens, and history tokens whose prompt cache a mid-run system[1] promotion discarded.
+    /// tokens, and prefix tokens later requests sent uncached again (plan task 8.0).
     ContextLifecycleReported {
         turn: u32,
         knowledge_entries: u32,
@@ -269,6 +269,15 @@ pub enum SessionEvent {
         external_edges: Vec<crate::context::item::ExternalEdge>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         parent_items_used: Vec<crate::context::item::ExternalItem>,
+        /// Plan task 8.0 · the latest prefix breaks between provider requests; older ones counted.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prefix_breaks: Vec<crate::context::cache_ledger::PrefixBreak>,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        prefix_breaks_omitted: u32,
+        /// State-turn tokens of every request a later one followed: rebuilt each request, so
+        /// never reusable and not a break, but part of a provider's uncached input count.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
+        cache_tail_tokens: u64,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

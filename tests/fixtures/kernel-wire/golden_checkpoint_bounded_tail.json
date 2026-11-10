@@ -1,15 +1,39 @@
 {
-  "base_state_digest": "sha256:43e37d719721f288c26a7a4544f05d6bf31229d564f7cc6c8827bf91e0efaae1",
+  "base_state_digest": "sha256:324789a077b6b978fa768f6b03ee2b0a3c5686bdc4b3bb15ee8c03cf1cc1bb71",
   "checkpoint": {
     "base_record_digest": "sha256:828c0f621c57a8d62bc1f7ee8bab84544eadaeef9eb45604e2e171286feda47d",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:99074f57d8c68064078f28fd13eee9fa7be1c271df94d579cab166d0cbbb1594",
-    "covered_transaction_head_digest": "sha256:dc223686147b29b39f64ff5bb849a630a96b19b9ae0a23bd08541a78c82b02d7",
+    "checkpoint_digest": "sha256:69453b02f03ba80eafcda952060f91c1625371a7bde341c640e217a49b2a7770",
+    "covered_transaction_head_digest": "sha256:bbd044496fa10b9dc0afc1fa34fefceff5918cef8d0f30696839dd49045d3dfa",
     "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
         "cache_invalidated_tokens": 0,
+        "cache_ledger": {
+          "sent": {
+            "knowledge": {
+              "hash": "cbf29ce484222325",
+              "tokens": 1
+            },
+            "system": {
+              "hash": "cbf29ce484222325",
+              "tokens": 1
+            },
+            "tail": 24,
+            "tools": {
+              "hash": "1ad7f9d4fa4273e0",
+              "tokens": 247
+            },
+            "turns": [
+              {
+                "hash": "84ccd7c627f7dd5d",
+                "item": 1,
+                "tokens": 11
+              }
+            ]
+          }
+        },
         "frozen_history_len": 0,
         "handles": [],
         "history_items": [
@@ -621,8 +645,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:43e37d719721f288c26a7a4544f05d6bf31229d564f7cc6c8827bf91e0efaae1",
-    "tail_digest": "sha256:4eb13be738a799364d9233b9d36ea549f5accd8349119bffd9b202332d454be4",
+    "state_digest": "sha256:324789a077b6b978fa768f6b03ee2b0a3c5686bdc4b3bb15ee8c03cf1cc1bb71",
+    "tail_digest": "sha256:a008ade92bd0e50b3c39e4649794d1a08620c335dd6d61e5bdefb0d4ff79b071",
     "tail_inputs": [
       {
         "input": {
@@ -712,7 +736,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:dc223686147b29b39f64ff5bb849a630a96b19b9ae0a23bd08541a78c82b02d7",
+        "record_digest": "sha256:bbd044496fa10b9dc0afc1fa34fefceff5918cef8d0f30696839dd49045d3dfa",
         "step_seq": "4"
       }
     ],

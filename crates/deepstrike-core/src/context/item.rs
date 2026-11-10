@@ -138,7 +138,7 @@ pub(crate) fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
-fn is_zero_u64(value: &u64) -> bool {
+pub fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 

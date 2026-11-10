@@ -1839,6 +1839,9 @@ impl LoopStateMachine {
             waste_items: metrics.waste_items,
             external_edges: metrics.external_edges,
             parent_items_used: metrics.parent_items_used,
+            prefix_breaks: metrics.prefix_breaks,
+            prefix_breaks_omitted: metrics.prefix_breaks_omitted,
+            cache_tail_tokens: metrics.cache_tail_tokens,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
@@ -2182,7 +2185,7 @@ impl LoopStateMachine {
         tools: Vec<ToolSchema>,
     ) -> LoopAction {
         self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
-        self.ctx.mark_prefix_sent();
+        self.ctx.note_request_sent(&context, &tools, self.turn);
         let context = self.estimate_request(context, &tools);
         LoopAction::CallLLM { context, tools }
     }

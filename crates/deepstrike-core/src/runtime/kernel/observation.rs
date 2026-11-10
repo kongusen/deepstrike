@@ -45,8 +45,8 @@ pub enum KernelObservation {
     },
     /// Context lifecycle metrics for the finished run (plan task 4.1), emitted once at termination.
     /// `regret`: evicted knowledge keys that were pushed again. `waste_tokens`: knowledge tokens
-    /// never referenced (evicted or still resident). `cache_loss_tokens`: history tokens whose
-    /// cache a mid-run system[1] promotion discarded. `recalled` / `recall_expanded`: memory
+    /// never referenced (evicted or still resident). `cache_loss_tokens`: prefix tokens a later
+    /// request sent uncached again because it broke the earlier request's prefix (plan task 8.0). `recalled` / `recall_expanded`: memory
     /// records the kernel recalled, and how many of them the model read with `memory(record_id)`.
     /// `items`: every knowledge item of the run with its origin, use and why it left.
     LifecycleReport {
@@ -86,6 +86,17 @@ pub enum KernelObservation {
         external_edges: Vec<crate::context::item::ExternalEdge>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         parent_items_used: Vec<crate::context::item::ExternalItem>,
+        /// Plan task 8.0 · where consecutive provider requests broke the cacheable prefix, why,
+        /// and the tokens each break sent uncached again (the latest ones; older ones are counted
+        /// in `prefix_breaks_omitted`). `cache_loss_tokens` sums every break of the run.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        prefix_breaks: Vec<crate::context::cache_ledger::PrefixBreak>,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        prefix_breaks_omitted: u32,
+        /// State-turn tokens of every request a later one followed: rebuilt each request, so
+        /// never reusable and not a break, but part of a provider's uncached input count.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
+        cache_tail_tokens: u64,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in

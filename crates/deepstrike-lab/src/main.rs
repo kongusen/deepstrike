@@ -3,6 +3,7 @@
 //!   deepstrike-lab report <trials.jsonl>... [--baseline <variant>] [--json]
 //!   deepstrike-lab gate <trials.jsonl>... --baseline <variant> --candidate <variant>
 //!                       [--no-worse <metric,...>] [--max-estimate-error <fraction>]
+//!                       [--max-cache-loss-error <fraction>]
 //!
 //! `report` prints a Markdown table per scenario (or the summaries as JSON). `gate` prints each
 //! failed check and exits 1 if there is one.
@@ -67,6 +68,12 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
                     .get("max-estimate-error")
                     .map(|bound| bound.parse::<f64>().map_err(|e| format!("--max-estimate-error: {e}")))
                     .transpose()?,
+                max_cache_loss_error: flags
+                    .get("max-cache-loss-error")
+                    .map(|bound| {
+                        bound.parse::<f64>().map_err(|e| format!("--max-cache-loss-error: {e}"))
+                    })
+                    .transpose()?,
             };
             let failures = gate.check(&summaries, baseline, candidate);
             for failure in &failures {
@@ -86,6 +93,6 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
 fn usage() -> String {
     "usage: deepstrike-lab report <trials.jsonl>... [--baseline <variant>] [--json]\n       \
      deepstrike-lab gate <trials.jsonl>... --baseline <v> --candidate <v> \
-     [--no-worse m1,m2] [--max-estimate-error 0.10]"
+     [--no-worse m1,m2] [--max-estimate-error 0.10] [--max-cache-loss-error 0.15]"
         .to_string()
 }

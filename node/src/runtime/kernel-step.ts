@@ -9,7 +9,7 @@ import type {
   MediaSource,
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
-import type { ContextExternalEdge, ContextExternalItem, ContextHistoryItemRecord, ContextItemEdge, ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
+import type { ContextExternalEdge, ContextExternalItem, ContextHistoryItemRecord, ContextPrefixBreak, ContextItemEdge, ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
 import type { InheritedKnowledge, WorkflowBudget, WorkflowSpawnInfo } from "../types/agent.js"
 import { validateSkillKernelProjection } from "./validators/skill-kernel-projection.js"
 import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
@@ -254,6 +254,9 @@ export interface KernelObservation {
   waste_items?: number[]
   external_edges?: ContextExternalEdge[]
   parent_items_used?: ContextExternalItem[]
+  prefix_breaks?: ContextPrefixBreak[]
+  prefix_breaks_omitted?: number
+  cache_tail_tokens?: number
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string

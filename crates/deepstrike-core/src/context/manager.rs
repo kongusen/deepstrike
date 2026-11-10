@@ -1,3 +1,4 @@
+use super::cache_ledger::BreakCause;
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
 use super::item::{
@@ -110,6 +111,12 @@ pub struct LifecycleMetrics {
     pub external_edges: Vec<ExternalEdge>,
     /// The parent run's items whose inherited copies this run used.
     pub parent_items_used: Vec<ExternalItem>,
+    /// Plan task 8.0 · the latest prefix breaks (what `cache_loss_tokens` sums), and how many the
+    /// cap dropped.
+    pub prefix_breaks: Vec<crate::context::cache_ledger::PrefixBreak>,
+    pub prefix_breaks_omitted: u32,
+    /// State-turn tokens of every request a later one followed: uncached by design, not a break.
+    pub cache_tail_tokens: u64,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -196,6 +203,8 @@ pub struct ContextManager {
     prefix_sent: bool,
     /// History tokens whose cache a mid-run system[1] promotion discarded, summed over the run.
     cache_invalidated_tokens: u64,
+    /// Plan task 8.0 · every prefix break between consecutive provider requests, attributed.
+    pub(crate) cache_ledger: super::cache_ledger::CacheLedger,
     /// Long-term memory recall (plan task 2.1): `Some(top_k)` when the operation can read memory.
     /// The kernel recalls at the start of a run and after every renewal.
     pub(crate) recall_top_k: Option<u32>,
@@ -225,6 +234,39 @@ pub struct ContextManager {
     pub(crate) item_replays: std::collections::BTreeMap<ItemId, (serde_json::Value, u32)>,
     /// Replay for the assistant message being admitted now (set around one provider completion).
     pub(crate) pending_assistant_replay: Option<serde_json::Value>,
+}
+
+/// Plan task 8.0 · a message's content as it reaches a provider, for the cache ledger's
+/// fingerprint: a tool result's `durable_content` is kernel-side detail (a restored message carries
+/// it, a live one may not) and never goes on the wire, so it must not count as a change.
+fn wire_content(content: &Content) -> std::borrow::Cow<'_, Content> {
+    let Content::Parts(parts) = content else {
+        return std::borrow::Cow::Borrowed(content);
+    };
+    if !parts
+        .iter()
+        .any(|part| matches!(part, ContentPart::ToolResult { durable_content: Some(_), .. }))
+    {
+        return std::borrow::Cow::Borrowed(content);
+    }
+    let parts = parts
+        .iter()
+        .map(|part| match part {
+            ContentPart::ToolResult {
+                call_id,
+                output,
+                is_error,
+                ..
+            } => ContentPart::ToolResult {
+                call_id: call_id.clone(),
+                output: output.clone(),
+                is_error: *is_error,
+                durable_content: None,
+            },
+            other => other.clone(),
+        })
+        .collect();
+    std::borrow::Cow::Owned(Content::Parts(parts))
 }
 
 impl ContextManager {
@@ -277,6 +319,7 @@ impl ContextManager {
             recall_due: false,
             dependency_bodies: std::collections::BTreeMap::new(),
             cache_invalidated_tokens: 0,
+            cache_ledger: super::cache_ledger::CacheLedger::default(),
             last_item_id: 0,
             graph: super::graph::ItemGraph::default(),
             history_tally: std::collections::BTreeMap::new(),
@@ -360,6 +403,7 @@ impl ContextManager {
             // been externalized or paged out, and never reverse an existing collapse mid-generation.
             if i < cutoff && matches!(handle.residency, Residency::Resident) {
                 handle.residency = Residency::Collapsed;
+                self.cache_ledger.note_cause(BreakCause::Collapse);
             }
         }
     }
@@ -674,6 +718,7 @@ impl ContextManager {
         if saved > 0 || !archived.is_empty() {
             // The measurement describes the request before this rewrite, not the new context.
             self.last_observed_prompt_tokens = None;
+            self.cache_ledger.note_cause(BreakCause::of_compaction(action));
         }
         if let Some(ts) = now_ms {
             self.last_compact_ms = Some(ts);
@@ -739,6 +784,7 @@ impl ContextManager {
         }
         self.partitions = renewed;
         self.sprint += 1;
+        self.cache_ledger.note_cause(BreakCause::Renewal);
         self.last_observed_prompt_tokens = None;
         // The renewed history dropped earlier recalls with the rest; recall again for the new sprint.
         self.recall_due = self.recall_top_k.is_some();
@@ -844,6 +890,7 @@ impl ContextManager {
             message,
         });
         self.keep_item_replay(tag.id, replay);
+        self.cache_ledger.note_cause(BreakCause::Provider);
         self.prune_orphaned_handles();
         self.prune_item_replays();
         self.reset_collapse_generation();
@@ -861,6 +908,7 @@ impl ContextManager {
                 && matches!(handle.residency, Residency::Resident)
             {
                 handle.residency = Residency::Collapsed;
+                self.cache_ledger.note_cause(BreakCause::Provider);
             }
         }
     }
@@ -1348,6 +1396,76 @@ impl ContextManager {
         self.prefix_sent = true;
     }
 
+    /// Plan task 8.0 · `rendered` goes to a provider with `tools` on `turn`: system[1] is cached
+    /// from now on, and the ledger records where this request broke the previous one's prefix.
+    pub fn note_request_sent(
+        &mut self,
+        rendered: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        turn: u32,
+    ) -> Option<super::cache_ledger::PrefixBreak> {
+        use super::cache_ledger::{Segment, SentPrefix, SentTurn};
+        self.mark_prefix_sent();
+        let prev = self.cache_ledger.sent.as_ref();
+        let known: std::collections::HashMap<&str, u32> = prev
+            .into_iter()
+            .flat_map(|sent| {
+                [&sent.tools, &sent.system, &sent.knowledge]
+                    .into_iter()
+                    .chain(sent.turns.iter().map(|turn| &turn.segment))
+            })
+            .map(|segment| (segment.hash.as_str(), segment.tokens))
+            .collect();
+        let engine = &self.engine;
+        let segment = |material: Vec<u8>, count: &dyn Fn() -> u32| {
+            let mut segment = Segment::of(&material, 0);
+            segment.tokens = known.get(segment.hash.as_str()).copied().unwrap_or_else(count);
+            segment
+        };
+        let tool_material = serde_json::to_vec(tools).unwrap_or_default();
+        let tools_segment = segment(tool_material.clone(), &|| {
+            engine.count(&String::from_utf8_lossy(&tool_material))
+        });
+        let system = segment(rendered.system_stable.as_bytes().to_vec(), &|| {
+            engine.count(&rendered.system_stable)
+        });
+        let knowledge = segment(rendered.system_knowledge.as_bytes().to_vec(), &|| {
+            engine.count(&rendered.system_knowledge)
+        });
+        let turns = rendered
+            .turns
+            .iter()
+            .enumerate()
+            .map(|(index, message)| {
+                let item = rendered.turn_items.get(index).copied().unwrap_or(0);
+                let replay = rendered.turn_replays.get(index).and_then(Option::as_ref);
+                let material = serde_json::to_vec(&(
+                    &message.role,
+                    wire_content(&message.content),
+                    &message.tool_calls,
+                    replay,
+                ))
+                .unwrap_or_default();
+                let replay_tokens = self.item_replays.get(&item).map_or(0, |(_, tokens)| *tokens);
+                SentTurn {
+                    segment: segment(material, &|| {
+                        engine.count_message(message).saturating_add(replay_tokens)
+                    }),
+                    item,
+                    stub: message.content.as_text() == Some(super::renderer::NARRATION_STUB),
+                }
+            })
+            .collect();
+        let next = SentPrefix {
+            tools: tools_segment,
+            system,
+            knowledge,
+            turns,
+            tail: rendered.state_turn.as_ref().map_or(0, |state| engine.count_message(state)),
+        };
+        self.cache_ledger.observe(turn, next)
+    }
+
     /// The run's context lifecycle metrics (plan task 4.1).
     pub fn lifecycle_metrics(&self) -> LifecycleMetrics {
         let knowledge = &self.partitions.knowledge;
@@ -1437,7 +1555,10 @@ impl ContextManager {
             knowledge_referenced: referenced,
             regret: knowledge.regret,
             waste_tokens: knowledge.wasted_tokens + resident_waste,
-            cache_loss_tokens: self.cache_invalidated_tokens,
+            cache_loss_tokens: self.cache_ledger.lost_tokens,
+            prefix_breaks: self.cache_ledger.breaks.iter().copied().collect(),
+            prefix_breaks_omitted: self.cache_ledger.breaks_omitted,
+            cache_tail_tokens: self.cache_ledger.tail_tokens,
             recalled,
             recall_expanded,
             items,
@@ -1471,6 +1592,7 @@ impl ContextManager {
         let history = self.partitions.history.token_count();
         if self.partitions.knowledge.staged_tokens().saturating_mul(4) >= history {
             self.partitions.knowledge.promote_staged();
+            self.cache_ledger.note_cause(BreakCause::Promotion);
             self.cache_invalidated_tokens += u64::from(history);
             self.prefix_sent = false;
         }
@@ -2101,6 +2223,66 @@ Scope, identity, provenance, and timestamps are derived for you.".to_string(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plan task 8.0 · the ledger attributes real render changes: old narration leaving the
+    /// protected window, a compaction, and a changed toolset.
+    #[test]
+    fn the_cache_ledger_attributes_render_breaks() {
+        use crate::context::cache_ledger::BreakCause;
+        let mut mgr = ContextManager::new(100_000);
+        let tools = |names: &[&str]| -> Vec<ToolSchema> {
+            names
+                .iter()
+                .map(|name| ToolSchema {
+                    name: CompactString::new(*name),
+                    description: String::new(),
+                    parameters: serde_json::json!({ "type": "object" }),
+                })
+                .collect()
+        };
+        let toolset = tools(&["read"]);
+        let step = |mgr: &mut ContextManager, n: usize| {
+            let mut call = CoreMessage::assistant(format!(
+                "Step {n}: I will now read the next section of the ledger to continue the audit."
+            ));
+            call.tool_calls = vec![crate::types::message::ToolCall {
+                id: format!("c{n}").into(),
+                name: "read".into(),
+                arguments: serde_json::json!({ "page": n }),
+            }];
+            mgr.push_history(call, 20);
+            mgr.push_history(tool_result_msg(&format!("c{n}"), "page body"), 5);
+        };
+        mgr.push_history(CoreMessage::user("audit the ledger"), 5);
+        step(&mut mgr, 1);
+        assert_eq!(mgr.note_request_sent(&mgr.render(), &toolset, 1), None, "nothing to compare yet");
+        step(&mut mgr, 2);
+        assert_eq!(mgr.note_request_sent(&mgr.render(), &toolset, 2), None, "an append keeps the prefix");
+        step(&mut mgr, 3);
+        // Step 1's narration has left the protected window and renders as the stub now.
+        let found = mgr.note_request_sent(&mgr.render(), &toolset, 3).expect("narration breaks");
+        assert_eq!(found.cause, BreakCause::Narration);
+        assert!(found.kept_tokens > 0 && found.lost_tokens > 0);
+
+        step(&mut mgr, 4);
+        mgr.cache_ledger.note_cause(BreakCause::of_compaction(PressureAction::AutoCompact));
+        mgr.partitions.history.truncate(1);
+        let found = mgr.note_request_sent(&mgr.render(), &toolset, 4).expect("compaction breaks");
+        assert_eq!(found.cause, BreakCause::Auto, "an announced cause wins over inference");
+
+        let found = mgr
+            .note_request_sent(&mgr.render(), &tools(&["read", "write"]), 5)
+            .expect("a new toolset breaks everything");
+        assert_eq!((found.cause, found.kept_tokens), (BreakCause::Toolset, 0));
+
+        let metrics = mgr.lifecycle_metrics();
+        assert_eq!(metrics.prefix_breaks.len(), 3);
+        assert_eq!(
+            metrics.cache_loss_tokens,
+            metrics.prefix_breaks.iter().map(|b| u64::from(b.lost_tokens)).sum::<u64>(),
+            "cache_loss_tokens sums every break"
+        );
+    }
     use crate::context::task_state::PlanStep;
     use crate::types::message::CoreMessage;
     use crate::types::skill::SkillMetadata;

@@ -6,6 +6,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The cache ledger (plan task 8.0). Every provider request is fingerprinted segment by segment
+  (tool schemas, system[0], system[1], each history turn) and compared with the previous request;
+  the first segment that differs is a prefix break. `context_lifecycle_reported` gains
+  `prefix_breaks` (the latest 128: turn, cause, `kept_tokens`, `lost_tokens`), `prefix_breaks_omitted`
+  and `cache_tail_tokens` (the state turns of earlier requests, which are rebuilt every request and
+  so never reusable). Causes are announced by the rewrite that made them (`snip`, `micro`,
+  `collapse`, `auto`, `renewal`, `provider`, `promotion`) or read from the render (`toolset`,
+  `system`, `narration`, `budget_drop`, `reprojection`, `other`). The ledger is checkpointed.
+- `deepstrike-lab` reads per-request usage (`cost.requests[]`, recorded by the benchmark harness)
+  and reports `observed_cache_loss_tokens` (for each request after the first of its run, the
+  previous request's input not read from cache, less `cache_tail_tokens`), `cache_loss_error`
+  (the kernel's account against it, size-weighted) and the kernel's loss by cause as
+  `cache_loss.<cause>`. `gate --max-cache-loss-error <fraction>` bounds the error.
+
+### Changed
+
+- `cache_loss_tokens` now sums every prefix break of the run. It used to count only history behind
+  a mid-run knowledge promotion and reported 0 for compaction, narration collapse, tool-result
+  collapse, budget drops, renewal and toolset changes.
+
 ## [0.2.81] - 2026-11-03
 
 ### Added

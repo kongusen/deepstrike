@@ -69,6 +69,18 @@ export interface ContextExternalItem {
   item?: number
 }
 
+/** Plan task 8.0 · where a provider request broke the previous request's cacheable prefix. */
+export interface ContextPrefixBreak {
+  turn: number
+  cause:
+    | "toolset" | "system" | "promotion" | "collapse" | "reprojection" | "narration"
+    | "budget_drop" | "snip" | "micro" | "auto" | "renewal" | "provider" | "other"
+  /** Prefix tokens of the previous request still cacheable. */
+  kept_tokens: number
+  /** Prefix tokens of the previous request after the break: sent uncached again. */
+  lost_tokens: number
+}
+
 /** An edge from an item of this run to an item of another run. */
 export interface ContextExternalEdge {
   from: number
@@ -158,6 +170,11 @@ export type SessionEvent =
       external_edges?: ContextExternalEdge[]
       /** The parent run's items whose inherited copies this run used. */
       parent_items_used?: ContextExternalItem[]
+      /** Plan task 8.0 · the latest prefix breaks between provider requests (`cache_loss_tokens` sums every break); older ones are only counted. */
+      prefix_breaks?: ContextPrefixBreak[]
+      prefix_breaks_omitted?: number
+      /** State-turn tokens of every request a later one followed: never reusable, so not a break, but part of a provider's uncached input count. */
+      cache_tail_tokens?: number
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

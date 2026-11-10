@@ -544,6 +544,134 @@ graph store. Constraints:
   - Files: `orchestration/workflow`, `runtime/kernel/wire/driver/continuation.rs`, the four SDKs'
     `inherited_knowledge`
 
+### Stage 8: measure first, put the cache into decisions (0.2.82)
+
+**Why.** Stages 0–7 finished the ledger, but measurements on 0.2.79–0.2.81 show that the
+bottleneck is no longer missing mechanism: the books are wrong, and decisions ignore cache cost
+(`results/ledger.jsonl`, DeepSeek `deepseek-flash`; uncached input = input − 0.9 × cache reads):
+
+| Release | Correct | Input tokens / task | Cache hit rate | Uncached input / task | Kernel-reported `cache_loss_tokens` |
+|---------|---------|---------------------|----------------|-----------------------|-------------------------------------|
+| 0.2.79 | 11/12 | 52.4k | 63% | 22.7k | 0 |
+| 0.2.80 | 20/24 | 57.1k | 53% | 29.6k | 0 |
+| 0.2.81 | 22/24 | 54.4k | 56% | 27.1k | 0 |
+
+| # | Problem | Evidence |
+|---|---------|----------|
+| Q12 | `cache_loss` counts only knowledge promotion (`cache_invalidated_tokens` in `manager.rs`); prefix rewrites from compaction, narration collapse, over-budget drops and renewal are not counted. The kernel reports 0 while the measured hit rate fell from 63% to 56% — the same kind of gap as the under-reported waste found in 7.0 | table above |
+| Q13 | Rendering rewrites the middle of the prefix every turn: `collapse_assistant_narration` is on by default and `preserve_recent_turns` = 2, so the narration unit that just left the protected window is replaced by `NARRATION_STUB` on that turn; over budget, the oldest unit is dropped one turn at a time. Both make everything after the break point bill as uncached again, every turn | `project_assistant_narration` and the render loop in `renderer.rs` |
+| Q14 | The benchmarks are too small for a gate to tell improvement from noise: 7–8k windows, peak context under 10k, 12 tasks per variant; 9/12 vs 10/12 is noise. Long tasks with 100k+ windows and dozens of turns are not covered, so the data that would show whether `RuleSummarizer` is the bottleneck (see "Out of scope") can never appear | `long-task.mjs` defaults to `--max-tokens 8000`; `knowledge-pressure.mjs` uses a 7000 window |
+| Q15 | The gate is driven by token and character counts, not price; a change that saves tokens but loses cache hits passes as an improvement | `Summary` in `crates/deepstrike-lab` |
+| Q16 | The success metrics "input −25%, cache_loss −50%" are not met, and the current gate cannot see it | ledger input 52.4k → 54.4k |
+
+**Principles.**
+- As in 0.2.80 and 0.2.81, the lab comes before the change it measures: 8.0–8.2 change only
+  measurement, not rendering; 8.3 and 8.4 change decisions and must pass the new gate first.
+- Cache loss, like waste, is grounded in provider measurements; the kernel's self-reported number
+  must agree with them.
+- Freeze the graph: this stage adds no relation, lease or origin. Existing edges take part in
+  decisions only after the lab shows a gain.
+
+- [ ] Task 8.0 (2026-11-11, implemented, live measurement pending): new `context/cache_ledger.rs`.
+  Each request's prefix is fingerprinted segment by segment (tool schemas, system[0], system[1],
+  each history turn) and compared with the previous request; the first segment that differs is the
+  break. The cause is announced by the rewrite that made it (`snip` / `micro` / `collapse` /
+  `auto` / `renewal` / `provider` / `promotion`) or, when none was, read from the render
+  (`toolset` / `system` / `narration` / `budget_drop` / `reprojection` / `other`). The lifecycle
+  report gains `prefix_breaks` (the latest 128), `prefix_breaks_omitted` and `cache_tail_tokens`;
+  `cache_loss_tokens` becomes the sum over all breaks; the ledger is checkpointed. The lab reads
+  trials' `cost.requests[]` and reports `observed_cache_loss_tokens`, `cache_loss_error` and
+  `cache_loss.<cause>`, with `gate --max-cache-loss-error`. The four SDKs' projections and the
+  contract are in sync; the Rust workspace, Node, Python, WASM and four-SDK conformance all pass.
+  A scripted long task (`run.mjs`, 25 calls) records two `micro` breaks totalling 17.6k tokens
+  where the old field reported 0. Differences from the acceptance:
+    - The field is `requests[]`, not `calls[]` (`cost.calls` is already the call count); a break
+      is `cause` plus `kept_tokens` / `lost_tokens` (the break position in tokens).
+    - Causes add `toolset`, `system`, `reprojection` and `other`: a skill narrowing the toolset
+      invalidates the whole cache, a kind of break the plan did not list.
+    - New `cache_tail_tokens`: the previous request's state turn is rebuilt every request and was
+      never reusable, but a provider's uncached input count includes it; the lab subtracts it from
+      the measured value before comparing it with the kernel's.
+    - Fingerprints cover only what reaches the provider: a tool result's `durable_content` is left
+      out (a restored message carries it and a live one may not, which would otherwise show a
+      false break after a restore).
+    - A newly found per-turn break source (for 8.3): above the collapse threshold,
+      `recompute_handle_residency` collapses one more old tool result every turn.
+    - Not done: the live measurement on ledger / knowledge-pressure (≤15% deviation), which needs a
+      real provider.
+  - Acceptance: a trial's `cost` gains per-call detail `calls[]` (`input_tokens`,
+    `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, and the kernel's prefix break
+    point). The lab computes measured cache loss per call as `max(0, reusable prefix − cache_read)`,
+    where the reusable prefix is the previous call's input minus this turn's new tail. The kernel's
+    lifecycle report gains `prefix_breaks` (turn, action
+    `promotion | snip | micro | collapse | auto | narration | budget_drop | renewal | provider`,
+    break position, tokens after the break), and `cache_loss_tokens` becomes the sum over all
+    breaks instead of knowledge promotion only.
+  - Verification: on ledger and knowledge-pressure, the kernel's `cache_loss_tokens` is within 15%
+    of measured cache loss (the tolerance covers provider cache granularity, e.g. DeepSeek's
+    64-token blocks).
+  - Files: `context/manager.rs`, `context/renderer.rs` (render returns the break point),
+    `crates/deepstrike-lab`, the metering wrappers in `benchmark/context-lifecycle/*.mjs`; the four
+    SDKs' projections and contracts
+
+- [ ] Task 8.1: a price-weighted gate with paired statistics
+  - Acceptance: the lab gains a price table (per provider / model: uncached input, cache read,
+    cache write and output prices) and a `weighted_cost` metric, which becomes the primary cost
+    gate; `input_tokens` / `sent_chars` become diagnostics. The gate compares the same task across
+    two variants as pairs and reports a bootstrap 95% confidence interval on the difference:
+    success "does not drop" only if the interval's lower bound is above −5 percentage points; with
+    fewer than 30 pairs the gate reports "insufficient samples" instead of passing.
+  - Verification: recomputed from the three existing result files, ledger 0.2.79 → 0.2.81 shows a
+    regression on `weighted_cost` (uncached input +19% in the table above).
+  - Files: `crates/deepstrike-lab/src/lib.rs`, `main.rs`
+
+- [ ] Task 8.2: the `long-horizon` benchmark
+  - Acceptance: new `benchmark/context-lifecycle/long-horizon.mjs`: a window of at least 100k and
+    at least 40 turns per task, with a scripted tool environment that returns large outputs (a
+    multi-account ledger or a repository investigation). The answer depends on facts that appear in
+    the first 10 turns and are never repeated, so they must pass through compaction or renewal.
+    Oracles: `early_fact_lost` (a required fact is neither visible nor read back when answering),
+    `compactions`, `renewals`. Baseline on 0.2.81 with at least 30 tasks per variant. The three
+    existing scenarios stay as regressions.
+  - Verification: the baseline triggers at least one auto compaction or renewal;
+    `early_fact_lost` has a non-zero baseline — otherwise lengthen the task until it does.
+  - Files: `benchmark/context-lifecycle/`
+
+- [ ] Task 8.3: cache-aware compaction
+  - Acceptance: compaction and render-time projections do the arithmetic before acting: an action
+    that creates a prefix break runs only if "tokens freed × amortized calls × (1 − cache read
+    discount)" exceeds "tokens after the break × (1 − cache read discount)". `ContextPolicy` gains
+    `cache_read_discount_ppm` (default 100_000) and `amortize_calls` (default 8); the hard window
+    limit takes precedence, and over the limit compaction runs as before. Concretely:
+    - narration collapse no longer happens unit by unit on every render; it runs in batches at a
+      boundary or during compaction (fixes Q13);
+    - dropping the oldest units over budget drops down to `target_after_compress` in one go
+      instead of one unit per turn;
+    - one compaction produces one break where possible: all rewrites start from the same earliest
+      position instead of breaking at several positions.
+  - Verification: `deepstrike-lab gate` on ledger, knowledge-pressure and long-horizon shows lower
+    `weighted_cost` and no drop in success (paired rule from 8.1); fan-out does not regress.
+    Goldens change; re-bless them and describe the change in MIGRATION.
+  - Files: `context/compression.rs`, `context/renderer.rs`, `context/pressure.rs`,
+    `context/policy.rs`, `context/config.rs`
+
+- [ ] Task 8.4: model summaries as an effect (depends on 8.2 data)
+  - Precondition: in the long-horizon baseline, `early_fact_lost` happens mostly inside ranges
+    covered by `RuleSummarizer` summaries. Otherwise skip this task and record the data.
+  - Acceptance: on auto compaction the kernel emits a `summarize` effect (the item range to
+    archive, with a token cap); the host calls a model and the summary comes back to the kernel as
+    a recorded fact (D1, so replay yields the same graph), written as a `summary` item with
+    `summarizes` edges to the covered items. If the effect fails or times out, fall back to
+    `RuleSummarizer`. `summarizes` edges then also come from the kernel's own compaction, and the
+    covered originals can be read back along them.
+  - Verification: on long-horizon, `early_fact_lost` falls, success does not drop, and
+    `weighted_cost` (including the summary calls) does not rise.
+  - Files: `context/summarizer.rs`, `context/compression.rs`, `runtime/kernel/wire/effect.rs`; effect
+    execution in the four SDKs
+
+Deferred items stay deferred: the model `RelevanceJudge` and Anthropic reporting compaction facts
+are scheduled once long-horizon can measure them.
+
 ## Handoff (2026-11-02)
 
 Branch `feat/context-lifecycle-stage0`. Everything below is committed (`fda3aeb6` onward):
@@ -576,9 +704,10 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next: 0.2.78–0.2.81 are released and stages 0–7 are done. Deferred: the model `RelevanceJudge`
-(another source of in-edge weight, compared on `knowledge-pressure`) and Anthropic reporting
-compaction facts.
+Next: 0.2.78–0.2.81 are released and stages 0–7 are done. The next release, 0.2.82, is stage 8
+(measure first, put the cache into decisions); see "Release plan" for the order. Deferred: the
+model `RelevanceJudge` (another source of in-edge weight) and Anthropic reporting compaction facts,
+scheduled once the long-horizon benchmark can measure them.
 
 Setting up on another machine:
 
@@ -606,6 +735,12 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Released (PR #5) |
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
+| 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | Planned |
+
+0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
+rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that
+changes rendering by default and must pass the new gate first; 8.4 is done only if 8.2's data meets
+its precondition.
 
 0.2.81 internal order: 7.0 → 7.1 → 7.2 → 7.3, with 7.4 interleavable with 7.2 / 7.3. 7.1 and 7.2
 leave rendering unchanged; only 7.3 changes decisions and must pass the lab gate first. If the model
@@ -666,7 +801,7 @@ touches the related code.
 ```text
 stage0 ──► stage1 ──► stage2 ──► stage3 ──► stage6
               ├──► stage5
-              └──► stage4.2/4.3 ──► stage7 (item graph)
+              └──► stage4.2/4.3 ──► stage7 (item graph) ──► stage8 (8.0/8.1/8.2 ──► 8.3 ──► 8.4)
 stage4.1 runs in parallel with stage1 and produces the baseline first
 ```
 
@@ -676,8 +811,10 @@ their dependencies.
 ## Out of scope
 
 - The memory write side (candidate ABI, `MemoryWriter`) is frozen; no new write mechanism.
-- The compression pipeline's internal `RuleSummarizer` is not replaced by model summaries in this
-  plan; revisit once 4.1 data shows it is the bottleneck.
+- ~~The compression pipeline's internal `RuleSummarizer` is not replaced by model summaries in
+  this plan; revisit once 4.1 data shows it is the bottleneck.~~ Moved into task 8.4: the existing
+  benchmarks never reach the scale where summaries matter; 8.2's long-horizon provides the data.
+- Stage 8 adds no new relation, lease or origin kind.
 
 ## Risks
 
@@ -691,6 +828,10 @@ their dependencies.
 | The item graph makes checkpoints and reports larger | edges are bounded (both ends present, plus the latest retired batch), and report edges are capped |
 | Judging every history message against every knowledge item to build edges adds cost | reuse the 4.2 distinctive-term sets, cache them per item; the lab records kernel time per turn |
 | Propagating along edges amplifies one misjudged reference | one hop only, strong weighs more than lexical; 7.3 must pass the lab gate |
+| Providers differ in cache granularity and rules, so measured cache loss is noisy | 8.0 uses a 15% tolerance; attribution only compares variants on the same provider |
+| Deferring compaction keeps the context longer and may hurt attention quality and success | the hard window limit takes precedence; 8.3's gate checks success and `weighted_cost` together |
+| Each long-horizon task is expensive, so samples may be too few | a scripted tool environment with a real model only for answering; 30 tasks per variant, compared as pairs |
+| The summary effect adds a model call and latency | fires only on auto compaction; summary calls count toward `weighted_cost`; falls back to `RuleSummarizer` on failure |
 
 ## Success metrics
 
@@ -702,5 +843,8 @@ their dependencies.
 - Changing one lifecycle policy touches one place in the kernel (a PR check item)
 - fan-out→synthesize: downstream initial tokens independent of fan-out width
 - With server compaction on, the kernel's estimate deviates from measured tokens by <10%
+- Stage 8 (0.2.82): the kernel's self-reported cache_loss within 15% of measured; `weighted_cost`
+  on ledger and long-horizon below the 0.2.81 baseline with success not lower (paired 95%
+  confidence interval)
 - Item graph (0.2.81): on `knowledge-pressure`, regret and waste below the 0.2.80 baseline with
   success not lower; every regret and every wasted item points at a specific edge in the report

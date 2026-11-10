@@ -42,7 +42,7 @@ pub struct Trial {
     pub oracle: BTreeMap<String, f64>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
     /// Characters of rendered context sent across all provider calls.
     #[serde(default)]
@@ -56,6 +56,48 @@ pub struct Cost {
     pub output_tokens: u64,
     #[serde(default)]
     pub cache_read_tokens: u64,
+    /// Plan task 8.0 · each provider request's usage, in the order sent. Absent on trials
+    /// recorded before 0.2.82.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<RequestCost>,
+}
+
+/// One provider request's usage.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RequestCost {
+    /// The run that sent it, when a trial has several (a workflow's nodes); requests are compared
+    /// with the previous request of the same run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+}
+
+/// Plan task 8.0 · what the provider says the trial lost to broken prefixes: for each request
+/// after the first of its run, the previous request's input that was not read from cache
+/// (`max(0, previous input − cache read)`), less the kernel's `cache_tail_tokens` (the state turns,
+/// which are rebuilt every request and could never be reused). `None` without request detail.
+pub fn observed_cache_loss(trial: &Trial) -> Option<u64> {
+    let requests = &trial.cost.requests;
+    if requests.len() < 2 {
+        return None;
+    }
+    let mut previous: BTreeMap<Option<&str>, u64> = BTreeMap::new();
+    let mut missed = 0u64;
+    for request in requests {
+        let run = request.run.as_deref();
+        if let Some(prev_input) = previous.insert(run, request.input_tokens) {
+            missed += prev_input.saturating_sub(request.cache_read_tokens);
+        }
+    }
+    let tail: u64 = trial.lifecycle.iter().map(|report| report.cache_tail_tokens).sum();
+    Some(missed.saturating_sub(tail))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -77,6 +119,12 @@ pub struct LifecycleReport {
     pub waste_tokens: u64,
     #[serde(default)]
     pub cache_loss_tokens: u64,
+    /// Plan task 8.0 · state-turn tokens that were never reusable (not a break).
+    #[serde(default)]
+    pub cache_tail_tokens: u64,
+    /// Plan task 8.0 · the latest prefix breaks, attributed.
+    #[serde(default)]
+    pub prefix_breaks: Vec<PrefixBreak>,
     #[serde(default)]
     pub recalled: u64,
     #[serde(default)]
@@ -111,6 +159,14 @@ pub struct HistoryItem {
     pub end: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PrefixBreak {
+    #[serde(default)]
+    pub cause: String,
+    #[serde(default)]
+    pub lost_tokens: u64,
+}
+
 /// Read trials from JSON Lines. Blank lines are skipped; a malformed line is an error naming it.
 pub fn parse_trials(text: &str) -> Result<Vec<Trial>, String> {
     text.lines()
@@ -139,6 +195,15 @@ pub struct Summary {
     pub regret: f64,
     pub waste_tokens: f64,
     pub cache_loss_tokens: f64,
+    /// Plan task 8.0 · the provider-measured cache loss per trial ([`observed_cache_loss`]), over
+    /// the trials with request detail.
+    pub observed_cache_loss_tokens: Option<f64>,
+    /// |Σ kernel `cache_loss_tokens` − Σ observed| / Σ observed over the trials with request
+    /// detail: how far the kernel's account is from the provider's.
+    pub cache_loss_error: Option<f64>,
+    /// Kernel-reported lost tokens per trial by break cause (from the listed breaks). Read as
+    /// `cache_loss.<cause>`.
+    pub cache_loss_by_cause: BTreeMap<String, f64>,
     /// Share of recalled records the model read in full; `None` when nothing was recalled.
     pub recall_hit_rate: Option<f64>,
     /// `read_result` reads of earlier tool results or dependency outputs.
@@ -169,13 +234,20 @@ impl Summary {
             "regret" => self.regret,
             "waste_tokens" => self.waste_tokens,
             "cache_loss_tokens" => self.cache_loss_tokens,
+            "observed_cache_loss_tokens" => return self.observed_cache_loss_tokens,
+            "cache_loss_error" => return self.cache_loss_error,
             "recall_hit_rate" => return self.recall_hit_rate,
             "read_back" => self.read_back,
             "compacted_items" => self.compacted_items,
             "estimate_error" => return self.estimate_error,
             "estimate_error_max" => return self.estimate_error_max,
             "estimate_error_weighted" => return self.estimate_error_weighted,
-            name => return name.strip_prefix("oracle.").and_then(|key| self.oracle.get(key).copied()),
+            name => {
+                if let Some(cause) = name.strip_prefix("cache_loss.") {
+                    return self.cache_loss_by_cause.get(cause).copied();
+                }
+                return name.strip_prefix("oracle.").and_then(|key| self.oracle.get(key).copied());
+            }
         })
     }
 }
@@ -193,6 +265,8 @@ pub const REPORT_METRICS: &[&str] = &[
     "regret",
     "waste_tokens",
     "cache_loss_tokens",
+    "observed_cache_loss_tokens",
+    "cache_loss_error",
     "recall_hit_rate",
     "read_back",
     "compacted_items",
@@ -243,6 +317,19 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
         .map(|e| (e.estimated as f64 - e.observed as f64).abs())
         .sum();
     let succeeded = trials.iter().filter(|trial| trial.success).count() as u64;
+    let measured: Vec<(u64, u64)> = trials
+        .iter()
+        .filter_map(|trial| {
+            let kernel = trial.lifecycle.iter().map(|report| report.cache_loss_tokens).sum();
+            observed_cache_loss(trial).map(|observed| (kernel, observed))
+        })
+        .collect();
+    let observed_sum: u64 = measured.iter().map(|(_, observed)| observed).sum();
+    let kernel_sum: u64 = measured.iter().map(|(kernel, _)| kernel).sum();
+    let mut by_cause: BTreeMap<String, f64> = BTreeMap::new();
+    for brk in reports().flat_map(|report| report.prefix_breaks.iter()) {
+        *by_cause.entry(brk.cause.clone()).or_default() += brk.lost_tokens as f64 / n;
+    }
     let mut oracle_sums: BTreeMap<String, (f64, f64)> = BTreeMap::new();
     for (key, value) in trials.iter().flat_map(|trial| trial.oracle.iter()) {
         let (total, count) = oracle_sums.entry(key.clone()).or_default();
@@ -264,6 +351,14 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial]) -> Summary 
         regret: sum_reports(&|r| r.regret),
         waste_tokens: sum_reports(&|r| r.waste_tokens),
         cache_loss_tokens: sum_reports(&|r| r.cache_loss_tokens),
+        observed_cache_loss_tokens: (!measured.is_empty())
+            .then(|| observed_sum as f64 / measured.len() as f64),
+        cache_loss_error: match (measured.is_empty(), observed_sum) {
+            (true, _) => None,
+            (false, 0) => Some(if kernel_sum == 0 { 0.0 } else { 1.0 }),
+            (false, observed) => Some((kernel_sum as f64 - observed as f64).abs() / observed as f64),
+        },
+        cache_loss_by_cause: by_cause,
         recall_hit_rate: (recalled > 0).then(|| expanded as f64 / recalled as f64),
         read_back: sum_reports(&|r| r.history.iter().map(|tally| tally.read_back).sum()),
         compacted_items: sum_reports(&|r| {
@@ -290,6 +385,8 @@ pub struct Gate {
     pub no_worse: Vec<String>,
     /// Upper bound on the candidate's size-weighted estimate error (0.10 = 10%).
     pub max_estimate_error: Option<f64>,
+    /// Plan task 8.0 · upper bound on the candidate's [`Summary::cache_loss_error`].
+    pub max_cache_loss_error: Option<f64>,
 }
 
 /// One failed check.
@@ -363,6 +460,19 @@ impl Gate {
                     )),
                 }
             }
+            if let Some(bound) = self.max_cache_loss_error {
+                match cand.cache_loss_error {
+                    Some(error) if error > bound => failures.push(fail(
+                        "cache_loss_error",
+                        format!("{:.1}% exceeds {:.1}%", error * 100.0, bound * 100.0),
+                    )),
+                    Some(_) => {}
+                    None => failures.push(fail(
+                        "cache_loss_error",
+                        "no trial carried per-request usage".to_string(),
+                    )),
+                }
+            }
         }
         failures
     }
@@ -404,7 +514,12 @@ pub fn markdown(summaries: &[Summary], baseline: Option<&str>) -> String {
         out.push('\n');
         let oracle_metrics: std::collections::BTreeSet<String> = columns
             .iter()
-            .flat_map(|s| s.oracle.keys().map(|key| format!("oracle.{key}")))
+            .flat_map(|s| {
+                s.cache_loss_by_cause
+                    .keys()
+                    .map(|cause| format!("cache_loss.{cause}"))
+                    .chain(s.oracle.keys().map(|key| format!("oracle.{key}")))
+            })
             .collect();
         let metrics = REPORT_METRICS
             .iter()
@@ -436,7 +551,7 @@ pub fn markdown(summaries: &[Summary], baseline: Option<&str>) -> String {
 }
 
 fn is_ratio(metric: &str) -> bool {
-    metric.ends_with("_rate") || metric.starts_with("estimate_error")
+    metric.ends_with("_rate") || metric.starts_with("estimate_error") || metric == "cache_loss_error"
 }
 
 fn format_metric(metric: &str, value: Option<f64>) -> String {
@@ -552,12 +667,13 @@ mod tests {
         let gate = Gate {
             no_worse: vec!["regret".into(), "success_rate".into(), "sent_chars".into()],
             max_estimate_error: Some(0.10),
+            ..Gate::default()
         };
         let failures = gate.check(&summaries, "base", "cand");
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert_eq!(failures[0].metric, "regret");
 
-        let strict = Gate { no_worse: vec![], max_estimate_error: Some(0.01) };
+        let strict = Gate { max_estimate_error: Some(0.01), ..Gate::default() };
         assert_eq!(strict.check(&summaries, "base", "cand")[0].metric, "estimate_error_weighted");
         assert!(!gate.check(&summaries, "base", "missing").is_empty());
     }
@@ -574,5 +690,55 @@ mod tests {
         assert!(table.contains("| regret | 2 | 1 | -50.0% |"), "{table}");
         assert!(table.contains("| recall_hit_rate | 50.0% | 50.0% | +0.0 pt |"), "{table}");
         assert!(!table.contains("cache_loss_tokens"), "an all-zero count is left out: {table}");
+    }
+
+    #[test]
+    fn measured_cache_loss_is_compared_with_the_kernel_account() {
+        let request = |run: Option<&str>, input: u64, read: u64| RequestCost {
+            run: run.map(str::to_string),
+            input_tokens: input,
+            cache_read_tokens: read,
+            ..RequestCost::default()
+        };
+        let cand = |kernel: u64| Trial {
+            cost: Cost {
+                requests: vec![
+                    request(None, 1000, 0),
+                    // Reused all of the first request but its 50-token state turn.
+                    request(None, 1400, 950),
+                    // A break: only 600 of the previous 1400 were read back.
+                    request(None, 1500, 600),
+                    // Another run's first request is not compared with this one's.
+                    request(Some("node"), 900, 0),
+                ],
+                ..Cost::default()
+            },
+            lifecycle: vec![LifecycleReport {
+                cache_loss_tokens: kernel,
+                cache_tail_tokens: 100,
+                prefix_breaks: vec![PrefixBreak { cause: "narration".into(), lost_tokens: kernel }],
+                ..LifecycleReport::default()
+            }],
+            ..trial("cand", "t0", true, 0, 100)
+        };
+        // Missed: 50 + 800 = 850; less the 100 state-turn tokens = 750.
+        assert_eq!(observed_cache_loss(&cand(780)), Some(750));
+        assert_eq!(observed_cache_loss(&trial("base", "t0", true, 0, 100)), None);
+
+        let summaries = summarize(&[trial("base", "t0", true, 0, 100), cand(780)]);
+        let summary = &summaries[1];
+        assert_eq!(summary.observed_cache_loss_tokens, Some(750.0));
+        assert!((summary.cache_loss_error.unwrap() - 0.04).abs() < 1e-9);
+        assert_eq!(summary.metric("cache_loss.narration"), Some(780.0));
+        assert_eq!(summaries[0].cache_loss_error, None, "no request detail, no comparison");
+
+        let gate = Gate { max_cache_loss_error: Some(0.15), ..Gate::default() };
+        assert!(gate.check(&summaries, "base", "cand").is_empty());
+        let strict = Gate { max_cache_loss_error: Some(0.01), ..Gate::default() };
+        assert_eq!(strict.check(&summaries, "base", "cand")[0].metric, "cache_loss_error");
+        assert!(!gate.check(&summaries, "cand", "base").is_empty(), "a candidate without detail fails");
+        let table = markdown(&summaries, None);
+        assert!(table.contains("| cache_loss_error | – | 4.0% |"), "{table}");
+        assert!(table.contains("| cache_loss.narration |"), "{table}");
     }
 }

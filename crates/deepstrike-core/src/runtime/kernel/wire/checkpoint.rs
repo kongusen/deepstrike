@@ -632,6 +632,9 @@ pub struct ContextVmState {
     /// History tokens whose cache mid-run system[1] promotions discarded.
     #[serde(default)]
     pub cache_invalidated_tokens: u64,
+    /// Plan task 8.0 · the last request's prefix fingerprint and the prefix breaks so far.
+    #[serde(default, skip_serializing_if = "is_default_ledger")]
+    pub cache_ledger: crate::context::cache_ledger::CacheLedger,
     /// Knowledge keys a boundary sweep removed, for regret counting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evicted_knowledge_keys: Vec<String>,
@@ -2343,4 +2346,8 @@ fn is_zero_u32(value: &u32) -> bool {
 
 fn is_zero_u64(value: &u64) -> bool {
     *value == 0
+}
+
+fn is_default_ledger(ledger: &crate::context::cache_ledger::CacheLedger) -> bool {
+    *ledger == crate::context::cache_ledger::CacheLedger::default()
 }

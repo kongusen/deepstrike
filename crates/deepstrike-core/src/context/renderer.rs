@@ -324,7 +324,7 @@ pub(crate) fn collapse_preview(output: &str, call_id: &str) -> String {
 
 /// Stub substituted for a collapsed assistant preamble. Carries no goal text (that would re-seed the
 /// very repetition this removes) and points the model at the authoritative State turn instead.
-const NARRATION_STUB: &str = "[earlier narration collapsed; tool call(s) preserved below — current progress is in the TASK STATE block]";
+pub(crate) const NARRATION_STUB: &str = "[earlier narration collapsed; tool call(s) preserved below — current progress is in the TASK STATE block]";
 
 /// Minimum narration length (chars, CJK-aware) worth collapsing. Short preambles aren't worth a
 /// stub substitution (and the one-time cache churn it costs as the turn ages out of the window).

@@ -390,6 +390,19 @@ class ContextExternalItem(TypedDict, total=False):
     item: int
 
 
+class ContextPrefixBreak(TypedDict):
+    """Plan task 8.0 · where a provider request broke the previous request's cacheable prefix.
+
+    ``kept_tokens``: prefix tokens of the previous request still cacheable; ``lost_tokens``: the
+    ones after the break, sent uncached again.
+    """
+    turn: int
+    cause: Literal["toolset", "system", "promotion", "collapse", "reprojection", "narration",
+                   "budget_drop", "snip", "micro", "auto", "renewal", "provider", "other"]
+    kept_tokens: int
+    lost_tokens: int
+
+
 # An edge from an item of this run to an item of another run.
 ContextExternalEdge = TypedDict("ContextExternalEdge", {
     "from": int,
@@ -427,6 +440,9 @@ class _ContextLifecycleItems(TypedDict, total=False):
     waste_items: list[int]
     external_edges: list[ContextExternalEdge]
     parent_items_used: list[ContextExternalItem]
+    prefix_breaks: list[ContextPrefixBreak]
+    prefix_breaks_omitted: int
+    cache_tail_tokens: int
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

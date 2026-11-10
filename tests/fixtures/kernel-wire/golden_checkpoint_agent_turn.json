@@ -1,15 +1,50 @@
 {
-  "ack_token": "op-driver-1:checkpoint:3:sha256:1c9a792d5820c19114a77a0834d2ada2bc55c4922fee46eaf85f23269e38645d",
+  "ack_token": "op-driver-1:checkpoint:3:sha256:a0b6dd541fda7ee26714a082c8d689044346031c19113e6aff9d1f28e3fab3fe",
   "checkpoint": {
     "base_record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:1c9a792d5820c19114a77a0834d2ada2bc55c4922fee46eaf85f23269e38645d",
+    "checkpoint_digest": "sha256:a0b6dd541fda7ee26714a082c8d689044346031c19113e6aff9d1f28e3fab3fe",
     "covered_transaction_head_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
     "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
         "cache_invalidated_tokens": 0,
+        "cache_ledger": {
+          "sent": {
+            "knowledge": {
+              "hash": "cbf29ce484222325",
+              "tokens": 1
+            },
+            "system": {
+              "hash": "cbf29ce484222325",
+              "tokens": 1
+            },
+            "tail": 27,
+            "tools": {
+              "hash": "1ad7f9d4fa4273e0",
+              "tokens": 247
+            },
+            "turns": [
+              {
+                "hash": "84ccd7c627f7dd5d",
+                "item": 1,
+                "tokens": 11
+              },
+              {
+                "hash": "2fdca5e421ab63cd",
+                "item": 2,
+                "tokens": 1
+              },
+              {
+                "hash": "3888a737f9b28395",
+                "item": 3,
+                "tokens": 4
+              }
+            ]
+          },
+          "tail_tokens": 24
+        },
         "frozen_history_len": 0,
         "handles": [
           {
@@ -767,13 +802,13 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:3f041a9ff29ff1901e2e87aea67b192b4d43f94b1c91bb27d5e920ce02e3ce59",
+    "state_digest": "sha256:b350f40f46d04d16a8b4599654cca2053e6416aa6a5e1efe8c822cc8a1d36002",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
   },
   "covered_head": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
   "description": "A full-state logical checkpoint taken mid-turn (spec 12.1, 12.3). base == through == the durable head, so the bounded tail is empty and a restore replays nothing before the post-checkpoint records. The logical state is partitioned four ways and the header repeats none of it: the pending `call_provider` effect, the replay ledger and the terminal slot live in `transition`, the task table in `scheduler`, the handle table in `context_vm`, the live policy and the provider-tool causation in `syscall`.",
-  "state_digest": "sha256:3f041a9ff29ff1901e2e87aea67b192b4d43f94b1c91bb27d5e920ce02e3ce59",
+  "state_digest": "sha256:b350f40f46d04d16a8b4599654cca2053e6416aa6a5e1efe8c822cc8a1d36002",
   "through_step_seq": "3"
 }

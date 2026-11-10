@@ -128,6 +128,9 @@ function projectKernelObservation(
         ...(obs.waste_items && obs.waste_items.length > 0 ? { waste_items: obs.waste_items } : {}),
         ...(obs.external_edges && obs.external_edges.length > 0 ? { external_edges: obs.external_edges } : {}),
         ...(obs.parent_items_used && obs.parent_items_used.length > 0 ? { parent_items_used: obs.parent_items_used } : {}),
+        ...(obs.prefix_breaks && obs.prefix_breaks.length > 0 ? { prefix_breaks: obs.prefix_breaks } : {}),
+        ...(obs.prefix_breaks_omitted ? { prefix_breaks_omitted: obs.prefix_breaks_omitted } : {}),
+        ...(obs.cache_tail_tokens ? { cache_tail_tokens: obs.cache_tail_tokens } : {}),
       }
     case "rollbacked":
       return {
