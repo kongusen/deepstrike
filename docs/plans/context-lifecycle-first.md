@@ -316,7 +316,7 @@ ContextItem {
   - 验证：`deepstrike-lab gate` 在 ledger、knowledge-pressure、long-horizon 上，`weighted_cost` 下降、正确率不降（8.1 的配对规则）；fan-out 不回退。golden 会变化，需要重新 bless 并在 MIGRATION 中说明。
   - 文件：`context/compression.rs`、`context/renderer.rs`、`context/pressure.rs`、`context/policy.rs`、`context/config.rs`
 
-- [ ] 任务 8.4（2026-11-11，已实现并实测，未通过 gate，已撤回，不随 0.2.82 发布；代码保留在分支 `exp/8.4-model-summaries`）：
+- [ ] 任务 8.4（2026-11-11，已实现并实测，未通过 gate，已撤回，不随 0.2.82 发布；代码已删除，包括 `exp/8.4-model-summaries` 分支，实现提交为 `761e8ac2`）：
     - 前置数据：long-horizon 四个变体共 120 题里，`early_fact_lost` 只在 8.3b、8.3c 出现过 5 次；答错的主要原因是计数偏差，而且与压缩次数不相关。按前置条件本不该做，按决定先实现再实测。
     - 实现：ContextCollapse / AutoCompact 归档之后，kernel 发出 `summarize_context` effect（被归档的对话 + 上一份摘要，原文上限 16k token，摘要上限 800 token），宿主用自己的模型写摘要，替换规则摘要；失败、超时或为空时保留规则摘要。新增 `summary` origin 与 `summarizes` 边，四端 SDK 的选项 `modelSummaries` / `model_summaries`，默认关闭。
     - 实测（long-horizon 30 题，`0.2.82-8.4` 对 `0.2.82-baseline`，配对）：正确 12/30 → 4/30（−26.7 pt，95% 区间 [−46.7, −3.3]），`weighted_cost` +71%（[+39%, +102%]），两项都不通过。10 题跑到轮数上限（基线 1 题），结尾都在以文本输出 DeepSeek 的工具调用标记；平均压缩 5.6 → 9.8 次；brief 重读 1.47 → 0.77 次，`early_fact_lost` 仍为 0。没陷入循环的错题，仍是差 1–3 的计数偏差。
@@ -400,7 +400,7 @@ ContextItem {
 
 **实测计划（阶段末一次做完）。** 9.1–9.3 全部实现后，在 DeepSeek 上跑一轮：long-horizon 每组 30 题，分组 `0.2.82-9.0`（已有）/ `0.2.82-9.1`（预算 600）/ `0.2.82-9.1b`（预算 1500）/ `0.2.82-9.2`（9.1 + 9.2）/ `0.2.82-9.3`（9.1 + 9.2 + 9.3）；最终组另跑 ledger 30 题确认不回退。每组约 20–25 元，开跑前确认余额（2026-11-11 为 31.51 元，需先充值）。9.4 在 multi-session 上单独测。本地 Ollama（`qwen3.8-27b-ctx8k`，8k 窗口）的极限测试由使用者自行跑，结果用同一个 lab 报告。
 
-**放弃的方向。** 按缓存账决定压缩什么（8.3，`exp/8.3c`）；在压缩路径上同步生成摘要（8.4，`exp/8.4-model-summaries`，分支只作记录）；任何由 kernel 发起的模型调用，包括之前草稿里的 `consolidate_notes` effect；`RuleSummarizer` 作为记忆的载体。保留阶段 8 的测量：缓存账本、按价格加权的配对 gate、long-horizon 基准。
+**放弃的方向。** 按缓存账决定压缩什么（8.3，`exp/8.3c`）；在压缩路径上同步生成摘要（8.4，代码已删除）；任何由 kernel 发起的模型调用，包括之前草稿里的 `consolidate_notes` effect；`RuleSummarizer` 作为记忆的载体。保留阶段 8 的测量：缓存账本、按价格加权的配对 gate、long-horizon 基准。
 
 ## 交接（2026-11-02）
 

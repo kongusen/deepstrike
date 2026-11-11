@@ -718,7 +718,8 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
     `context/policy.rs`, `context/config.rs`
 
 - [ ] Task 8.4 (2026-11-11; implemented and measured, failed the gate, withdrawn and not part of
-  0.2.82; the code is kept on branch `exp/8.4-model-summaries`):
+  0.2.82; the code is deleted, `exp/8.4-model-summaries` included; the implementation commit was
+  `761e8ac2`):
     - Prior data: across four long-horizon variants (120 runs), `early_fact_lost` fired only 5
       times, in 8.3b and 8.3c; wrong answers were mostly miscounts and did not follow the number of
       compactions. The precondition said not to do it; it was implemented and measured by decision.
@@ -977,8 +978,7 @@ multi-session. Local Ollama stress runs (`qwen3.8-27b-ctx8k`, 8k window) are the
 report through the same lab.
 
 **Abandoned directions.** Deciding what to compact from the cache account (8.3, `exp/8.3c`);
-writing summaries synchronously on the compaction path (8.4, `exp/8.4-model-summaries`, kept only
-as a record); any kernel-initiated model call, including the earlier draft's `consolidate_notes`
+writing summaries synchronously on the compaction path (8.4, code deleted); any kernel-initiated model call, including the earlier draft's `consolidate_notes`
 effect; `RuleSummarizer` as a carrier of memory. Stage 8's measurement stays: the cache ledger, the
 price-weighted paired gate and the long-horizon benchmark.
 
