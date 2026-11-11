@@ -340,6 +340,9 @@ pub struct ContextPolicy {
     /// Compaction tiers the provider performs natively, which the kernel then skips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_tiers: Option<DelegatedContextTiers>,
+    /// Plan task 9.1 · tokens the model's notes may hold; `0` (the default) turns `note` off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_budget_tokens: Option<u32>,
 }
 
 /// The compaction tiers a provider performs natively. The host declares them only when the
@@ -724,6 +727,9 @@ pub struct ResolvedContextPolicy {
     /// delegation resolves — and digests — exactly as before.
     #[serde(default, skip_serializing_if = "DelegatedContextTiers::is_none")]
     pub delegated_tiers: DelegatedContextTiers,
+    /// Plan task 9.1 · absent when notes are off, so earlier configurations digest as before.
+    #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+    pub notes_budget_tokens: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1007,6 +1013,7 @@ impl ConfigDefaults {
                         safety_margin_tokens: 0,
                     },
                     delegated_tiers: DelegatedContextTiers::default(),
+                    notes_budget_tokens: 0,
                 },
                 recovery_policy: ResolvedRecoveryPolicy {
                     provider_recovery_attempts: 1,
@@ -1812,6 +1819,9 @@ fn resolve_context(
         if let Some(value) = policy.delegated_tiers {
             resolved.delegated_tiers = value;
         }
+        if let Some(value) = policy.notes_budget_tokens {
+            resolved.notes_budget_tokens = value;
+        }
     }
 
     let t = &resolved.pressure_thresholds_ppm;
@@ -2286,6 +2296,7 @@ mod tests {
                     safety_margin_tokens: 500,
                 }),
                 delegated_tiers: None,
+                notes_budget_tokens: None,
             }),
             recovery_policy: Some(RecoveryPolicy {
                 provider_recovery_attempts: Some(2),

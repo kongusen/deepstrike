@@ -257,6 +257,8 @@ export interface KernelObservation {
   prefix_breaks?: ContextPrefixBreak[]
   prefix_breaks_omitted?: number
   cache_tail_tokens?: number
+  notes_written?: number
+  notes_active?: number
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string

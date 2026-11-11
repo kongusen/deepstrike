@@ -97,6 +97,11 @@ pub enum KernelObservation {
         /// never reusable and not a break, but part of a provider's uncached input count.
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
         cache_tail_tokens: u64,
+        /// Plan task 9.1 · notes the model wrote (rewrites count again) and notes it holds now.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        notes_written: u32,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        notes_active: u32,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in

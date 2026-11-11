@@ -50,7 +50,7 @@ export interface ContextItemRecord {
   /** The item's id, shared with history items and item-graph edges. */
   id?: number
   key?: string
-  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary"
+  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary" | "note"
   tokens: number
   value: {
     injected_turn: number
@@ -71,7 +71,7 @@ export interface ContextItemRecord {
 export interface ContextItemEdge {
   from: number
   to: number
-  relation: "answers" | "references_strong" | "references_lexical" | "reads_back" | "summarizes" | "expands"
+  relation: "answers" | "references_strong" | "references_lexical" | "reads_back" | "summarizes" | "expands" | "derived_from" | "links_to" | "supersedes"
   turn: number
 }
 
@@ -185,6 +185,9 @@ export type SessionEvent =
       prefix_breaks_omitted?: number
       /** State-turn tokens of every request a later one followed: never reusable, so not a break, but part of a provider's uncached input count. */
       cache_tail_tokens?: number
+      /** Plan task 9.1 · notes the model wrote (rewrites count again) and notes it holds now. */
+      notes_written?: number
+      notes_active?: number
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

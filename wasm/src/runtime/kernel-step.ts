@@ -139,6 +139,8 @@ export interface KernelObservation {
   prefix_breaks?: ContextPrefixBreak[]
   prefix_breaks_omitted?: number
   cache_tail_tokens?: number
+  notes_written?: number
+  notes_active?: number
   archived_count?: number
   turn?: number
   checkpoint_history_len?: number

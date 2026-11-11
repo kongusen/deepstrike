@@ -26,6 +26,13 @@ written by 0.2.82 carry the new optional field `cache_ledger`; 0.2.81 cannot rea
   `textual_tool_call`. A host that scraped tool calls out of DeepSeek's text should stop doing so.
 - Rust `OpenAIProvider` now emits every tool call of a turn, in index order, and the usage event
   after them; WASM `OpenAIProvider` no longer drops tool calls when the stream ends with `[DONE]`.
+- Notes (plan task 9.1) are off unless a host sets `notesBudgetTokens` / `notes_budget_tokens`, so
+  nothing changes by default. With notes on, the toolset gains the kernel tool `note` (never
+  executed by the host; a host that filters tools by name should let it through like `update_plan`),
+  the state turn gains a `notes:` block, item reports may carry origin `note` and relations
+  `derived_from`, `links_to` and `supersedes`, and `context_lifecycle_reported` may carry
+  `notes_written` and `notes_active`. Checkpoints carry `task_state.notes` only when notes exist;
+  0.2.81 cannot restore such a checkpoint.
 - Rendering, compaction and provider requests are unchanged. Cache-aware compaction (plan task
   8.3) was measured and is not part of this release; see the plan.
 

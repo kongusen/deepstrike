@@ -108,6 +108,17 @@ impl CanonicalOperationDriver {
                 engine.ctx.update_task(core_task_update(&update.update));
                 Ok(SyscallOutcome::default())
             }
+            SyscallRequest::WriteNote(note) => {
+                let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+                let turn = engine.turn;
+                match engine.ctx.write_note(note, turn) {
+                    Ok(ack) => Ok(SyscallOutcome { ack: Some(ack), ..SyscallOutcome::default() }),
+                    Err(reason) => Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                        crate::context::notes::NOTE_TOOL_NAME,
+                        reason,
+                    ))),
+                }
+            }
             SyscallRequest::RequestMemoryWrite(write) => self.plan_memory_write(
                 context,
                 causation,

@@ -9,7 +9,7 @@ from deepstrike.runtime.execution_plane import ExecutionPlane, RunContext
 # Mirrors the kernel's EXPOSURE_EXEMPT_META_TOOLS invariant: kernel-owned meta surfaces are
 # never narrowed away by a tool allow-list. ``read_result`` is runner-resolved before reaching
 # any plane today, but the lists must not drift.
-_DEFAULT_META = frozenset({"skill", "memory", "knowledge", "update_plan", "read_result"})
+_DEFAULT_META = frozenset({"skill", "memory", "knowledge", "update_plan", "note", "read_result"})
 
 
 class FilteredExecutionPlane(ExecutionPlane):

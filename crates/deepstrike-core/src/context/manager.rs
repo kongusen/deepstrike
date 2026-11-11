@@ -30,6 +30,7 @@ pub const READ_RESULT_TOOL_NAME: &str = "read_result";
 const META_TOOL_NAMES: &[&str] = &[
     "pace",
     "update_plan",
+    super::notes::NOTE_TOOL_NAME,
     "skill",
     MEMORY_TOOL_NAME,
     PROPOSE_MEMORY_TOOL_NAME,
@@ -68,6 +69,7 @@ pub(crate) const EXPOSURE_EXEMPT_META_TOOLS: &[&str] = &[
     PROPOSE_MEMORY_TOOL_NAME,
     KNOWLEDGE_TOOL_NAME,
     "update_plan",
+    super::notes::NOTE_TOOL_NAME,
     READ_RESULT_TOOL_NAME,
 ];
 
@@ -117,6 +119,9 @@ pub struct LifecycleMetrics {
     pub prefix_breaks_omitted: u32,
     /// State-turn tokens of every request a later one followed: uncached by design, not a break.
     pub cache_tail_tokens: u64,
+    /// Plan task 9.1 · notes written (rewrites count again) and notes held now.
+    pub notes_written: u32,
+    pub notes_active: u32,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -1173,6 +1178,16 @@ impl ContextManager {
         self.last_item_id
     }
 
+    /// Plan task 9.1 · an edge from a note (crate-visible for `context::notes`).
+    pub(crate) fn add_graph_edge(&mut self, from: ItemId, to: ItemId, relation: Relation) {
+        self.add_edge(from, to, relation);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_item_ids_for_test(&self) -> std::collections::BTreeSet<ItemId> {
+        self.resident_item_ids()
+    }
+
     /// Record an edge of the item graph, pruning it against residency when it has grown large.
     fn add_edge(&mut self, from: ItemId, to: ItemId, relation: Relation) {
         let turn = self.partitions.knowledge.turn;
@@ -1187,6 +1202,8 @@ impl ContextManager {
         (0..history.len())
             .map(|index| history.tag(index).id)
             .chain(self.partitions.knowledge.entries.iter().map(|entry| entry.id))
+            // Plan task 9.1 · notes are resident for as long as they exist.
+            .chain(self.partitions.task_state.notes.iter().map(|note| note.item))
             .filter(|id| *id != 0)
             .collect()
     }
@@ -1559,6 +1576,8 @@ impl ContextManager {
             prefix_breaks: self.cache_ledger.breaks.iter().copied().collect(),
             prefix_breaks_omitted: self.cache_ledger.breaks_omitted,
             cache_tail_tokens: self.cache_ledger.tail_tokens,
+            notes_written: self.partitions.task_state.notes_written,
+            notes_active: self.partitions.task_state.notes.len() as u32,
             recalled,
             recall_expanded,
             items,
@@ -2087,6 +2106,9 @@ impl ContextManager {
             tools.push(t);
         }
         if let Some(t) = self.plan_tool_schema() {
+            tools.push(t);
+        }
+        if let Some(t) = self.note_tool_schema() {
             tools.push(t);
         }
         if let Some(t) = self.read_result_tool_schema() {

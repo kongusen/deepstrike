@@ -432,7 +432,9 @@
           }
         ],
         "prefix_breaks_omitted": 1,
-        "cache_tail_tokens": 840
+        "cache_tail_tokens": 840,
+        "notes_written": 3,
+        "notes_active": 2
       },
       "suspended": {
         "kind": "suspended",
@@ -861,6 +863,8 @@
             "history_items",
             "history_items_omitted",
             "items",
+            "notes_active",
+            "notes_written",
             "parent_items_used",
             "prefix_breaks",
             "prefix_breaks_omitted",

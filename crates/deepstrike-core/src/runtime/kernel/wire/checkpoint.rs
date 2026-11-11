@@ -877,6 +877,31 @@ pub struct LogicalTaskState {
     pub compression_log: Vec<LogicalCompressionEntry>,
     #[serde(default)]
     pub compression_log_dropped: WireU64,
+    /// Plan task 9.1 · the model's notes. Absent when there are none, so earlier checkpoints and
+    /// runs without notes keep their exact shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<LogicalNote>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub notes_written: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub notes_retired: u32,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub notes_watermark: u64,
+}
+
+/// Plan task 9.1 · one note, projected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogicalNote {
+    pub title: String,
+    pub kind: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
+    pub item: u64,
+    pub turn: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

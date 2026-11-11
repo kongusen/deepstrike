@@ -40,6 +40,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   adapter's guard. Node, Python, WASM and Rust, with a shared fixture.
 - Benchmarks: `--provider ollama` (model from `OLLAMA_MODEL`) for local runs; long-horizon trials
   keep the runner's error message instead of only `termination: error`.
+- Notes the model writes (plan task 9.1), off by default. With `ContextPolicy.notesBudgetTokens`
+  (Node/WASM) or `notes_budget_tokens` (Python; Rust `RuntimeOptions.notes_budget_tokens`) above
+  0, the kernel offers a `note` tool: the model writes, rewrites (by title) or retires notes of kind
+  `state`, `rule`, `question` or `index`. The kernel executes it itself; notes live in the working
+  partition, no compaction tier touches them, they render in the state turn and are checkpointed.
+  Over the budget a write is refused with the usage in the tool result; the kernel never deletes a
+  note for the model. Each note is an item of the graph, with new relations `derived_from` (to the
+  results it cites, or by default the results since the last note), `links_to` and `supersedes`.
+  `context_lifecycle_reported` gains `notes_written` and `notes_active`.
 
 ### Changed
 

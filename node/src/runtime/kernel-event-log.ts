@@ -131,6 +131,8 @@ function projectKernelObservation(
         ...(obs.prefix_breaks && obs.prefix_breaks.length > 0 ? { prefix_breaks: obs.prefix_breaks } : {}),
         ...(obs.prefix_breaks_omitted ? { prefix_breaks_omitted: obs.prefix_breaks_omitted } : {}),
         ...(obs.cache_tail_tokens ? { cache_tail_tokens: obs.cache_tail_tokens } : {}),
+        ...(obs.notes_written ? { notes_written: obs.notes_written } : {}),
+        ...(obs.notes_active ? { notes_active: obs.notes_active } : {}),
       }
     case "rollbacked":
       return {

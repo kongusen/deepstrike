@@ -378,7 +378,7 @@ class ContextItemRecord(TypedDict, total=False):
 ContextItemEdge = TypedDict("ContextItemEdge", {
     "from": int,
     "to": int,
-    "relation": Literal["answers", "references_strong", "references_lexical", "reads_back", "summarizes", "expands"],
+    "relation": Literal["answers", "references_strong", "references_lexical", "reads_back", "summarizes", "expands", "derived_from", "links_to", "supersedes"],
     "turn": int,
 })
 
@@ -443,6 +443,8 @@ class _ContextLifecycleItems(TypedDict, total=False):
     prefix_breaks: list[ContextPrefixBreak]
     prefix_breaks_omitted: int
     cache_tail_tokens: int
+    notes_written: int
+    notes_active: int
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

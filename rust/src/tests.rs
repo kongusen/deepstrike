@@ -561,6 +561,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 2048,
             max_turns: Some(4),
@@ -676,6 +677,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 2048,
             max_turns: Some(2),
@@ -806,6 +808,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 4096,
             max_turns: Some(3),
@@ -936,6 +939,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1_000,
             max_turns: Some(4),
@@ -1178,6 +1182,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1291,6 +1296,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1385,6 +1391,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1496,6 +1503,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1689,6 +1697,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1840,6 +1849,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -1963,6 +1973,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -2140,6 +2151,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -2256,6 +2268,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -2440,6 +2453,7 @@ mod tests {
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
             payload_store: None,
+            notes_budget_tokens: None,
             kernel_reliability: Some(KernelReliability {
                 max_input_bytes: Some(8_192),
                 ..KernelReliability::default()
@@ -2554,6 +2568,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -2679,6 +2694,7 @@ mod tests {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 1000,
             max_turns: Some(3),
@@ -2870,6 +2886,7 @@ mod tests {
                 compression_store: None,
                 payload_store: None,
                 kernel_reliability: None,
+                notes_budget_tokens: None,
                 session_id: None,
                 max_tokens: 8000,
                 max_turns: Some(5),
@@ -3415,5 +3432,150 @@ mod tests {
             let error = runner.force_compact().await.expect_err("no active run");
             assert!(error.to_string().contains("requires an active run"));
         }
+    }
+}
+
+/// Plan task 9.1 · notes the model writes with the kernel's `note` tool (mirrors
+/// node/tests/notes.test.ts).
+mod notes {
+    use crate::providers::{LLMProvider, ProviderRunState, StreamEvent};
+    use crate::runtime::{InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, SessionLog};
+    use crate::tools::RegisteredTool;
+    use deepstrike_core::context::renderer::InternalRenderedContext;
+    use deepstrike_core::runtime::session::SessionEvent;
+    use deepstrike_core::types::message::ToolSchema;
+    use futures::StreamExt;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Script {
+        calls: Mutex<u32>,
+        offered: Mutex<Vec<Vec<String>>>,
+        states: Mutex<Vec<String>>,
+    }
+
+    struct ScriptedProvider(Arc<Script>);
+
+    #[async_trait::async_trait]
+    impl LLMProvider for ScriptedProvider {
+        async fn stream(
+            &self,
+            context: &InternalRenderedContext,
+            tools: &[ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&ProviderRunState>,
+        ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+            let script = &self.0;
+            let call = {
+                let mut calls = script.calls.lock().unwrap();
+                *calls += 1;
+                *calls
+            };
+            script.offered.lock().unwrap().push(tools.iter().map(|t| t.name.to_string()).collect());
+            script.states.lock().unwrap().push(serde_json::to_string(&context.state_turn).unwrap_or_default());
+            let events = match call {
+                1 => vec![Ok(StreamEvent::ToolCall {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    arguments: serde_json::json!({ "path": "logs/a.log" }),
+                })],
+                2 if tools.iter().any(|t| t.name == "note") => vec![Ok(StreamEvent::ToolCall {
+                    id: "c2".into(),
+                    name: "note".into(),
+                    arguments: serde_json::json!({
+                        "title": "Tally", "kind": "state", "body": "3 qualifying lines in logs/a.log"
+                    }),
+                })],
+                _ => vec![Ok(StreamEvent::TextDelta { delta: "3".into() })],
+            };
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    async fn run(script: Arc<Script>, notes_budget_tokens: Option<u32>) -> Vec<SessionEvent> {
+        let mut plane = LocalExecutionPlane::new();
+        plane.register(RegisteredTool::text(
+            "read",
+            "Read a file",
+            serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+            |_args| Box::pin(async { Ok("ERROR x\nERROR y\nERROR z".to_string()) }),
+        ));
+        let log = Arc::new(InMemorySessionLog::new());
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(ScriptedProvider(script)),
+            execution_plane: Some(Box::new(plane)),
+            session_log: Some(log.clone()),
+            compression_store: None,
+            payload_store: None,
+            kernel_reliability: None,
+            notes_budget_tokens,
+            session_id: Some("notes".into()),
+            max_tokens: 8_000,
+            max_turns: Some(10),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            memory_scope: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
+            skill_dir: None,
+            memory_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            os_profile: None,
+            governance_policy: None,
+            signal_policy: None,
+            scheduler_policy: None,
+            resource_quota: None,
+            memory_policy: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+            milestone_contract: None,
+            run_spec: None,
+            allowed_tool_ids: None,
+            baseline_tool_ids: Some(vec!["read".into()]),
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
+            pre_query_memory: None,
+            on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
+        });
+        let mut stream = runner.run_streaming("count the errors", &[], None, None).await.unwrap();
+        while stream.next().await.transpose().unwrap().is_some() {}
+        log.read("notes", 0, None).await.unwrap().into_iter().map(|entry| entry.event).collect()
+    }
+
+    #[tokio::test]
+    async fn notes_are_written_by_the_model_kept_by_the_kernel_and_shown_in_the_task_state() {
+        let script = Arc::new(Script::default());
+        let events = run(script.clone(), Some(600)).await;
+        assert!(script.offered.lock().unwrap()[0].iter().any(|name| name == "note"));
+        let states = script.states.lock().unwrap();
+        assert!(states[2].contains("[state] Tally: 3 qualifying lines in logs/a.log"), "{}", states[2]);
+        let report = events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                SessionEvent::ContextLifecycleReported { notes_written, notes_active, .. } => {
+                    Some((*notes_written, *notes_active))
+                }
+                _ => None,
+            })
+            .expect("a lifecycle report");
+        assert_eq!(report, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn notes_are_off_without_a_budget() {
+        let script = Arc::new(Script::default());
+        run(script.clone(), None).await;
+        assert!(!script.offered.lock().unwrap()[0].iter().any(|name| name == "note"));
     }
 }

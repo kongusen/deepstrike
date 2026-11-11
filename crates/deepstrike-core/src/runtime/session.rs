@@ -278,6 +278,11 @@ pub enum SessionEvent {
         /// never reusable and not a break, but part of a provider's uncached input count.
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
         cache_tail_tokens: u64,
+        /// Plan task 9.1 · notes the model wrote (rewrites count again) and notes it holds now.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        notes_written: u32,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        notes_active: u32,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

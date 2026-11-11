@@ -665,6 +665,8 @@
         "history_items",
         "history_items_omitted",
         "items",
+        "notes_active",
+        "notes_written",
         "parent_items_used",
         "prefix_breaks",
         "prefix_breaks_omitted",
@@ -724,7 +726,9 @@
           { "turn": 5, "cause": "auto", "kept_tokens": 900, "lost_tokens": 3100 }
         ],
         "prefix_breaks_omitted": 1,
-        "cache_tail_tokens": 840
+        "cache_tail_tokens": 840,
+        "notes_written": 3,
+        "notes_active": 2
       }
     },
     {

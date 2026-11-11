@@ -1842,6 +1842,8 @@ impl LoopStateMachine {
             prefix_breaks: metrics.prefix_breaks,
             prefix_breaks_omitted: metrics.prefix_breaks_omitted,
             cache_tail_tokens: metrics.cache_tail_tokens,
+            notes_written: metrics.notes_written,
+            notes_active: metrics.notes_active,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,

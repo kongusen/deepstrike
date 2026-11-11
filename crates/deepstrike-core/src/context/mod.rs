@@ -6,6 +6,7 @@ pub mod graph;
 pub mod item;
 pub mod manager;
 pub mod measurement;
+pub mod notes;
 pub mod partitions;
 pub mod policy;
 pub mod pressure;
