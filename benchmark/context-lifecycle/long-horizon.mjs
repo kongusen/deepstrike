@@ -19,7 +19,9 @@
 // no longer showed the badge number anywhere (history, task state or knowledge) — the brief's
 // end-only fact did not survive; `brief_rereads` counts reads of the brief after the first;
 // `compactions` and `renewals` count the kernel's compaction and renewal events, so a run that never
-// reached them can be told apart. Writes one trial per task for `deepstrike-lab`; never prints a key.
+// reached them can be told apart. With notes on (`--policy '{"notesBudgetTokens":600}'`),
+// `notes_written`, `notes_active` and `note_diagnostics_max` show whether the model used them.
+// Writes one trial per task for `deepstrike-lab`; never prints a key.
 
 import { resolve } from "node:path"
 import { MeteredProvider, here, loadEnv, parseArgs, realProvider, recordingSessionLog, redact, sdk, trialFrom, writeTrials } from "./trial.mjs"
@@ -121,6 +123,18 @@ function answerOracles(t, answer) {
   }
 }
 
+/** Plan task 9 · notes written and held at the last lifecycle report, the most diagnostics seen at
+ *  once, and how many collapses waited for a page-out notice. Zero when notes are off. */
+function noteOracles(events) {
+  const reports = events.filter(event => event.kind === "context_lifecycle_reported")
+  const last = reports.at(-1) ?? {}
+  return {
+    notes_written: last.notes_written ?? 0,
+    notes_active: last.notes_active ?? 0,
+    note_diagnostics_max: Math.max(0, ...reports.map(report => report.note_diagnostics ?? 0)),
+  }
+}
+
 // `--rescore <file>`: recompute the answer-derived oracles of recorded long-horizon trials in place
 // (they depend only on the recorded answer and the task's facts).
 if (process.argv.includes("--rescore")) {
@@ -211,6 +225,8 @@ async function runTask(index) {
       brief_rereads: Math.max(0, briefReads - 1),
       compactions: recorder.events.filter(event => event.kind === "compressed").length,
       renewals: recorder.events.filter(event => event.kind === "context_renewed").length,
+      // Plan task 9 · whether the model used its notes, and what the kernel asked it to check.
+      ...noteOracles(recorder.events),
       ...answerOracles(t, answer),
     },
     expected: t.expected,
