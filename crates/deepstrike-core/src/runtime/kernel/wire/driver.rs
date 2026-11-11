@@ -1508,6 +1508,7 @@ fn project_task_state(state: &TaskState) -> LogicalTaskState {
         notes_retired: state.notes_retired,
         notes_watermark: state.notes_watermark,
         page_out_notice: state.page_out_notice.clone(),
+        note_checks: state.note_checks.clone(),
     }
 }
 
@@ -1559,6 +1560,7 @@ fn restore_task_state(state: &LogicalTaskState) -> TaskState {
         notes_retired: state.notes_retired,
         notes_watermark: state.notes_watermark,
         page_out_notice: state.page_out_notice.clone(),
+        note_checks: state.note_checks.clone(),
     }
 }
 
@@ -3262,6 +3264,7 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
             notes_budget_tokens: context.notes_budget_tokens,
             compaction_reads_notes: context.compaction_reads_notes,
             page_out_notice: context.page_out_notice,
+            note_diagnostics: context.note_diagnostics,
         });
     engine
         .ctx

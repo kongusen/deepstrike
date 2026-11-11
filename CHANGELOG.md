@@ -55,6 +55,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   compaction summary becomes an archive locator (turns, call ids, paths) instead of a rule digest.
   `pageOutNotice` / `page_out_notice`: a collapse about to archive results no note cites waits one
   turn and lists them in the task state; auto compaction and renewal never wait.
+- Note diagnostics (plan task 9.3), off by default (`noteDiagnostics` / `note_diagnostics`). Before
+  every provider call the kernel lists, under the notes, dead links, notes whose cited call was
+  repeated with the same arguments, near-duplicate notes and long-open questions (at most 4
+  lines); the model fixes them with `note` on its own turn or leaves them. No model call is added.
+  `context_lifecycle_reported` gains `note_diagnostics`.
 
 ### Changed
 

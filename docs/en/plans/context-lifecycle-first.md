@@ -898,25 +898,32 @@ are scheduled once long-horizon can measure them.
       deferral is reported.
     - Files: `context/utility.rs`, `context/compression.rs`, `context/notes.rs`,
       `context/summarizer.rs`, `context/task_state.rs`, `scheduler/state_machine/eviction.rs`
-- [ ] Task 9.3: the model repairs its own notes (the kernel computes the diagnostics).
-    - Every turn the kernel computes structural diagnostics deterministically, reading only the
-      graph and the notes, never their meaning:
-        - dead link: a `links_to` target that does not exist;
-        - superseded evidence: a result a note's `derived_from` points at was followed by a newer
-          result of the same tool with the same arguments (located through `answers` edges), so the
-          note may be stale;
-        - near duplicate: two active notes whose bodies overlap lexically above a threshold (the
-          4.2 distinctive-term sets);
-        - long-open question: a `question` note neither rewritten nor retired for N turns.
-    - Rendering: a short `notes to check:` block under the notes (at most 4 lines, one diagnostic
-      and the note title each), rebuilt every turn. The model fixes with `note` on its next turn,
-      or does not; the kernel does not nag, emits no effect and adds no call.
-    - Renewal: notes enter the new sprint verbatim with the working partition; the renewal handoff
-      no longer summarizes them separately.
-    - Switch: `ContextPolicy.note_diagnostics`, off by default.
-    - Acceptance: with 9.1 + 9.2 on, success does not drop and `weighted_cost` does not rise; the
-      diagnostic count in the report falls after repairs (new lifecycle field `note_diagnostics`).
-    - Files: `context/graph.rs`, `context/notes.rs`, `context/renderer.rs`
+- [x] Task 9.3 (implemented 2026-11-12; measured in the final round): the model repairs its own
+  notes (the kernel computes the diagnostics).
+    - With `ContextPolicy.note_diagnostics`, before every provider call (`emit_call_llm`) the kernel
+      recomputes the notes' structural diagnostics deterministically, reading the notes, their
+      citations and the tool calls in history, never what anything means:
+        - dead link: a title in `links` with no note;
+        - superseded evidence: after a cited call, the same tool was called again with exactly the
+          same arguments (the note may be stale);
+        - near duplicate: two notes whose bodies share distinctive terms (the 4.2 term sets) for at
+          least 80% of the smaller one, with 3 terms at least;
+        - long-open question: a `question` note not rewritten or retired for 10 turns or more.
+    - Rendering: `notes to check:` under the notes block (at most 4 lines, then `(+N more)`),
+      worded "fix with `note` if they matter; nothing happens otherwise". The model decides on its
+      own turn; the kernel does not nag, emits no effect and adds no call. Once fixed, the
+      diagnostic is gone the next turn.
+    - Diagnostics are checkpointed (`LogicalTaskState.note_checks`), and
+      `context_lifecycle_reported` gains `note_diagnostics` (the current count). Notes cross renewal
+      verbatim with the working partition (covered by 9.2's tests).
+    - SDKs: `noteDiagnostics` (Node/WASM), `note_diagnostics` (Python, Rust `NotesOptions`). Off
+      by default; goldens unchanged.
+    - Tests: two kernel tests (all four diagnostics flagged and cleared once the model adds,
+      retires and rewrites notes; none without the switch); one Node end-to-end test (a link to a
+      missing note → a diagnostic in the next state turn → gone once the model writes it).
+    - Acceptance (final round): with 9.1 + 9.2 on, success does not drop and `weighted_cost` does
+      not rise; `note_diagnostics` falls after it appears during a run (the model does repair).
+    - Files: `context/notes.rs`, `context/task_state.rs`, `scheduler/state_machine/mod.rs`
 - [ ] Task 9.4: across sessions (index and promotion), through the existing memory channel only.
     - Promotion: at run end, `rule` and `index` notes are submitted as memory candidates (the
       existing candidate ABI, the same path as `propose_memory`) with digests of the evidence their
@@ -1024,7 +1031,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
 | 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate, not merged, direction abandoned (`exp/8.3c`); 8.4 failed the gate when measured and was withdrawn (`exp/8.4-model-summaries`) |
-| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented); 9.2 compaction reads the graph (implemented); 9.3 the model repairs its notes (the kernel only diagnoses); 9.4 cross-session promotion and a consolidation run. Measured in one round at the end of the stage | In progress |
+| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented); 9.2 compaction reads the graph (implemented); 9.3 the model repairs its notes (the kernel only diagnoses; implemented); 9.4 cross-session promotion and a consolidation run. Measured in one round at the end of the stage | In progress |
 
 0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
 rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that

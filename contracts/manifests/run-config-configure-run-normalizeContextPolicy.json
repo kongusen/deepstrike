@@ -53,7 +53,8 @@
         "idleMicroCompactMinutes",
         "notesBudgetTokens",
         "compactionReadsNotes",
-        "pageOutNotice"
+        "pageOutNotice",
+        "noteDiagnostics"
       ]
     },
     "derived": [

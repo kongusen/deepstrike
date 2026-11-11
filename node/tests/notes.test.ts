@@ -139,3 +139,42 @@ describe("compaction reads the notes (plan task 9.2)", () => {
     expect(compressed.some(event => (event.summary ?? "").startsWith("archived "))).toBe(true)
   })
 })
+
+// Plan task 9.3 · the kernel diagnoses the notes; the model sees the diagnostics in the task state
+// and fixes them on its own turn. No model call is added.
+describe("note diagnostics (plan task 9.3)", () => {
+  it("are shown in the task state and cleared once the model fixes the note", async () => {
+    const states: string[] = []
+    let calls = 0
+    const provider: LLMProvider = {
+      async complete(): Promise<ModelMessage> {
+        return { role: "assistant", content: "", toolCalls: [] }
+      },
+      async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
+        calls += 1
+        states.push(JSON.stringify(context.stateTurn ?? ""))
+        if (calls === 1) {
+          yield { type: "tool_call", id: "n1", name: "note", arguments: { title: "Tally", body: "2 so far", links: ["Rules"] } }
+          return
+        }
+        if (calls === 2) {
+          yield { type: "tool_call", id: "n2", name: "note", arguments: { title: "Rules", kind: "rule", body: "skip ids ending in 0" } }
+          return
+        }
+        yield { type: "text_delta", delta: "2" }
+      },
+    }
+    const sessionLog = new InMemorySessionLog()
+    const run = new RuntimeRunner({
+      provider, sessionLog, executionPlane: new LocalExecutionPlane(), maxTokens: 8_000, maxTurns: 10,
+      baselineToolIds: [], contextPolicy: { notesBudgetTokens: 400, noteDiagnostics: true },
+    })
+    await collectText(run.run({ sessionId: "diagnostics", goal: "count the errors" }))
+    expect(states[1]).toContain("notes to check")
+    expect(states[1]).toContain('\\"Tally\\" links to \\"Rules\\", which has no note')
+    expect(states[2]).not.toContain("notes to check")
+    const reports = (await sessionLog.read("diagnostics")).map(entry => entry.event)
+      .filter(event => event.kind === "context_lifecycle_reported") as Array<{ note_diagnostics?: number }>
+    expect(reports.at(-1)?.note_diagnostics).toBeUndefined()
+  })
+})

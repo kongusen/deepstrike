@@ -133,6 +133,7 @@ function projectKernelObservation(
         ...(obs.cache_tail_tokens ? { cache_tail_tokens: obs.cache_tail_tokens } : {}),
         ...(obs.notes_written ? { notes_written: obs.notes_written } : {}),
         ...(obs.notes_active ? { notes_active: obs.notes_active } : {}),
+        ...(obs.note_diagnostics ? { note_diagnostics: obs.note_diagnostics } : {}),
       }
     case "rollbacked":
       return {

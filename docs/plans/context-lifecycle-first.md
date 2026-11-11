@@ -377,17 +377,18 @@ ContextItem {
     - 测试：kernel 4 个（开关前后被换出的是最旧的 c0 还是被引用的 c2；预告推迟一次并只列未引用的结果；不开预告不推迟；笔记跨 renewal 保留）；Node 端到端一个（小窗口里预告 → 下一轮压缩 → 笔记上出现 c1 的读回句柄 → 摘要是归档定位）；Python 开关序列化。
     - 验收（最后一轮实测）：在 9.1 开启的前提下，正确率不降，`weighted_cost` 下降，`read_back` 与 `brief_rereads` 不升；推迟压缩带来的 `cache_loss_tokens` 变化记进报告。
     - 文件：`context/utility.rs`、`context/compression.rs`、`context/notes.rs`、`context/summarizer.rs`、`context/task_state.rs`、`scheduler/state_machine/eviction.rs`
-- [ ] 任务 9.3：模型自己修（诊断由 kernel 算）。
-    - kernel 每轮确定地算出结构诊断，只读图和笔记，不读内容语义：
-        - 死链：`links_to` 目标不存在；
-        - 依据已更新：某条笔记 `derived_from` 指向的结果，之后同一工具、同样参数又得到了新结果（`answers` 边能定位），即笔记可能过期；
-        - 近似重复：两条 active 笔记的正文词法重叠超过阈值（沿用 4.2 的特征词集合）；
-        - 久悬的问题：`question` 笔记超过 N 轮未重写、未退役。
-    - 渲染：notes 块下附一小段 `notes to check:`（最多 4 行，每行一条诊断和它指向的笔记标题），每轮重建。模型在自己的下一轮用 `note` 修，或者不修；kernel 不催，不发 effect，不加调用。
-    - renewal：笔记随 working 分区原样进入新 sprint；renewal 的 handoff 不再单独摘要它们。
-    - 开关：`ContextPolicy.note_diagnostics`，默认关闭。
-    - 验收：在 9.1 + 9.2 开启的前提下，正确率不降、`weighted_cost` 不升；报告里诊断数在修复后下降（新增 lifecycle 字段 `note_diagnostics`）。
-    - 文件：`context/graph.rs`、`context/notes.rs`、`context/renderer.rs`
+- [x] 任务 9.3（2026-11-12 实现，待最后一轮实测）：模型自己修（诊断由 kernel 算）。
+    - `ContextPolicy.note_diagnostics` 打开时，kernel 在每次 provider 调用前（`emit_call_llm`）确定地重算笔记的结构诊断，只读笔记、引用和 history 里的工具调用，不读内容的意义：
+        - 死链：`links` 指向的标题没有笔记；
+        - 依据已更新：笔记引用的调用之后，同一工具以完全相同的参数又被调用过（笔记可能过期）；
+        - 近似重复：两条笔记正文的特征词（4.2 的词集）重叠达到较小一方的 80%，且至少 3 个词；
+        - 久悬的问题：`question` 笔记 10 轮以上没有重写或退役。
+    - 渲染：notes 块下的 `notes to check:`（最多 4 行，多出的记 `(+N more)`），提示语是"重要就用 `note` 修，不修也不会怎样"。模型在自己的下一轮决定修不修；kernel 不催，不发 effect，不加调用。修完后下一轮的诊断自然消失。
+    - 诊断进 checkpoint（`LogicalTaskState.note_checks`），`context_lifecycle_reported` 增加 `note_diagnostics`（当前条数）。笔记随 working 分区原样跨 renewal（9.2 的测试已覆盖）。
+    - 四端 SDK：`noteDiagnostics`（Node/WASM），`note_diagnostics`（Python、Rust `NotesOptions`）。默认关闭，golden 不变。
+    - 测试：kernel 两个（四类诊断都能标出，模型补笔记、退役、重写后清空；不开开关没有诊断）；Node 端到端一个（链接到不存在的笔记 → 下一轮状态块里出现诊断 → 模型补上后消失）。
+    - 验收（最后一轮实测）：在 9.1 + 9.2 开启的前提下，正确率不降、`weighted_cost` 不升；`note_diagnostics` 在运行中出现后会下降（模型确实在修）。
+    - 文件：`context/notes.rs`、`context/task_state.rs`、`scheduler/state_machine/mod.rs`
 - [ ] 任务 9.4：跨会话（索引与提升），只用已有的记忆通道。
     - 提升：run 结束时，`rule` 与 `index` 笔记作为 memory candidate 提交（已有的 candidate ABI，与 `propose_memory` 同一条路），附带 `derived_from` 所指证据的 digest 和会话 id；`state` 与 `question` 永不提升。宿主显式开启（`promote_notes`），默认关闭。
     - 注入：新会话沿现有 recall 路径只注入索引行（`MemoryRecall` 的 handle fidelity 本来就是一行一条），`index` 类的记忆排在最前；正文用 `memory(record_id)` 读。注入上限沿用 recall 的行数和字节上限。
@@ -435,7 +436,7 @@ ContextItem {
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
 | 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入，方向放弃（`exp/8.3c`）；8.4 实测未通过 gate，已撤回（`exp/8.4-model-summaries`） |
-| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记（已实现）；9.2 压缩读图（已实现）；9.3 模型自己修笔记（kernel 只算诊断）；9.4 跨会话提升与整理 run。实测在阶段末一次做完 | 进行中 |
+| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记（已实现）；9.2 压缩读图（已实现）；9.3 模型自己修笔记（kernel 只算诊断，已实现）；9.4 跨会话提升与整理 run。实测在阶段末一次做完 | 进行中 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 

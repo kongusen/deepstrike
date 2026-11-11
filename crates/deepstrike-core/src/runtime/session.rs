@@ -283,6 +283,9 @@ pub enum SessionEvent {
         notes_written: u32,
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
         notes_active: u32,
+        /// Plan task 9.3 · diagnostics the notes carry at the report.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        note_diagnostics: u32,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

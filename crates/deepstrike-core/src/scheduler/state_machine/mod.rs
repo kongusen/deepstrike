@@ -1844,6 +1844,7 @@ impl LoopStateMachine {
             cache_tail_tokens: metrics.cache_tail_tokens,
             notes_written: metrics.notes_written,
             notes_active: metrics.notes_active,
+            note_diagnostics: metrics.note_diagnostics,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
@@ -1915,6 +1916,8 @@ impl LoopStateMachine {
         self.set_lifecycle(TaskLifecycle::Running, None);
         // Content held for a tool batch that never completed still reaches the model.
         self.ctx.release_held_history();
+        // Plan task 9.3 · the notes' diagnostics reflect the history this request carries.
+        self.ctx.refresh_note_checks(self.turn);
 
         // Plan task 2.1 · a recall owed at run start or after a renewal goes out before the
         // provider call, so its hits are in system knowledge before that knowledge is cached.

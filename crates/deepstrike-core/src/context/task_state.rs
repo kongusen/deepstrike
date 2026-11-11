@@ -73,7 +73,14 @@ pub struct TaskState {
     /// in the state turn until the compaction runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub page_out_notice: Vec<String>,
+    /// Plan task 9.3 · structural diagnostics of the notes, recomputed before every provider call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_checks: Vec<String>,
 }
+
+/// The heading of the notes' diagnostics in the state turn.
+pub const NOTE_CHECKS_HEADING: &str =
+    "notes to check (fix with `note` if they matter; nothing happens otherwise):";
 
 /// The heading of the page-out notice in the state turn.
 pub const PAGE_OUT_NOTICE_HEADING: &str = "leaving context at the next compaction (results no note \
@@ -258,6 +265,10 @@ impl TaskState {
         let notes = self.render_notes();
         if !notes.is_empty() {
             lines.push(notes);
+        }
+        if !self.note_checks.is_empty() {
+            lines.push(NOTE_CHECKS_HEADING.to_string());
+            lines.extend(self.note_checks.iter().map(|line| format!("  - {line}")));
         }
         if !self.page_out_notice.is_empty() {
             lines.push(PAGE_OUT_NOTICE_HEADING.to_string());

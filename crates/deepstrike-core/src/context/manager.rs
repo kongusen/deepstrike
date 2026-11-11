@@ -122,6 +122,8 @@ pub struct LifecycleMetrics {
     /// Plan task 9.1 · notes written (rewrites count again) and notes held now.
     pub notes_written: u32,
     pub notes_active: u32,
+    /// Plan task 9.3 · diagnostics the notes carry now.
+    pub note_diagnostics: u32,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -1588,6 +1590,7 @@ impl ContextManager {
             cache_tail_tokens: self.cache_ledger.tail_tokens,
             notes_written: self.partitions.task_state.notes_written,
             notes_active: self.partitions.task_state.notes.len() as u32,
+            note_diagnostics: self.partitions.task_state.note_checks.len() as u32,
             recalled,
             recall_expanded,
             items,

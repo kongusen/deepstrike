@@ -445,6 +445,7 @@ class _ContextLifecycleItems(TypedDict, total=False):
     cache_tail_tokens: int
     notes_written: int
     notes_active: int
+    note_diagnostics: int
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):
