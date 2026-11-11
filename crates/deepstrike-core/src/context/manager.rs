@@ -117,9 +117,6 @@ pub struct LifecycleMetrics {
     pub prefix_breaks_omitted: u32,
     /// State-turn tokens of every request a later one followed: uncached by design, not a break.
     pub cache_tail_tokens: u64,
-    /// Plan task 8.4 · compaction summaries a model wrote (the rest of the `summary` items are
-    /// rule-written).
-    pub model_summaries: u32,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -237,19 +234,6 @@ pub struct ContextManager {
     pub(crate) item_replays: std::collections::BTreeMap<ItemId, (serde_json::Value, u32)>,
     /// Replay for the assistant message being admitted now (set around one provider completion).
     pub(crate) pending_assistant_replay: Option<serde_json::Value>,
-    /// Plan task 8.4 · the summary the latest compaction wrote, until the state machine takes it.
-    pub(crate) last_compaction_summary: Option<CompactionSummary>,
-    /// Plan task 8.4 · compaction summaries a model rewrote through `summarize_context`.
-    pub(crate) model_summaries: u32,
-}
-
-/// Plan task 8.4 · one compaction's summary: its item, and the compression-log entry it renders as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompactionSummary {
-    pub item: ItemId,
-    /// Position in the compression log counted from the run's first entry (dropped ones included).
-    pub entry: u64,
-    pub tokens: u32,
 }
 
 /// Plan task 8.0 · a message's content as it reaches a provider, for the cache ledger's
@@ -344,8 +328,6 @@ impl ContextManager {
             held_history: Vec::new(),
             item_replays: std::collections::BTreeMap::new(),
             pending_assistant_replay: None,
-            last_compaction_summary: None,
-            model_summaries: 0,
         }
     }
 
@@ -732,24 +714,6 @@ impl ContextManager {
             );
             self.retire_history_item(record);
         }
-        // Plan task 8.4 · the summary is an item of its own, with a `summarizes` edge to every
-        // item of the range it stands in for.
-        self.last_compaction_summary = match &summary {
-            Some(text) if !archived.is_empty() => {
-                let item = self.alloc_item_id();
-                for row in &archived {
-                    self.add_edge(item, row.tag.id, Relation::Summarizes);
-                }
-                let tokens = self.engine.count(text);
-                let tally = self.tally(ItemOrigin::Summary);
-                tally.items += 1;
-                tally.tokens += u64::from(tokens);
-                let state = &self.partitions.task_state;
-                let entry = state.compression_log_dropped + state.compression_log.len() as u64 - 1;
-                Some(CompactionSummary { item, entry, tokens })
-            }
-            _ => None,
-        };
         let archived: Vec<CoreMessage> = archived.into_iter().map(|row| row.message).collect();
         if saved > 0 || !archived.is_empty() {
             // The measurement describes the request before this rewrite, not the new context.
@@ -785,74 +749,6 @@ impl ContextManager {
     /// W1-1 收口: the truthful compaction parameters the planner stamps into the [`EvictionPlan`],
     /// read once from config so the ops carry real values (not magic-number placeholders) and the
     /// executor stays a pure executor. Returns `(target_tokens, preserve_recent_turns)`.
-    /// Plan task 8.4 · the summary the latest compaction wrote, taken once.
-    pub fn take_compaction_summary(&mut self) -> Option<CompactionSummary> {
-        self.last_compaction_summary.take()
-    }
-
-    /// Plan task 8.4 · what to ask a model for `summary`, whose compaction archived `archived`.
-    pub fn summary_request(
-        &self,
-        summary: &CompactionSummary,
-        archived: &[CoreMessage],
-        action: PressureAction,
-    ) -> super::summarizer::SummaryRequest {
-        let log = &self.partitions.task_state;
-        let position = summary.entry.checked_sub(log.compression_log_dropped);
-        let at = |offset: u64| {
-            position
-                .and_then(|position| position.checked_sub(offset))
-                .and_then(|index| log.compression_log.get(index as usize))
-                .map(|entry| entry.summary.as_str())
-        };
-        super::summarizer::SummaryRequest::build(
-            archived,
-            at(1),
-            at(0).unwrap_or_default(),
-            action,
-            &self.engine,
-        )
-    }
-
-    /// Plan task 8.4 · put a model's summary in place of the rule summary of `summary`'s
-    /// compaction, capped at [`super::summarizer::MODEL_SUMMARY_MAX_TOKENS`]. The summary renders in
-    /// the task state, which every request rebuilds, so the swap breaks no cached prefix. Returns
-    /// whether it was put in place: an empty text, or an entry the log has already dropped, keeps
-    /// the rule summary.
-    pub fn replace_compaction_summary(
-        &mut self,
-        summary: &CompactionSummary,
-        text: &str,
-        action: PressureAction,
-    ) -> bool {
-        let text = text.trim();
-        if text.is_empty() {
-            return false;
-        }
-        let header = format!("[Compressed: {} · model summary]", action.label());
-        let budget = super::summarizer::MODEL_SUMMARY_MAX_TOKENS
-            .saturating_sub(self.engine.count(&header) + 1);
-        let body = if self.engine.count(text) > budget {
-            self.engine.truncate(text, budget).to_string()
-        } else {
-            text.to_string()
-        };
-        let log = &mut self.partitions.task_state;
-        let Some(entry) = summary
-            .entry
-            .checked_sub(log.compression_log_dropped)
-            .and_then(|index| log.compression_log.get_mut(index as usize))
-        else {
-            return false;
-        };
-        entry.summary = format!("{header}\n{body}");
-        let tokens = self.engine.count(&entry.summary);
-        let tally = self.tally(ItemOrigin::Summary);
-        tally.tokens = (tally.tokens + u64::from(tokens)).saturating_sub(u64::from(summary.tokens));
-        self.model_summaries += 1;
-        true
-    }
-
     pub fn plan_compaction_params(&self) -> (u32, usize) {
         (
             self.config.target_tokens(self.max_tokens),
@@ -1663,7 +1559,6 @@ impl ContextManager {
             prefix_breaks: self.cache_ledger.breaks.iter().copied().collect(),
             prefix_breaks_omitted: self.cache_ledger.breaks_omitted,
             cache_tail_tokens: self.cache_ledger.tail_tokens,
-            model_summaries: self.model_summaries,
             recalled,
             recall_expanded,
             items,

@@ -72,12 +72,6 @@ class KernelRunnerAction:
   archive_payload: dict[str, Any] | None = None
   action: str | None = None
   summary: str | None = None
-  # summarize_context (plan task 8.4): the system prompt, the one user message, the reply cap and
-  # how many archived items the range held.
-  instructions: str | None = None
-  transcript: str | None = None
-  max_tokens: int | None = None
-  archived_count: int | None = None
 
 
 def _try_parse_json(value: str) -> Any:

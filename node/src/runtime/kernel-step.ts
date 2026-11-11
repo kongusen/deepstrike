@@ -201,17 +201,6 @@ export type KernelRunnerAction =
     }
   | { kind: "load_payload"; effectId: string; handleId: string; payloadRef: string }
   | {
-      /** Plan task 8.4 · send `instructions` as the system prompt and `transcript` as the one user
-       *  message; resolve with the reply text, or an error to keep the rule summary. */
-      kind: "summarize_context"
-      effectId: string
-      action: string
-      instructions: string
-      transcript: string
-      maxTokens: number
-      archivedCount: number
-    }
-  | {
       kind: "evaluate_milestone"
       effectId: string
       phaseId: string
@@ -268,7 +257,6 @@ export interface KernelObservation {
   prefix_breaks?: ContextPrefixBreak[]
   prefix_breaks_omitted?: number
   cache_tail_tokens?: number
-  model_summaries?: number
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string

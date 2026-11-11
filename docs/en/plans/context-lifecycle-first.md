@@ -712,47 +712,18 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
   - Files: `context/compression.rs`, `context/renderer.rs`, `context/pressure.rs`,
     `context/policy.rs`, `context/config.rs`
 
-- [x] Task 8.4 (2026-11-11; implemented, off by default; live measurement pending):
-    - The precondition's data: long-horizon, four variants, 120 runs (8.3c only partly valid).
-      `early_fact_lost` fired 5 times (once in 8.3b, 4 times in 8.3c) and is 0 in the baseline and
-      in 8.3; when compaction takes the brief, the model reads it again (1.2–3.2 times a task).
-      Wrong answers are mostly miscounts and do not follow compaction (correct baseline runs
-      averaged 6.1 compactions, undercounting ones 3.7). `RuleSummarizer` is keyword-slotted and
-      drops running tallies such as "7 so far". The precondition does not hold; by the user's
-      decision the task is implemented anyway, off by default as an opt-in capability, and whether
-      it becomes the default waits for a live run that passes the gate.
-    - Kernel: an eleventh effect kind, `summarize_context`, optional: it is published only to a
-      host that declares it in `host_effect_support`, and a host that does not behaves as before.
-      After `context_collapse` or `auto_compact` archives a history range, the kernel writes its
-      rule summary as before, then publishes the effect after the range's `archive_page_out` and
-      before the next provider call. The kernel writes the request: `instructions` (the system
-      prompt), `transcript` (the archived range, newest 16k tokens kept, each tool result cut to
-      its first 1,500 characters, preceded by the previous summary so running counts carry on),
-      `max_tokens` (800), `archived_count` and `fallback` (the rule summary now in place). The
-      host's reply comes back as a `context_summarized` result (D1: a replay reaches the same
-      state), is capped at 800 tokens and replaces that compaction's entry in the task state,
-      marked `model summary`. The task state is rebuilt every request, so the swap breaks no cached
-      prefix. A failed or timed-out effect, an empty reply or an undeclared host keeps the rule
-      summary.
-    - Item graph: every compaction summary, rule- or model-written, is a `summary` item with a
-      `summarizes` edge to each archived item; the covered originals are still read back with
-      `read_result` through that compaction's page-out handle. `context_lifecycle_reported` gains
-      `model_summaries` (summaries a model wrote), and `history` gains a `summary` origin tally.
-    - The four SDKs: Node / WASM `modelSummaries`, Python `model_summaries`, Rust
-      `model_summaries: Option<ModelSummaryOptions>`; `true` uses the run's provider, or name
-      another provider and a timeout (default 60 s). Each call writes a `context_summarized`
-      session event (`status`, `summary` or `error`, `usage`). The benchmark counts these calls in
-      `weighted_cost` (each as a run of its own); `long-horizon.mjs` / `long-task.mjs` gain
-      `--model-summaries`, and long-horizon gains the oracles `model_summaries` /
-      `summary_fallbacks`.
-    - Tests: kernel driver tests (the summary replaces the rule summary; a failure keeps it; an
-      undeclared host is never asked), request-building tests, and three end-to-end tests in each
-      SDK (WASM on the real kernel); the Rust workspace, Node, Python, WASM and four-SDK
-      conformance all pass.
-    - Not done: the verification (on long-horizon, `early_fact_lost` falls, success does not drop,
-      and `weighted_cost` including the summary calls does not rise). The provider account's
-      balance is negative, so no live run is possible. Next measurement: `long-horizon.mjs
-      --model-summaries`, 30 tasks, paired gate against `0.2.82-baseline`.
+- [x] Task 8.4 (2026-11-11; not done, precondition not met): long-horizon, four variants, 120 runs
+  (8.3c only partly valid):
+    - `early_fact_lost` fired 5 times in all: once in 8.3b and 4 times in 8.3c (whose data is
+      invalid); it is 0 in the baseline and in 8.3. When compaction takes the brief, the model reads
+      it again (1.2–3.2 times a task).
+    - Wrong answers are mostly miscounts, and they do not follow compaction: correct baseline runs
+      averaged 6.1 compactions, undercounting ones 3.7; undercounts occur with 2 compactions and 4
+      archived items.
+    - `RuleSummarizer` is keyword-slotted and does drop running tallies such as "7 so far", but
+      the data says that is not what fails runs, so a model summary would not buy accuracy.
+    - The precondition does not hold, so the task is not done. If a later scenario shows failures
+      concentrated in summarized ranges, implement it per the original acceptance.
   - Precondition: in the long-horizon baseline, `early_fact_lost` happens mostly inside ranges
     covered by `RuleSummarizer` summaries. Otherwise skip this task and record the data.
   - Acceptance: on auto compaction the kernel emits a `summarize` effect (the item range to
@@ -832,7 +803,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Released (PR #5) |
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
-| 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | Released. 8.0–8.2 done; 8.3 failed the gate and is not merged (`exp/8.3c` awaits measurement); 8.4 implemented, off by default, live measurement pending |
+| 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate and is not merged (`exp/8.3c` awaits measurement); 8.4 not done, precondition not met |
 
 0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
 rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that

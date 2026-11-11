@@ -1264,7 +1264,6 @@ fn restore_context_vm(
     );
     ctx.restore_cache_checkpoint_state(state.prefix_sent, state.cache_invalidated_tokens);
     ctx.cache_ledger = state.cache_ledger.clone();
-    ctx.model_summaries = state.model_summaries;
     ctx.partitions.knowledge.evicted_keys = state.evicted_knowledge_keys.iter().cloned().collect();
     ctx.partitions.knowledge.regret = state.knowledge_regret;
     ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;
@@ -2757,7 +2756,6 @@ fn loop_action_label(action: &LoopAction) -> &'static str {
         LoopAction::QueryMemory { .. } => "query_memory",
         LoopAction::ArchivePageOut { .. } => "archive_page_out",
         LoopAction::EvaluateMilestone { .. } => "evaluate_milestone",
-        LoopAction::SummarizeContext { .. } => "summarize_context",
         LoopAction::Done { .. } => "terminal",
         LoopAction::AwaitingResume => "awaiting_resume",
     }
@@ -3239,12 +3237,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     });
 
     engine.set_criteria_gate(execution.criteria_gate_enabled);
-    // Plan task 8.4 · optional: a host that declares it writes compaction summaries with a model.
-    engine.set_summarize_context(
-        config
-            .host_effect_support
-            .supports(super::effect::EffectKindTag::SummarizeContext),
-    );
     engine.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: execution.repeat_fuse.enabled,
         deny_after: execution.repeat_fuse.deny_after,

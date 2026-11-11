@@ -104,7 +104,6 @@ async fn main() {
         on_turn_metrics: None,
         stable_core_tool_ids: vec![],
         on_milestone_evaluate: None,
-        model_summaries: None,
         memory_runtime_policy: None,
         memory_candidate_sink: None,
     });

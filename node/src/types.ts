@@ -660,18 +660,6 @@ export interface AsyncSummarizer {
   summarize(archived: ModelMessage[], action: string): Promise<string>
 }
 
-/**
- * Plan task 8.4 · how the runner answers the kernel's `summarize_context` effect: one model call
- * per range compaction, whose reply replaces the kernel's rule summary. A failure or timeout keeps
- * the rule summary.
- */
-export interface ModelSummaryOptions {
-  /** The model that writes summaries. Default: the run's provider. */
-  provider?: LLMProvider
-  /** Give up and keep the rule summary after this long. Default: 60000. */
-  timeoutMs?: number
-}
-
 export interface TaskUpdate {
   plan?: string[]
   currentStep?: number

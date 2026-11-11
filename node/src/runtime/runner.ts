@@ -5,7 +5,7 @@ import type {
   LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
-  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, ModelSummaryOptions,
+  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions, NativeContextTiers,
 } from "../types.js"
 import { createHash } from "node:crypto"
@@ -656,13 +656,6 @@ export interface RuntimeOptions {
    * on the next wake() in place of the rule-based summary.
    */
   asyncSummarizer?: AsyncSummarizer
-  /**
-   * Plan task 8.4 · write the summary of each range compaction with a model, through the kernel's
-   * `summarize_context` effect: the reply replaces the rule summary in the task state before the
-   * next provider call, and the call is recorded as a `context_summarized` session event. Off by
-   * default. `true` uses the run's provider.
-   */
-  modelSummaries?: boolean | ModelSummaryOptions
   /** Enable real-time CLI diagnostics dashboard grouped by the three kernel primitives (Syscall, Sched, Mm) */
   enableDiagnosticsDashboard?: boolean
 }
@@ -1236,7 +1229,6 @@ export class RuntimeRunner {
         maxTotalTokens: this.opts.maxTotalTokens,
         maxWallMs: this.opts.timeoutMs,
         memoryBindingId: `node-memory-${this.opts.agentId ?? "root"}`,
-        summarizeContext: Boolean(this.opts.modelSummaries),
         persistPayload: async (callId, content, previewBytes) => {
           const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`
           const payloadRef = `payload:${digest.slice("sha256:".length, "sha256:".length + 32)}`
@@ -3569,25 +3561,6 @@ export class RuntimeRunner {
           }
         }
 
-      } else if (action.kind === "summarize_context") {
-        const effectId = action.effectId
-        const outcome = await this.writeModelSummary(action)
-        await this.opts.sessionLog.append(sessionId, {
-          kind: "context_summarized",
-          effect_id: effectId,
-          action: action.action,
-          archived_count: action.archivedCount,
-          status: outcome.error === undefined ? "success" : "failed",
-          ...(outcome.summary !== undefined ? { summary: outcome.summary } : {}),
-          ...(outcome.error !== undefined ? { error: outcome.error } : {}),
-          ...(outcome.usage ? { usage: outcome.usage } : {}),
-        } as SessionEvent)
-        action = await this.commitKernelAction(runtime, this.pendingObservations, {
-          kind: "context_summary_result",
-          effect_id: effectId,
-          ...(outcome.error !== undefined ? { error: outcome.error } : { summary: outcome.summary ?? "" }),
-        })
-
       } else if (action.kind === "load_payload") {
         let content: string | undefined
         let error: string | undefined
@@ -4107,56 +4080,6 @@ export class RuntimeRunner {
       }
     }
     return nextArchiveStart
-  }
-
-  /** Plan task 8.4 · one model call for the kernel's `summarize_context` effect. */
-  private async writeModelSummary(action: Extract<KernelRunnerAction, { kind: "summarize_context" }>): Promise<{
-    summary?: string
-    error?: string
-    usage?: Record<string, number>
-  }> {
-    const options: ModelSummaryOptions = typeof this.opts.modelSummaries === "object" ? this.opts.modelSummaries : {}
-    const provider = options.provider ?? this.opts.provider
-    const context: RenderedContext = {
-      systemText: action.instructions,
-      systemStable: action.instructions,
-      turns: [{ role: "user", content: action.transcript }],
-    }
-    const abort = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        abort.abort()
-        reject(new Error(`summary timed out after ${options.timeoutMs ?? 60_000} ms`))
-      }, options.timeoutMs ?? 60_000)
-    })
-    let usage: Record<string, number> | undefined
-    const call = (async () => {
-      let text = ""
-      for await (const event of provider.stream(context, [], undefined, undefined, abort.signal)) {
-        if (event.type === "text_delta") text += (event as TextDelta).delta
-        else if (event.type === "usage") {
-          const reported = event as UsageEvent
-          usage = Object.fromEntries(Object.entries({
-            inputTokens: reported.inputTokens,
-            outputTokens: reported.outputTokens,
-            cacheReadInputTokens: reported.cacheReadInputTokens,
-            cacheCreationInputTokens: reported.cacheCreationInputTokens,
-          }).filter((entry): entry is [string, number] => typeof entry[1] === "number"))
-        } else if (event.type === "error") throw new Error(String((event as ErrorEvent).message ?? "summary call failed"))
-      }
-      return text
-    })()
-    try {
-      const text = (await Promise.race([call, timeout])).trim()
-      if (!text) return { error: "the model returned an empty summary", ...(usage ? { usage } : {}) }
-      return { summary: text, ...(usage ? { usage } : {}) }
-    } catch (cause) {
-      call.catch(() => undefined)
-      return { error: formatToolError(cause), ...(usage ? { usage } : {}) }
-    } finally {
-      if (timer) clearTimeout(timer)
-    }
   }
 
   private async upgradeCompressedSummary(

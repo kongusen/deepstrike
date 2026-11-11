@@ -57,9 +57,6 @@ pub(crate) struct CanonicalRunnerOptions {
     pub max_wall_ms: Option<u64>,
     pub memory_binding_id: String,
     pub persist_payload: Option<PersistPayloadFn>,
-    /// Plan task 8.4 · declare `summarize_context`: range compactions ask the runner's model for
-    /// their summary.
-    pub summarize_context: bool,
 }
 
 /// Canonical operation runtime for production runner callsites.
@@ -133,14 +130,6 @@ impl CanonicalRunnerRuntime {
                 ]
             }),
         );
-        if options.summarize_context
-            && let Some(supported) = config
-                .get_mut("host_effect_support")
-                .and_then(|support| support.get_mut("supported"))
-                .and_then(Value::as_array_mut)
-        {
-            supported.push(Value::String("summarize_context".into()));
-        }
         config.insert(
             "kernel_limits".into(),
             json!({
@@ -872,27 +861,6 @@ impl CanonicalRunnerRuntime {
                     true,
                 )
                 .await
-            }
-            // Plan task 8.4 · a failure keeps the kernel's rule summary.
-            "context_summary_result" => {
-                if event.get("error").is_some_and(|error| !error.is_null()) {
-                    self.failed(
-                        &event,
-                        "transport_exhausted",
-                        &string_value(&event, "error"),
-                        true,
-                    )
-                    .await
-                } else {
-                    self.resolve(
-                        &event,
-                        json!({
-                            "kind": "context_summarized",
-                            "summary": string_value(&event, "summary"),
-                        }),
-                    )
-                    .await
-                }
             }
             "deliver_signal" => {
                 self.commit(json!({
@@ -2288,13 +2256,6 @@ fn protocol_action_from_wire(
                 payload_ref: load.payload_ref.as_str().to_string(),
             }
         }
-        EffectKind::SummarizeContext(request) => HostEffect::SummarizeContext {
-            action: request.action.clone(),
-            instructions: request.instructions.clone(),
-            transcript: request.transcript.clone(),
-            max_tokens: request.max_tokens,
-            archived_count: request.archived_count,
-        },
         EffectKind::EvaluateMilestone(_) => {
             let canonical =
                 deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
@@ -3010,7 +2971,6 @@ mod tests {
             max_wall_ms: None,
             memory_binding_id: "test-binding".into(),
             persist_payload: None,
-            summarize_context: false,
         }
     }
 
@@ -3842,7 +3802,6 @@ mod tests {
             max_wall_ms: None,
             memory_binding_id: "restart-memory".into(),
             persist_payload: None,
-            summarize_context: false,
         }
     }
 
@@ -3906,7 +3865,6 @@ mod tests {
                 stable_core_tool_ids: vec![],
                 pre_query_memory: None,
                 on_milestone_evaluate: None,
-                model_summaries: None,
                 memory_runtime_policy: None,
                 memory_candidate_sink: None,
             },

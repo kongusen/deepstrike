@@ -443,7 +443,6 @@ class _ContextLifecycleItems(TypedDict, total=False):
     prefix_breaks: list[ContextPrefixBreak]
     prefix_breaks_omitted: int
     cache_tail_tokens: int
-    model_summaries: int
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):
@@ -584,21 +583,6 @@ class SummaryUpgradedEvent(TypedDict):
     summary: str
 
 
-class _ContextSummarizedRequired(TypedDict):
-    kind: Literal["context_summarized"]
-    effect_id: str
-    action: str
-    archived_count: int
-    status: Literal["success", "failed"]
-
-
-class ContextSummarizedEvent(_ContextSummarizedRequired, total=False):
-    """Plan task 8.4 · one ``summarize_context`` model call: its reply, or why the rule summary stayed."""
-    summary: str
-    error: str
-    usage: dict[str, int]
-
-
 class _GroupMemberJoinedRequired(TypedDict):
     kind: Literal["group_member_joined"]
     session_id: str
@@ -689,7 +673,6 @@ SessionEvent = (
     | KernelObservationEvent
     | RunTerminalEvent
     | SummaryUpgradedEvent
-    | ContextSummarizedEvent
     | GroupMemberJoinedEvent
     | GroupBudgetChargedEvent
     | RoundStartedEvent

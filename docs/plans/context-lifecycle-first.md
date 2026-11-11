@@ -314,13 +314,11 @@ ContextItem {
   - 验证：`deepstrike-lab gate` 在 ledger、knowledge-pressure、long-horizon 上，`weighted_cost` 下降、正确率不降（8.1 的配对规则）；fan-out 不回退。golden 会变化，需要重新 bless 并在 MIGRATION 中说明。
   - 文件：`context/compression.rs`、`context/renderer.rs`、`context/pressure.rs`、`context/policy.rs`、`context/config.rs`
 
-- [x] 任务 8.4（2026-11-11，已实现，默认关闭；实测待做）：
-    - 前置条件的数据：long-horizon 四个变体共 120 题（8.3c 只有部分有效）。`early_fact_lost` 只出现 5 次（8.3b 1 次，8.3c 4 次），基线和 8.3 为 0；brief 被压缩掉后模型会重读（每题 1.2–3.2 次）。答错主要是计数偏差，且与压缩次数不相关（基线答对的题平均压缩 6.1 次，少计的 3.7 次）。`RuleSummarizer` 按关键词分槽，留不住“到目前为止共 7 个”这样的累计计数。前置条件不成立；按用户决定仍然实现，但默认关闭，作为可选能力发布，是否默认开启等实测通过 gate 再定。
-    - kernel：新增第 11 种 effect `summarize_context`，可选：宿主在 `host_effect_support` 里声明它才会发出，不声明的宿主行为不变。`context_collapse` 和 `auto_compact` 归档一段 history 后，kernel 照常先写规则摘要，然后在归档的 `archive_page_out` 之后、下一次 provider 调用之前发出该 effect。请求由 kernel 写好：`instructions`（system prompt）、`transcript`（归档范围，保留最新的 16k token，每个工具结果只留前 1500 字符，前面附上一条摘要以便累计计数接续）、`max_tokens`（800）、`archived_count`、`fallback`（当前的规则摘要）。宿主的回复作为 `context_summarized` 结果回到 kernel（D1，重放得到同样的状态），截到 800 token 后替换任务状态里那条压缩记录，标为 `model summary`。任务状态每次请求都会重建，所以替换不产生 prefix break。effect 失败、超时、返回空文本或宿主未声明时，保留规则摘要。
-    - item 图：每次压缩写出的摘要（规则或模型）都成为一个 `summary` item，带 `summarizes` 边指向被归档的每个 item；被覆盖的原文仍通过该次归档的 page-out handle 用 `read_result` 读回。`context_lifecycle_reported` 增加 `model_summaries`（模型写的摘要数），`history` 里新增 `summary` 来源的统计。
-    - 四端 SDK：Node / WASM `modelSummaries`，Python `model_summaries`，Rust `model_summaries: Option<ModelSummaryOptions>`；`true` 用本次运行的 provider，也可以指定另一个 provider 和超时（默认 60 秒）。每次调用写一条 `context_summarized` session event（`status`、`summary` 或 `error`、`usage`）。benchmark 把这些调用的用量计入 `weighted_cost`（各自算一个 run），`long-horizon.mjs` / `long-task.mjs` 增加 `--model-summaries`，long-horizon 的 oracle 增加 `model_summaries` / `summary_fallbacks`。
-    - 测试：kernel 驱动测试（成功替换、失败保留规则摘要、未声明不发出）、请求构造测试、四端各三个端到端测试（WASM 用真实内核）；Rust workspace、Node、Python、WASM、四端 conformance 全部通过。
-    - 未做：验证（long-horizon 上 `early_fact_lost` 下降、正确率不降、含摘要调用的 `weighted_cost` 不升）。provider 账户余额为负，无法实测。下次实测：`long-horizon.mjs --model-summaries` 30 题，对 `0.2.82-baseline` 做配对 gate。
+- [x] 任务 8.4（2026-11-11，按前置条件不做）：long-horizon 四个变体共 120 题（其中 8.3c 只有部分有效）：
+    - `early_fact_lost` 只出现过 5 次：8.3b 1 次，8.3c 4 次（8.3c 数据无效）；基线和 8.3 都是 0。brief 被压缩掉后，模型会重读（平均 1.2–3.2 次）。
+    - 答错的主要原因是计数偏差，而且与压缩不相关：基线中答对的题平均压缩 6.1 次，少计的题只有 3.7 次；少计在只有 2 次压缩、4 个归档条目的运行里也会出现。
+    - `RuleSummarizer` 按关键词分槽，确实留不住“到目前为止共 7 个”这样的累计计数；但数据显示这不是失败的主因，模型摘要换不来正确率。
+    - 前置条件不成立，此任务不做。若以后的场景显示失败集中在被摘要覆盖的范围内，再按原验收实施。
   - 前置条件：long-horizon 基线中，`early_fact_lost` 主要发生在 `RuleSummarizer` 摘要覆盖的范围内。否则此任务不做，并记录数据。
   - 验收：auto 压缩时，kernel 发出 `summarize` effect（输入为要归档的 item 范围，带 token 上限），宿主调用模型，摘要作为已记录的 fact 回到 kernel（D1，重放得到同一张图），写成一个 `summary` item，带 `summarizes` 边指向被覆盖的 item。effect 失败或超时时退回 `RuleSummarizer`。`summarizes` 边从此也来自 kernel 自己的压缩，被覆盖的原文可以沿这条边读回。
   - 验证：long-horizon 上 `early_fact_lost` 下降、正确率不降，`weighted_cost`（含摘要调用本身）不升。
@@ -362,7 +360,7 @@ ContextItem {
 | 0.2.79 | 1.1 收尾：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 已发布（PR #5） |
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
-| 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 已发布。8.0–8.2 完成；8.3 未通过 gate、未合入（`exp/8.3c` 待实测）；8.4 已实现、默认关闭，实测待做 |
+| 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入（`exp/8.3c` 待实测）；8.4 按前置条件不做 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 

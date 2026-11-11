@@ -32,8 +32,7 @@ pub enum Relation {
     ReferencesLexical,
     /// The item that asked (`read_result`, `memory`) read the target back.
     ReadsBack,
-    /// A summary (the provider's, or the kernel's own compaction summary) stands in for the item
-    /// it covered.
+    /// A provider summary stands in for the item it covered.
     Summarizes,
     /// A memory hit in history gives a recalled index line's record in full.
     Expands,
@@ -164,9 +163,6 @@ pub enum ItemOrigin {
     TaskState,
     Signal,
     ProviderSummary,
-    /// Plan task 8.4 · the summary of a range the kernel's own compaction archived (rule-written, or
-    /// model-written through the `summarize_context` effect). Its `summarizes` edges name the range.
-    Summary,
 }
 
 impl ItemOrigin {
@@ -204,7 +200,6 @@ impl ItemOrigin {
             Self::TaskState => "task_state",
             Self::Signal => "signal",
             Self::ProviderSummary => "provider_summary",
-            Self::Summary => "summary",
         }
     }
 
@@ -229,7 +224,6 @@ impl ItemOrigin {
             Self::TaskState => (S::Task, F::Structured, L::Permanent, A::Kernel),
             Self::Signal => (S::Operation, F::Full, L::SingleUse, A::Host),
             Self::ProviderSummary => (S::Operation, F::Full, L::Permanent, A::Provider),
-            Self::Summary => (S::Operation, F::Structured, L::Permanent, A::Kernel),
         };
         ItemDefaults { scope, fidelity, lease, authority }
     }

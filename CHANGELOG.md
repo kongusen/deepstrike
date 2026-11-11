@@ -6,24 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.2.82] - 2026-11-11
-
 ### Added
 
-- Model-written compaction summaries (plan task 8.4), off by default. A new optional effect kind,
-  `summarize_context`, is published only to a host that declares it in `host_effect_support`:
-  after `context_collapse` or `auto_compact` archives a history range, the kernel writes its rule
-  summary as before, then asks the host for a model summary (`instructions`, `transcript` of the
-  archived range with the previous summary, `max_tokens` 800, `archived_count`, `fallback`). The
-  reply (`context_summarized` result) replaces the rule summary in the task state before the next
-  provider call; a failure, timeout or empty reply keeps the rule summary. SDK options: Node / WASM
-  `modelSummaries`, Python `model_summaries`, Rust `model_summaries: Option<ModelSummaryOptions>`
-  (`true` uses the run's provider; another provider and a timeout can be given). Each call is
-  recorded as a `context_summarized` session event with its usage.
-- Every compaction summary is a `summary` item with `summarizes` edges to the items it archived.
-  `context_lifecycle_reported` gains `model_summaries`, and `history` a `summary` origin tally.
-- Benchmarks count summary calls in `weighted_cost`; `long-horizon.mjs` and `long-task.mjs` gain
-  `--model-summaries`.
 - The cache ledger (plan task 8.0). Every provider request is fingerprinted segment by segment
   (tool schemas, system[0], system[1], each history turn) and compared with the previous request;
   the first segment that differs is a prefix break. `context_lifecycle_reported` gains

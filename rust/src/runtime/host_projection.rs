@@ -96,15 +96,6 @@ pub(crate) enum HostEffect {
         handle_id: String,
         payload_ref: String,
     },
-    /// Plan task 8.4 · send `instructions` as the system prompt and `transcript` as the one user
-    /// message; resolve with the reply text, or an error to keep the rule summary.
-    SummarizeContext {
-        action: String,
-        instructions: String,
-        transcript: String,
-        max_tokens: u32,
-        archived_count: u32,
-    },
     EvaluateMilestone {
         phase_id: String,
         criteria: Vec<String>,

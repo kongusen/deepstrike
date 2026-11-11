@@ -1280,7 +1280,6 @@ fn resolve_verification_contracts(
 /// | `query_memory` | `memory_enabled`, or the binding grants `read` | |
 /// | `archive_page_out` | `knowledge_enabled` | the knowledge partition is what gets swept out under budget pressure |
 /// | `evaluate_milestone` | `verification_contracts` non-empty | a contract nothing can evaluate never resolves |
-/// | `summarize_context` | never | optional (plan task 8.4): declaring it turns model-written compaction summaries on |
 #[allow(clippy::too_many_arguments)]
 fn require_declared_effect_support(
     support: &HostEffectSupport,
@@ -2646,7 +2645,7 @@ mod tests {
             serde_json::from_value::<HostEffectSupport>(json!({ "supported": ["load_payload"] }))
                 .is_ok()
         );
-        assert_eq!(EffectKindTag::ALL.len(), 11);
+        assert_eq!(EffectKindTag::ALL.len(), 10);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3047,22 +3046,7 @@ mod tests {
         full.resolve(&defaults())
             .expect("declaring every kind satisfies every trigger");
 
-        // Plan task 8.4 · `summarize_context` is the one optional kind: no capability needs it,
-        // and declaring it is what switches model-written summaries on.
-        let mut optional = full.clone();
-        optional.host_effect_support = HostEffectSupport::new(
-            EffectKindTag::ALL
-                .into_iter()
-                .filter(|kind| *kind != EffectKindTag::SummarizeContext),
-        );
-        optional
-            .resolve(&defaults())
-            .expect("summarize_context is optional");
-
-        for dropped in EffectKindTag::ALL
-            .into_iter()
-            .filter(|kind| *kind != EffectKindTag::SummarizeContext)
-        {
+        for dropped in EffectKindTag::ALL {
             let mut config = full.clone();
             config.host_effect_support = HostEffectSupport::new(
                 EffectKindTag::ALL

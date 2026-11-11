@@ -103,7 +103,6 @@ where
         milestone_contract: None,
         run_spec: None,
         on_milestone_evaluate: None,
-        model_summaries: None,
         memory_runtime_policy: None,
         memory_candidate_sink: None,
         allowed_tool_ids: None,

@@ -432,8 +432,7 @@
           }
         ],
         "prefix_breaks_omitted": 1,
-        "cache_tail_tokens": 840,
-        "model_summaries": 1
+        "cache_tail_tokens": 840
       },
       "suspended": {
         "kind": "suspended",
@@ -705,19 +704,6 @@
         "compressed_seq": 5,
         "summary": "better summary"
       },
-      "context_summarized": {
-        "kind": "context_summarized",
-        "effect_id": "op-1:step:9:effect:1",
-        "action": "auto_compact",
-        "archived_count": 12,
-        "status": "success",
-        "summary": "Rules: count ERROR code=E503, skip req ending 0. svc-01..svc-12 read; 5 matches so far.",
-        "error": "none",
-        "usage": {
-          "inputTokens": 6100,
-          "outputTokens": 140
-        }
-      },
       "group_member_joined": {
         "kind": "group_member_joined",
         "session_id": "s2",
@@ -875,7 +861,6 @@
             "history_items",
             "history_items_omitted",
             "items",
-            "model_summaries",
             "parent_items_used",
             "prefix_breaks",
             "prefix_breaks_omitted",
@@ -895,25 +880,6 @@
             "turn"
           ],
           "optional": [],
-          "sdks": [
-            "node",
-            "python",
-            "rust",
-            "wasm"
-          ]
-        },
-        "context_summarized": {
-          "required": [
-            "action",
-            "archived_count",
-            "effect_id",
-            "status"
-          ],
-          "optional": [
-            "error",
-            "summary",
-            "usage"
-          ],
           "sdks": [
             "node",
             "python",

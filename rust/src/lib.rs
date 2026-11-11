@@ -104,7 +104,7 @@ pub use runtime::{ExecutionPlane, LocalExecutionPlane};
 pub use runtime::{FilePayloadStore, PayloadStore};
 pub use runtime::{
     KernelReliability, MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy,
-    ModelSummaryOptions, RunLimits, RuntimeOptions, RuntimeRunner, collect_text,
+    RunLimits, RuntimeOptions, RuntimeRunner, collect_text,
 };
 // Durable transaction capability (Canonical Kernel ABI §9.1). `FileKernelJournal` is the
 // cross-process-atomic reference implementation; `InMemoryKernelJournal` is dev/test only.

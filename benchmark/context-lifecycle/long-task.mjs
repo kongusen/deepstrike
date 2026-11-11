@@ -3,7 +3,7 @@
 //
 //   node benchmark/context-lifecycle/long-task.mjs [--repo <checkout>] [--variant <name>]
 //        [--policy '<ContextPolicy overrides JSON>'] [--tasks N] [--provider deepseek|openai]
-//        [--max-tokens N] [--model-summaries] [--out trials.jsonl]
+//        [--max-tokens N] [--out trials.jsonl]
 //
 // The model reads an 8-page ledger (`--pages`) one page at a time with `read_ledger` and reports the total of
 // one account's flagged transactions. The window (`--max-tokens`, default 8000) holds a few pages,
@@ -22,8 +22,6 @@ const policy = JSON.parse(arg("--policy", "{}"))
 const taskCount = Number(arg("--tasks", "6"))
 const maxTokens = Number(arg("--max-tokens", "8000"))
 const out = arg("--out")
-// Plan task 8.4 · `--model-summaries`: range compactions ask the run's model for their summary.
-const modelSummaries = process.argv.includes("--model-summaries")
 
 await loadEnv()
 const dist = sdk(repo)
@@ -125,7 +123,6 @@ async function runTask(index) {
     memoryStore: memoryStore(),
     initialMemory: NOTES,
     ...(Object.keys(policy).length ? { contextPolicy: policy } : {}),
-    ...(modelSummaries ? { modelSummaries: true } : {}),
   })
   const goal = `Audit the ledger: read all ${PAGES} pages with read_ledger, one page per call, and add up the amounts of every ${account} transaction that the ledger audit rule counts as REVIEW. Keep a running total in your plan as you go. Reply with the final total only, as a number with two decimals.`
   let answer = ""

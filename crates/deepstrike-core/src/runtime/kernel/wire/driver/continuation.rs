@@ -95,16 +95,6 @@ impl CanonicalOperationDriver {
                 "this operation's host declares no archive_page_out support".to_string(),
             );
         }
-        // Plan task 8.4 · the engine asks for a summary only when the host declared it; a request
-        // that reaches here undeclared keeps its rule summary, like a failed one.
-        while matches!(action, LoopAction::SummarizeContext { .. })
-            && !context
-                .config
-                .host_effect_support
-                .supports(EffectKindTag::SummarizeContext)
-        {
-            action = self.engine_mut()?.abandon_context_summary();
-        }
 
         let effect = match action {
             LoopAction::AwaitingResume => {
@@ -184,16 +174,6 @@ impl CanonicalOperationDriver {
                     phase_id,
                 },
             }),
-            LoopAction::SummarizeContext { request } => {
-                EffectKind::SummarizeContext(super::super::effect::SummarizeContextEffect {
-                    action: request.action.to_string(),
-                    instructions: request.instructions,
-                    transcript: request.transcript,
-                    max_tokens: request.max_tokens,
-                    archived_count: request.archived_count,
-                    fallback: request.fallback,
-                })
-            }
             LoopAction::ArchivePageOut {
                 summary, archived, ..
             } => EffectKind::ArchivePageOut(self.page_out_effect(
