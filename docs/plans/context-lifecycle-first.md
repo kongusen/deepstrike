@@ -307,6 +307,8 @@ ContextItem {
     - 8.3c（恢复每轮折叠叙述，`read_result` 从第一个工具结果起就提供并保持）：实测时 provider 账户余额耗尽，ledger 16/30、long-horizon 10/30 以 `402 Insufficient Balance` 中断，数据无效，移到 `results/partial-8.3c.jsonl`。
     - 结论：本版本默认渲染行为回到 8.0；代码见 `exp/8.3c`（`c8240078`）。下次实测从 8.3c 开始，long-horizon 与 ledger 各 30 题。
     - 已排除的方向：轻量层的成本闸门（以信息损失换缓存）、叙述只在边界折叠（循环风险）。
+    - 8.3c 重测（2026-11-11）：ledger 30 题通过配对 gate（正确 23/30 → 26/30，`weighted_cost` −29.7%，缓存损失 −39.5%）；long-horizon 跑到 13/30 时决定停止（13 题中 3 题正确），结果移到 `results/partial-8.3c-horizon-stopped.jsonl`。
+    - 放弃（2026-11-11）：上下文管理转向阶段 9，不再按缓存账决定压缩什么；`exp/8.3c` 只作参考。
   - 验收：压缩与渲染投影都先算账再执行：一个会产生 prefix 断点的动作，只有在“释放的 token × 摊销调用数 × (1 − 缓存读取折扣)”大于“断点之后的 token × (1 − 缓存读取折扣)”时才执行。`ContextPolicy` 增加 `cache_read_discount_ppm`（默认 100_000）和 `amortize_calls`（默认 8）；窗口硬上限优先于此规则，超出上限时照常压缩。具体改动：
     - 叙述折叠不再在每轮渲染时逐个执行，改为在 boundary 或压缩时批量执行（修 Q13）；
     - 预算外丢弃最旧单元时，一次丢到 `target_after_compress`，而不是每轮丢一个；
@@ -314,17 +316,80 @@ ContextItem {
   - 验证：`deepstrike-lab gate` 在 ledger、knowledge-pressure、long-horizon 上，`weighted_cost` 下降、正确率不降（8.1 的配对规则）；fan-out 不回退。golden 会变化，需要重新 bless 并在 MIGRATION 中说明。
   - 文件：`context/compression.rs`、`context/renderer.rs`、`context/pressure.rs`、`context/policy.rs`、`context/config.rs`
 
-- [x] 任务 8.4（2026-11-11，按前置条件不做）：long-horizon 四个变体共 120 题（其中 8.3c 只有部分有效）：
-    - `early_fact_lost` 只出现过 5 次：8.3b 1 次，8.3c 4 次（8.3c 数据无效）；基线和 8.3 都是 0。brief 被压缩掉后，模型会重读（平均 1.2–3.2 次）。
-    - 答错的主要原因是计数偏差，而且与压缩不相关：基线中答对的题平均压缩 6.1 次，少计的题只有 3.7 次；少计在只有 2 次压缩、4 个归档条目的运行里也会出现。
-    - `RuleSummarizer` 按关键词分槽，确实留不住“到目前为止共 7 个”这样的累计计数；但数据显示这不是失败的主因，模型摘要换不来正确率。
-    - 前置条件不成立，此任务不做。若以后的场景显示失败集中在被摘要覆盖的范围内，再按原验收实施。
+- [ ] 任务 8.4（2026-11-11，已实现并实测，未通过 gate，已撤回，不随 0.2.82 发布；代码保留在分支 `exp/8.4-model-summaries`）：
+    - 前置数据：long-horizon 四个变体共 120 题里，`early_fact_lost` 只在 8.3b、8.3c 出现过 5 次；答错的主要原因是计数偏差，而且与压缩次数不相关。按前置条件本不该做，按决定先实现再实测。
+    - 实现：ContextCollapse / AutoCompact 归档之后，kernel 发出 `summarize_context` effect（被归档的对话 + 上一份摘要，原文上限 16k token，摘要上限 800 token），宿主用自己的模型写摘要，替换规则摘要；失败、超时或为空时保留规则摘要。新增 `summary` origin 与 `summarizes` 边，四端 SDK 的选项 `modelSummaries` / `model_summaries`，默认关闭。
+    - 实测（long-horizon 30 题，`0.2.82-8.4` 对 `0.2.82-baseline`，配对）：正确 12/30 → 4/30（−26.7 pt，95% 区间 [−46.7, −3.3]），`weighted_cost` +71%（[+39%, +102%]），两项都不通过。10 题跑到轮数上限（基线 1 题），结尾都在以文本输出 DeepSeek 的工具调用标记；平均压缩 5.6 → 9.8 次；brief 重读 1.47 → 0.77 次，`early_fact_lost` 仍为 0。没陷入循环的错题，仍是差 1–3 的计数偏差。
+    - 判断：模型摘要保住了规则，但换不来正确率；同步摘要放在窗口最紧的时刻，和任务争窗口。错因是计数偏差和标记泄漏，压缩管线管不到。
+    - 结论：撤回，不扩 effect ABI。`summarize_context` 的管道在阶段 9 改作边界上的整理 effect（任务 9.3）。
+    - 另：`deepstrike-lab gate` 不带 `--paired` 时对 8.4 报 PASS，默认 gate 不比较正确率与成本（见任务 9.0）。
   - 前置条件：long-horizon 基线中，`early_fact_lost` 主要发生在 `RuleSummarizer` 摘要覆盖的范围内。否则此任务不做，并记录数据。
   - 验收：auto 压缩时，kernel 发出 `summarize` effect（输入为要归档的 item 范围，带 token 上限），宿主调用模型，摘要作为已记录的 fact 回到 kernel（D1，重放得到同一张图），写成一个 `summary` item，带 `summarizes` 边指向被覆盖的 item。effect 失败或超时时退回 `RuleSummarizer`。`summarizes` 边从此也来自 kernel 自己的压缩，被覆盖的原文可以沿这条边读回。
   - 验证：long-horizon 上 `early_fact_lost` 下降、正确率不降，`weighted_cost`（含摘要调用本身）不升。
   - 文件：`context/summarizer.rs`、`context/compression.rs`、`runtime/kernel/wire/effect.rs`；四端 SDK 的 effect 执行
 
 暂缓项保持暂缓：模型版 `RelevanceJudge` 与 Anthropic 上报 compaction fact，等 long-horizon 能衡量它们时再排期。
+
+### 阶段 9：模型构建、修复、索引上下文图（0.2.83 起）
+
+**为什么。**
+- 第 8 章两次改变决策的尝试都没过 gate，共同点是由 kernel 按规则判断内容的意义：8.3 按缓存账决定压什么，8.4 在压缩时同步生成摘要决定留什么（之前是 `RuleSummarizer` 按关键词分槽）。long-horizon 的主要错因（模型自己记的累计计数丢失、少计）和最大的单一失败来源（DeepSeek 把工具调用标记当文本输出，8.3、8.3b、8.4 合计 21/90 题跑到轮数上限，基线 1/30）都不是压缩规则能解决的。
+- 参考：Anthropic 关于 agent 记忆的研究。四层结构：transcripts（底账）、模型在任务中写的 notes、离线整理成的 wiki 式表示、每次会话注入的轻量索引；离线整理（"dreaming"）对照 transcripts 修正错误笔记、修复死链、建索引；"只记失败"这类限制性指令让强模型的收益下降，方向性指令让弱模型的收益明显上升；wiki 加检索优于只有检索。我们读到的是图表和二手解读，设计据此，具体数字以原文为准。
+- 我们已有其中两层的骨架：item 表加归档（即 transcripts：每条有 id，可用 `read_result` 读回），item 图（边由已提交输入记录，可重放）。缺的是：图里没有模型写的节点，决策也不读图（7.1 起图只上报）。
+
+**原则。**
+- 分工：模型决定意义（记什么、怎么链接、哪条错了、怎么索引）；kernel 决定机制（预算、渲染位置、缓存、来源、校验、重放）。kernel 不再生成代替模型理解的内容：不新增规则摘要的语义槽，不按缓存账删除内容。
+- 证据层只增不改：原始 item 与归档是唯一的底账。模型写的节点必须引用证据（`derived_from` 边），修复时以证据为准。
+- D1 不变：会话内的笔记来自模型的工具调用（已提交输入）；整理走 effect，结果作为 fact 记录，重放得到同一张图。
+- 诊断由 kernel 算，修复由模型做：死链、无证据的笔记、证据已有更新的笔记、近似重复、从未被读的笔记，由 kernel 确定地算出，作为整理的输入，模型不必扫描全图。
+- 指令给方向，不给禁令；指令文本作为实验变量，在 lab 中比较。
+- 本阶段解冻“范围外”里的记忆写入冻结：跨会话写入沿用已有的 candidate ABI（`propose_memory`、attestation、lease），不另建写入通道。
+- 每项改动都要过 8.1 的配对 gate（`--paired success_rate:0.05,weighted_cost:0`），对照 9.0 的新基线。
+
+**新增的节点与边。**
+
+| 名称 | 种类 | 说明 |
+|------|------|------|
+| `note` | origin | 模型写的节点：`kind`、`title`、`body`、`status`（active / retired）。`kind` 取 `state`（会话内的工作状态，如累计计数、已处理清单，只活到会话结束）、`rule`（隐性规则或经验，可提升为记忆）、`question`（未决问题，回答后退役）、`index`（索引页，可提升为记忆） |
+| `derived_from` | relation | note → 证据 item（工具结果、用户消息、归档条目） |
+| `links_to` | relation | note → note，wiki 式链接；目标可以尚不存在（死链），由整理修复 |
+| `supersedes` | relation | 新 note → 被修正或合并的旧 note，旧 note 退役但保留 |
+
+- [ ] 任务 9.0：先清掉测量里的混杂因素
+  - DeepSeek 以文本输出工具调用标记（`｜DSML｜`）：在 OpenAI-chat 方言层识别，能解析就转成工具调用，不能解析就作为 provider 协议错误交给 kernel 已有的恢复路径，不让它以普通文本进入 history。
+  - 新基线：在 0.2.82 上重跑 long-horizon 30 题（`0.2.83-baseline`），之后的 gate 都对照它。
+  - lab：`gate` 不带 `--paired` 时默认按 `success_rate:0.05,weighted_cost:0` 比较，避免 8.4 那样的假 PASS。
+  - 验证：long-horizon 跑到轮数上限的题 ≤ 1/30；四端各有一个标记泄漏的单测。
+  - 文件：四端 OpenAI-chat provider 与方言表、`crates/deepstrike-lab`
+- [ ] 任务 9.1：会话内笔记（模型构建）
+  - kernel 工具 `note`：`write`（必须带 `evidence`，即 call_id 或 item id 列表）、`update`、`link`、`retire`。`update_plan` 只保留计划步骤，`progress` 自由文本由 `state` 笔记取代。
+  - 笔记属于 working 分区，不参与压缩；总量有上限 `notes_budget_tokens`。超出上限时 kernel 不替模型删除，而是拒绝写入，并提示模型合并或退役，由模型决定删什么。
+  - 渲染：active 的 `state` 与 `question` 笔记渲染进 state turn（每轮重建，不进缓存前缀）；`rule` 与 `index` 在 boundary 提升进 system[1]，沿用缓存不变式。
+  - 指令：工具说明给方向，例如“记录你推导出来、之后无法从文件重新得到的东西（计数、清单、结论），并注明依据”，不写禁令。
+  - 验收：long-horizon 上 `undercount` 与 `count_error` 下降，正确率高于 `0.2.83-baseline`（配对），`weighted_cost` 不升；ledger 不回退。
+  - 文件：`context/item.rs`、`context/task_state.rs`、`context/manager.rs`、`context/renderer.rs`；四端 SDK 的事件投影与 contract
+- [ ] 任务 9.2：压缩读图（证据换出，笔记留下）
+  - 选择换出单元时读图：被 active 笔记 `derived_from` 引用的证据优先换出（意义已在笔记里，原文可沿边读回）；没有被任何笔记引用、且仍在当前工作范围内的证据视为“未处理”，后换出。
+  - 换出预告：要归档的范围里有未被引用的证据时，kernel 提前一轮在 state turn 里列出即将换出的条目（call_id 加一行预览），模型可以先写笔记。不额外调用模型。
+  - 换出后，笔记里的证据引用渲染成可读回的句柄（`read_result call_id=…`）。
+  - `RuleSummarizer` 降级为归档定位标签：只写归档了哪些 call_id、哪些文件，不再填规则、错误等语义槽。
+  - 验收：同 9.1 的场景，正确率不降，`weighted_cost` 下降，`read_back` 与 `brief_rereads` 不升。
+  - 文件：`context/utility.rs`、`context/compression.rs`、`context/summarizer.rs`、`context/graph.rs`
+- [ ] 任务 9.3：边界整理（模型修复）
+  - kernel 在 boundary（renewal、run 结束、宿主声明的空闲）算出结构诊断：死链、无证据的笔记、证据已有更新的笔记（同一文件或工具在之后有新结果）、近似重复（词法重叠超过阈值）、长期未被读的笔记。
+  - 有诊断时发出 `consolidate_notes` effect：输入为相关笔记、它们的证据摘录和诊断列表；输出为编辑操作（merge、rewrite、retire、link、create index）。kernel 校验（引用的 id 与证据存在、在预算内）后作为 fact 应用，校验失败的操作丢弃并记录。复用 `exp/8.4-model-summaries` 的 effect 管道，但不放在压缩路径上。
+  - 整理调用计入 `weighted_cost`，每个 run 的调用次数有上限。
+  - 验收：long-horizon 与 9.4 的多会话场景上正确率不降、`weighted_cost` 不升；整理后诊断数下降。
+  - 文件：`context/graph.rs`、`runtime/kernel/wire/effect.rs`；四端 SDK 的 effect 执行
+- [ ] 任务 9.4：跨会话（索引与提升）
+  - run 结束时，`rule` 与 `index` 笔记作为 memory candidate 提交（已有的 candidate ABI），附带 `derived_from` 所指证据的 digest。
+  - 新会话只注入索引：有行数与字节上限的 `index` 笔记，正文用 `memory` 工具按 record_id 读取。
+  - 跨会话整理在宿主侧离线运行，使用同一个 `consolidate_notes` effect，输入扩大为记忆库中的笔记和 transcripts 的检索结果。
+  - 新基准 `multi-session`：同一领域连续 N 个会话，隐性规则只能从前面会话的失败中学到；指标为第 k 个会话的正确率与成本；变体为无记忆、只有笔记、笔记加整理，指令文本为另一变量。
+  - 验收：第 N 个会话的正确率高于无记忆变体（配对），注入的 token 不随会话数线性增长。
+  - 文件：`mm/memory_candidate.rs`、`mm/memory.rs`、`benchmark/context-lifecycle/multi-session.mjs`
+
+放弃的方向：按缓存账决定压缩什么（8.3，`exp/8.3c`）；在压缩路径上同步生成摘要（8.4）；`RuleSummarizer` 作为记忆的载体。保留第 8 章的测量：缓存账本、按价格加权的配对 gate、long-horizon 基准。
 
 ## 交接（2026-11-02）
 
@@ -340,7 +405,7 @@ ContextItem {
 - ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
 - `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
 
-下一步：0.2.78–0.2.81 已发布，阶段 0–7 完成。下一个版本 0.2.82 做阶段 8（测量先行，缓存进入决策），顺序见“版本规划”。暂缓项：模型版 `RelevanceJudge`（作为入边权重的另一来源）、Anthropic 上报 compaction fact，等 long-horizon 基准能衡量时再排期。
+下一步（2026-11-11 更新）：0.2.82 发布阶段 8 的测量（8.0–8.2），8.3、8.4 未通过 gate、不随版本发布。0.2.83 起做阶段 9（模型构建、修复、索引上下文图），先做 9.0。暂缓项：模型版 `RelevanceJudge`（作为入边权重的另一来源）、Anthropic 上报 compaction fact，等 long-horizon 基准能衡量时再排期。
 
 换设备时的环境准备：
 
@@ -360,7 +425,8 @@ ContextItem {
 | 0.2.79 | 1.1 收尾：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 已发布（PR #5） |
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
-| 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入（`exp/8.3c` 待实测）；8.4 按前置条件不做 |
+| 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入，方向放弃（`exp/8.3c`）；8.4 实测未通过 gate，已撤回（`exp/8.4-model-summaries`） |
+| 0.2.83 | 阶段 9：模型构建、修复、索引上下文图。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记；9.2 压缩读图。9.3 边界整理、9.4 跨会话视数据进入 0.2.84 | 计划中 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 
@@ -404,6 +470,7 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 阶段0 ──► 阶段1 ──► 阶段2 ──► 阶段3 ──► 阶段6
              ├──► 阶段5
              └──► 阶段4.2/4.3 ──► 阶段7（item 图）──► 阶段8（8.0/8.1/8.2 ──► 8.3 ──► 8.4）
+                                                    └──► 阶段9（9.0 ──► 9.1 ──► 9.2 ──► 9.3 ──► 9.4）
 阶段4.1 与阶段1 并行，最先产出基线
 ```
 
@@ -411,8 +478,8 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 
 ## 范围外
 
-- 记忆写入侧（candidate ABI、`MemoryWriter`）冻结，不再新增写入机制。
-- ~~压缩管线内部的 `RuleSummarizer` 不在本计划内换成模型摘要；等 4.1 的数据说明它是瓶颈再议。~~ 已移入任务 8.4：现有基准到不了需要摘要的规模，数据由 8.2 的 long-horizon 提供。
+- ~~记忆写入侧（candidate ABI、`MemoryWriter`）冻结，不再新增写入机制。~~ 阶段 9 解冻：笔记的跨会话提升沿用 candidate ABI，不另建写入通道。
+- ~~压缩管线内部的 `RuleSummarizer` 不在本计划内换成模型摘要；等 4.1 的数据说明它是瓶颈再议。~~ 已移入任务 8.4：现有基准到不了需要摘要的规模，数据由 8.2 的 long-horizon 提供。8.4 实测未通过 gate，已撤回；阶段 9 中 `RuleSummarizer` 降级为归档定位标签，记忆由模型写的笔记承担。
 - 阶段 8 不新增 relation、lease 或 origin 种类。
 
 ## 风险
@@ -431,6 +498,10 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 | 推迟压缩让上下文更长，可能影响注意力质量和正确率 | 窗口硬上限优先；8.3 的 gate 同时看正确率与 `weighted_cost` |
 | long-horizon 基准每轮成本高，样本量不够 | 脚本化工具环境、只有答题需要真实模型；每个变体 30 题，配对比较 |
 | 摘要 effect 增加一次模型调用和延迟 | 只在 auto 压缩时触发；摘要调用计入 `weighted_cost`；失败退回 `RuleSummarizer` |
+| 模型不写笔记，或写得没用 | 方向性指令与指令变体实验；换出预告给出写笔记的时机；9.3 的整理修复 |
+| 错误的笔记被固化，之后反复误导 | 每条笔记必须引用证据；整理以证据为准；`supersedes` 留下修正记录 |
+| 笔记占满窗口 | `notes_budget_tokens` 上限；超出时由模型合并或退役，kernel 不代删 |
+| 整理 effect 增加成本和延迟 | 只在有诊断时、只在 boundary 触发；每个 run 有调用上限；计入 `weighted_cost` |
 
 ## 成功指标
 
@@ -440,4 +511,5 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 - fan-out→synthesize：下游初始 token 与 fan-out 宽度无关
 - 开启 server compaction 时，kernel 估算与实测 token 偏差 <10%
 - 阶段 8（0.2.82）：kernel 自报的 cache_loss 与实测偏差 ≤ 15%；ledger 与 long-horizon 的 `weighted_cost` 低于 0.2.81 基线，正确率不降（配对 95% 置信区间）
+- 阶段 9（0.2.83 起）：long-horizon 正确率高于 `0.2.83-baseline`，`weighted_cost` 不升（配对 95% 置信区间）；multi-session 第 N 个会话的正确率高于无记忆变体，注入 token 不随会话数线性增长；每条笔记都能沿 `derived_from` 指到证据
 - item 图（0.2.81）：`knowledge-pressure` 场景的 regret 与 waste 低于 0.2.80 基线，成功率不降；每个 regret 和 waste 都能在报告里指到具体的边
