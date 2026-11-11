@@ -32,9 +32,21 @@ export const redact = text => String(text)
   .replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[REDACTED]")
   .slice(0, 240)
 
-/** The real provider named by `--provider` (deepseek or openai), configured from `.env`. */
+/** The real provider named by `--provider` (deepseek, openai or ollama), configured from `.env`. */
 export async function realProvider(dist, name) {
   const retry = { maxRetries: 2, baseDelay: 1000 }
+  if (name === "ollama") {
+    // A local model (e.g. a small-window stress run). Its window is the server's `num_ctx`, so
+    // pick a model whose Modelfile sets it at least as large as `--max-tokens` plus the reply.
+    const model = process.env.OLLAMA_MODEL ?? "qwen3.8-27b"
+    return {
+      model,
+      provider: (await dist("providers/public.js")).ollama({
+        model,
+        ...(process.env.OLLAMA_BASE_URL ? { baseURL: process.env.OLLAMA_BASE_URL } : {}),
+      }),
+    }
+  }
   if (name === "deepseek") {
     const model = process.env.DEEPSEEK_MODEL ?? "deepseek-chat"
     return {

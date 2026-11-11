@@ -3,7 +3,7 @@
 //
 //   node benchmark/context-lifecycle/long-horizon.mjs [--repo <checkout>] [--variant <name>]
 //        [--policy '<ContextPolicy overrides JSON>'] [--tasks N] [--start N] [--concurrency N]
-//        [--logs N] [--lines N] [--provider deepseek|openai] [--max-tokens N] [--out trials.jsonl]
+//        [--logs N] [--lines N] [--provider deepseek|openai|ollama] [--max-tokens N] [--out trials.jsonl]
 //
 // The model first reads `brief.md`, which holds the scoring rules and nothing else does: the error
 // code to count, request ids to skip, and — needed only for the final answer — a multiplier and an
@@ -189,6 +189,8 @@ async function runTask(index) {
   try {
     for await (const event of runner.run({ sessionId: `horizon-${index}`, goal })) {
       if (event.type === "text_delta") answer += event.delta
+      // A run that ends in `error` says why only here: keep it, or the trial reads "termination: error".
+      if (event.type === "error") error ??= redact(`run error: ${event.message}`)
     }
   } catch (cause) {
     error = redact(cause?.message ?? cause)
