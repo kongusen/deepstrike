@@ -15,7 +15,7 @@ import { OllamaProvider } from "../../src/providers/ollama.js"
 import { createProvider } from "../../src/providers/catalog.js"
 import type { LLMProvider, ModelMessage } from "../../src/types.js"
 import { CHARACTERIZATION_CONTEXT as CTX, CHARACTERIZATION_TOOLS as TOOLS, USAGE } from "./fixtures.js"
-import { expectGolden } from "./golden.js"
+import { expectGolden, maskMintedCallIds } from "./golden.js"
 
 interface CompleteCapture {
   request: unknown
@@ -178,7 +178,7 @@ describe("spc_013-A-00 characterization: wire request bodies + complete decode",
       const captured: { req?: unknown } = {}
       stubOllama(captured)
       const message: ModelMessage = await provider.complete(CTX, TOOLS)
-      expectGolden("wire-ollama", { request: captured.req ?? null, message, replay: null })
+      expectGolden("wire-ollama", maskMintedCallIds({ request: captured.req ?? null, message, replay: null }))
     } finally {
       globalThis.fetch = original
     }

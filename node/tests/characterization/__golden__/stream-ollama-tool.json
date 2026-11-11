@@ -8,7 +8,7 @@
       "arguments": {
         "city": "Paris"
       },
-      "id": "call_1",
+      "id": "call_<minted>",
       "name": "get_weather",
       "type": "tool_call"
     },

@@ -1,7 +1,8 @@
 {
   "message": {
     "content": "The weather is sunny.",
-    "role": "assistant"
+    "role": "assistant",
+    "toolCalls": []
   },
   "replay": null,
   "request": {
