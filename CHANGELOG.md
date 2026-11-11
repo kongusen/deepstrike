@@ -31,12 +31,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   live only in a brief read first, followed by 40 logs of about 3.5k tokens each against a 100k
   window. Oracles `formula_broken`, `count_error`, `undercount`, `early_fact_lost`,
   `brief_rereads`, `compactions`, `renewals`; `--dry`, `--rescore` and `--concurrency`.
+- Tool calls written as text (plan task 9.0). DeepSeek sometimes writes its tool calls as DSML
+  markup in the message text instead of `tool_calls`, and a run that keeps that text in history
+  imitates it until its turn limit. On the OpenAI-chat protocol the DeepSeek dialect now holds the
+  markup out of the visible text, also when it is split across stream chunks, and turns it into
+  tool calls (ids `call_text_…`, in the provider replay too). Markup that does not parse fails the
+  call as a retryable protocol error with provider code `textual_tool_call`, like the Anthropic
+  adapter's guard. Node, Python, WASM and Rust, with a shared fixture.
+- Benchmarks: `--provider ollama` (model from `OLLAMA_MODEL`) for local runs; long-horizon trials
+  keep the runner's error message instead of only `termination: error`.
 
 ### Changed
 
 - `cache_loss_tokens` now sums every prefix break of the run. It used to count only history behind
   a mid-run knowledge promotion and reported 0 for compaction, narration collapse, tool-result
   collapse, budget drops, renewal and toolset changes.
+- `deepstrike-lab gate` without `--paired` now runs the paired checks
+  `success_rate:0.05,weighted_cost:0`; `--paired none` turns them off. Without them a gate compared
+  neither success nor cost.
+
+### Fixed
+
+- WASM `OpenAIProvider` dropped every tool call of a stream that ended with `data: [DONE]` (it
+  returned before emitting them).
+- Rust `OpenAIProvider` emitted only one tool call of a turn (picked from a hash map, so parallel
+  calls were lost and the survivor was arbitrary), and decoded each network chunk on its own, so a
+  multi-byte character split across chunks turned into replacement characters. Calls now come out
+  in index order, lines are decoded whole, and the usage event comes last.
 
 ## [0.2.81] - 2026-11-03
 

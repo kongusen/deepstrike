@@ -3,6 +3,8 @@ import type { PreparedProviderRequest, ProviderRunState } from "../types.js"
 import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, ModelMessage, ProviderDescriptor } from "../types.js"
 import { collectStreamMessage, toOpenAIMessages } from "./base.js"
 import { malformedToolArguments } from "../runtime/tool-arguments.js"
+import { ProviderError } from "./provider-error.js"
+import { TEXTUAL_TOOL_CALL_CODE, TEXTUAL_TOOL_CALL_MESSAGE, markupStart, parseTextToolCalls, partialMarkupLength, textToolCallId } from "./text-tool-calls.js"
 
 const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
 const MINIMAX_REASONERS = new Set(["MiniMax-M1", "minimax-m1"])
@@ -90,8 +92,25 @@ export class OpenAIProvider implements LLMProvider {
     // Phase 4: OpenAI signals an output-cap truncation via finish_reason="length"; the kernel
     // treats it as a truncation (== Anthropic "max_tokens") and drives output-cap recovery.
     let finishReason: string | undefined
+    // Plan task 9.0 · DeepSeek may write its tool calls as DSML markup in the text: hold it out of
+    // the text and parse it into tool calls at the end of the turn.
+    const watchMarkup = this.dialect === "deepseek"
+    let held = ""
+    let markup: string | undefined
+    const visible = (text: string): string => {
+      if (!watchMarkup) return text
+      if (markup !== undefined) { markup += text; return "" }
+      const combined = held + text
+      held = ""
+      const at = markupStart(combined)
+      if (at >= 0) { markup = combined.slice(at); return combined.slice(0, at) }
+      const keep = partialMarkupLength(combined)
+      held = combined.slice(combined.length - keep)
+      return combined.slice(0, combined.length - keep)
+    }
+    let streamDone = false
 
-    while (true) {
+    while (!streamDone) {
       const { done, value } = await reader.read()
       if (done) break
       buf += decoder.decode(value, { stream: true })
@@ -101,10 +120,9 @@ export class OpenAIProvider implements LLMProvider {
         if (!line.startsWith("data: ")) continue
         const data = line.slice(6).trim()
         if (data === "[DONE]") {
-          // Surface an output-cap truncation (finish_reason="length") to the runner/kernel. Emitted
-          // as a usage frame (the channel the runner reads stopReason from) before the early return.
-          if (finishReason) yield { type: "usage", totalTokens: 0, stopReason: finishReason } as unknown as StreamEvent
-          return
+          // The tool calls accumulated so far are emitted below: returning here dropped them.
+          streamDone = true
+          break
         }
         try {
           const chunk = JSON.parse(data) as { choices: Array<{ delta: Record<string, unknown>; finish_reason?: string | null }> }
@@ -113,8 +131,10 @@ export class OpenAIProvider implements LLMProvider {
           if (!delta) continue
           if (exposeReasoning && typeof delta.reasoning_content === "string" && delta.reasoning_content)
             yield { type: "thinking_delta", delta: delta.reasoning_content } as ThinkingDelta
-          if (typeof delta.content === "string" && delta.content)
-            yield { type: "text_delta", delta: delta.content } as TextDelta
+          if (typeof delta.content === "string" && delta.content) {
+            const text = visible(delta.content)
+            if (text) yield { type: "text_delta", delta: text } as TextDelta
+          }
           for (const tc of (delta.tool_calls as Array<Record<string, unknown>> | undefined) ?? []) {
             const idx = tc.index as number
             if (!toolAccum[idx]) toolAccum[idx] = { id: (tc.id as string) ?? "", name: (tc.function as Record<string, string>)?.name ?? "", argsBuf: "" }
@@ -123,11 +143,32 @@ export class OpenAIProvider implements LLMProvider {
         } catch { /* skip */ }
       }
     }
+    if (held) yield { type: "text_delta", delta: held } as TextDelta
+    if (markup !== undefined) {
+      const calls = parseTextToolCalls(markup)
+      if (!calls) {
+        throw new ProviderError({
+          provider: this.providerId(),
+          kind: "protocol",
+          retryable: true,
+          message: TEXTUAL_TOOL_CALL_MESSAGE,
+          providerCode: TEXTUAL_TOOL_CALL_CODE,
+        })
+      }
+      let index = Math.max(-1, ...Object.keys(toolAccum).map(Number)) + 1
+      for (const call of calls) {
+        toolAccum[index++] = { id: textToolCallId(), name: call.name, argsBuf: JSON.stringify(call.arguments) }
+      }
+      finishReason = "tool_calls"
+    }
     for (const tb of Object.values(toolAccum)) {
       let args: Record<string, unknown> = {}
       try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
       yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args, ...malformedToolArguments(tb.argsBuf) } as ToolCallEvent
     }
+    // Surface an output-cap truncation (finish_reason="length") to the runner/kernel as a usage
+    // frame, the channel the runner reads stopReason from.
+    if (finishReason) yield { type: "usage", totalTokens: 0, stopReason: finishReason } as unknown as StreamEvent
   }
 
   prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState): PreparedProviderRequest {

@@ -496,6 +496,10 @@ impl PairedCheck {
 /// Default for [`Gate::min_pairs`].
 pub const MIN_PAIRS: usize = 30;
 
+/// Plan task 9.0 · the paired checks `gate` runs when `--paired` is not given: success may not
+/// drop by more than five points, and price-weighted cost may not rise.
+pub const DEFAULT_PAIRED: &str = "success_rate:0.05,weighted_cost:0";
+
 /// One task's value of a metric, for pairing. `None` when the trial does not measure it.
 pub fn trial_metric(trial: &Trial, metric: &str, prices: &PriceTable) -> Option<f64> {
     let sum = |value: &dyn Fn(&LifecycleReport) -> u64| {
@@ -1017,6 +1021,14 @@ mod tests {
         .unwrap();
         assert!((weighted_cost(&t, &table) - (600.0 + 300.0 + 200.0 + 400.0)).abs() < 1e-9);
         assert!(PriceTable::parse(r#"{"m":{"input":1}}"#).is_err());
+    }
+
+    #[test]
+    fn the_default_paired_checks_parse_and_cover_success_and_cost() {
+        let checks: Vec<PairedCheck> =
+            DEFAULT_PAIRED.split(',').map(|c| PairedCheck::parse(c).unwrap()).collect();
+        let metrics: Vec<&str> = checks.iter().map(|c| c.metric.as_str()).collect();
+        assert_eq!(metrics, ["success_rate", "weighted_cost"]);
     }
 
     #[test]

@@ -4,15 +4,17 @@
 //!   deepstrike-lab gate <trials.jsonl>... --baseline <variant> --candidate <variant>
 //!                       [--no-worse <metric,...>] [--max-estimate-error <fraction>]
 //!                       [--max-cache-loss-error <fraction>]
-//!                       [--paired <metric:tolerance,...>] [--min-pairs N]
+//!                       [--paired <metric:tolerance,...> | none] [--min-pairs N]
 //!   both take [--prices <prices.json>] (default: relative units, uncached input = 1)
 //!
 //! `report` prints a Markdown table per scenario (or the summaries as JSON). `gate` prints each
-//! failed check and exits 1 if there is one.
+//! failed check and exits 1 if there is one. Without `--paired`, `gate` runs the paired checks in
+//! [`DEFAULT_PAIRED`] (plan task 9.0: a gate that compares neither success nor cost once passed a
+//! candidate that lost both); `--paired none` turns them off.
 
 use std::process::ExitCode;
 
-use deepstrike_lab::{Gate, MIN_PAIRS, PairedCheck, PriceTable, markdown, parse_trials, summarize_with};
+use deepstrike_lab::{DEFAULT_PAIRED, Gate, MIN_PAIRS, PairedCheck, PriceTable, markdown, parse_trials, summarize_with};
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1).collect()) {
@@ -83,11 +85,10 @@ fn run(args: Vec<String>) -> Result<ExitCode, String> {
                         bound.parse::<f64>().map_err(|e| format!("--max-cache-loss-error: {e}"))
                     })
                     .transpose()?,
-                paired: flags
-                    .get("paired")
-                    .map(|list| list.split(',').map(PairedCheck::parse).collect::<Result<Vec<_>, _>>())
-                    .transpose()?
-                    .unwrap_or_default(),
+                paired: match flags.get("paired").map(String::as_str).unwrap_or(DEFAULT_PAIRED) {
+                    "none" => Vec::new(),
+                    list => list.split(',').map(PairedCheck::parse).collect::<Result<Vec<_>, _>>()?,
+                },
                 min_pairs: flags
                     .get("min-pairs")
                     .map(|n| n.parse::<usize>().map_err(|e| format!("--min-pairs: {e}")))
@@ -113,6 +114,6 @@ fn usage() -> String {
     "usage: deepstrike-lab report <trials.jsonl>... [--baseline <variant>] [--json]\n       \
      deepstrike-lab gate <trials.jsonl>... --baseline <v> --candidate <v> \
      [--no-worse m1,m2] [--max-estimate-error 0.10] [--max-cache-loss-error 0.15] \
-     [--paired success_rate:0.05,weighted_cost:0] [--min-pairs 30] [--prices prices.json]"
+     [--paired success_rate:0.05,weighted_cost:0 | none] [--min-pairs 30] [--prices prices.json]"
         .to_string()
 }

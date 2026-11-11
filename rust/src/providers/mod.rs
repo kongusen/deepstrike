@@ -8,6 +8,7 @@ use futures::{Stream, StreamExt};
 pub mod anthropic;
 pub mod anthropic_compaction;
 pub mod openai;
+pub mod text_tool_calls;
 pub mod provider_error;
 pub mod request_plan;
 

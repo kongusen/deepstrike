@@ -330,7 +330,7 @@ ContextItem {
 
 暂缓项保持暂缓：模型版 `RelevanceJudge` 与 Anthropic 上报 compaction fact，等 long-horizon 能衡量它们时再排期。
 
-### 阶段 9：模型构建、修复、索引上下文图（0.2.83 起）
+### 阶段 9：模型构建、修复、索引上下文图（0.2.82）
 
 **为什么。**
 - 第 8 章两次改变决策的尝试都没过 gate，共同点是由 kernel 按规则判断内容的意义：8.3 按缓存账决定压什么，8.4 在压缩时同步生成摘要决定留什么（之前是 `RuleSummarizer` 按关键词分槽）。long-horizon 的主要错因（模型自己记的累计计数丢失、少计）和最大的单一失败来源（DeepSeek 把工具调用标记当文本输出，8.3、8.3b、8.4 合计 21/90 题跑到轮数上限，基线 1/30）都不是压缩规则能解决的。
@@ -357,7 +357,7 @@ ContextItem {
 
 - [ ] 任务 9.0：先清掉测量里的混杂因素
   - DeepSeek 以文本输出工具调用标记（`｜DSML｜`）：在 OpenAI-chat 方言层识别，能解析就转成工具调用，不能解析就作为 provider 协议错误交给 kernel 已有的恢复路径，不让它以普通文本进入 history。
-  - 新基线：在 0.2.82 上重跑 long-horizon 30 题（`0.2.83-baseline`），之后的 gate 都对照它。
+  - 新基线：在 9.0 的代码上重跑 long-horizon 30 题（`0.2.82-9.0`），之后的 gate 都对照它。
   - lab：`gate` 不带 `--paired` 时默认按 `success_rate:0.05,weighted_cost:0` 比较，避免 8.4 那样的假 PASS。
   - 验证：long-horizon 跑到轮数上限的题 ≤ 1/30；四端各有一个标记泄漏的单测。
   - 文件：四端 OpenAI-chat provider 与方言表、`crates/deepstrike-lab`
@@ -366,7 +366,7 @@ ContextItem {
   - 笔记属于 working 分区，不参与压缩；总量有上限 `notes_budget_tokens`。超出上限时 kernel 不替模型删除，而是拒绝写入，并提示模型合并或退役，由模型决定删什么。
   - 渲染：active 的 `state` 与 `question` 笔记渲染进 state turn（每轮重建，不进缓存前缀）；`rule` 与 `index` 在 boundary 提升进 system[1]，沿用缓存不变式。
   - 指令：工具说明给方向，例如“记录你推导出来、之后无法从文件重新得到的东西（计数、清单、结论），并注明依据”，不写禁令。
-  - 验收：long-horizon 上 `undercount` 与 `count_error` 下降，正确率高于 `0.2.83-baseline`（配对），`weighted_cost` 不升；ledger 不回退。
+  - 验收：long-horizon 上 `undercount` 与 `count_error` 下降，正确率高于 `0.2.82-9.0`（配对），`weighted_cost` 不升；ledger 不回退。
   - 文件：`context/item.rs`、`context/task_state.rs`、`context/manager.rs`、`context/renderer.rs`；四端 SDK 的事件投影与 contract
 - [ ] 任务 9.2：压缩读图（证据换出，笔记留下）
   - 选择换出单元时读图：被 active 笔记 `derived_from` 引用的证据优先换出（意义已在笔记里，原文可沿边读回）；没有被任何笔记引用、且仍在当前工作范围内的证据视为“未处理”，后换出。
@@ -405,7 +405,7 @@ ContextItem {
 - ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
 - `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
 
-下一步（2026-11-11 更新）：0.2.82 发布阶段 8 的测量（8.0–8.2），8.3、8.4 未通过 gate、不随版本发布。0.2.83 起做阶段 9（模型构建、修复、索引上下文图），先做 9.0。暂缓项：模型版 `RelevanceJudge`（作为入边权重的另一来源）、Anthropic 上报 compaction fact，等 long-horizon 基准能衡量时再排期。
+下一步（2026-11-11 更新）：0.2.82 包含阶段 8 的测量（8.0–8.2）与阶段 9（模型构建、修复、索引上下文图），阶段 9 完成后发布；8.3、8.4 未通过 gate、不随版本发布。阶段 9 从 9.0 开始。暂缓项：模型版 `RelevanceJudge`（作为入边权重的另一来源）、Anthropic 上报 compaction fact，等 long-horizon 基准能衡量时再排期。
 
 换设备时的环境准备：
 
@@ -426,7 +426,7 @@ ContextItem {
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
 | 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入，方向放弃（`exp/8.3c`）；8.4 实测未通过 gate，已撤回（`exp/8.4-model-summaries`） |
-| 0.2.83 | 阶段 9：模型构建、修复、索引上下文图。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记；9.2 压缩读图。9.3 边界整理、9.4 跨会话视数据进入 0.2.84 | 计划中 |
+| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记；9.2 压缩读图；9.3 边界整理；9.4 跨会话 | 进行中 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 
@@ -511,5 +511,5 @@ PR 较大，按上面的步骤分阶段 PR 合入同一个 release 分支，最�
 - fan-out→synthesize：下游初始 token 与 fan-out 宽度无关
 - 开启 server compaction 时，kernel 估算与实测 token 偏差 <10%
 - 阶段 8（0.2.82）：kernel 自报的 cache_loss 与实测偏差 ≤ 15%；ledger 与 long-horizon 的 `weighted_cost` 低于 0.2.81 基线，正确率不降（配对 95% 置信区间）
-- 阶段 9（0.2.83 起）：long-horizon 正确率高于 `0.2.83-baseline`，`weighted_cost` 不升（配对 95% 置信区间）；multi-session 第 N 个会话的正确率高于无记忆变体，注入 token 不随会话数线性增长；每条笔记都能沿 `derived_from` 指到证据
+- 阶段 9（0.2.82）：long-horizon 正确率高于 `0.2.82-9.0`，`weighted_cost` 不升（配对 95% 置信区间）；multi-session 第 N 个会话的正确率高于无记忆变体，注入 token 不随会话数线性增长；每条笔记都能沿 `derived_from` 指到证据
 - item 图（0.2.81）：`knowledge-pressure` 场景的 regret 与 waste 低于 0.2.80 基线，成功率不降；每个 regret 和 waste 都能在报告里指到具体的边

@@ -1,0 +1,72 @@
+{
+  "_comment": "Plan task 9.0: DeepSeek tool-call markup written as text on the OpenAI-chat protocol. Each SDK feeds `chunks` as streamed content (and their concatenation as a complete response) with the deepseek dialect, and expects the visible `text` plus parsed `calls`, or a retryable protocol error whose provider code is `error`.",
+  "cases": [
+    {
+      "name": "canonical markup after text",
+      "chunks": [
+        "Let me read it.\n<｜DSML｜function_calls>\n<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"path\" string=\"true\">logs/svc-13.log</｜DSML｜parameter>\n<｜DSML｜parameter name=\"limit\" string=\"false\">40</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜function_calls>"
+      ],
+      "text": "Let me read it.\n",
+      "calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "logs/svc-13.log",
+            "limit": 40
+          }
+        }
+      ]
+    },
+    {
+      "name": "degraded markup split across chunks",
+      "chunks": [
+        "Continuing.<",
+        "｜｜DS",
+        "ML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"read_file\">\n<｜｜DSML｜｜ parameter name=\"path\" string=\"true\">logs/svc-22.log</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>"
+      ],
+      "text": "Continuing.",
+      "calls": [
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "logs/svc-22.log"
+          }
+        }
+      ]
+    },
+    {
+      "name": "two calls",
+      "chunks": [
+        "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"list_files\">\n</｜DSML｜invoke>\n<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"path\" string=\"true\">brief.md</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+      ],
+      "text": "",
+      "calls": [
+        {
+          "name": "list_files",
+          "arguments": {}
+        },
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "brief.md"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ordinary text is untouched",
+      "chunks": [
+        "a < b and x｜y; <invoke name=\"lookup\">hello</invoke> 1 <"
+      ],
+      "text": "a < b and x｜y; <invoke name=\"lookup\">hello</invoke> 1 <",
+      "calls": []
+    },
+    {
+      "name": "unclosed markup fails",
+      "chunks": [
+        "Reading.<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"path\" string=\"true\">logs/a.log"
+      ],
+      "error": "textual_tool_call"
+    }
+  ]
+}

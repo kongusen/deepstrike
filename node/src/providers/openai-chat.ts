@@ -25,6 +25,7 @@ import type {
 } from "./content-normalization.js"
 import { normalizeCanonicalContext, projectToolOutputToText } from "./content-normalization.js"
 import { normalizeToolCall } from "./base.js"
+import { TEXTUAL_TOOL_CALL_CODE, TEXTUAL_TOOL_CALL_MESSAGE, markupStart, parseTextToolCalls, partialMarkupLength, textToolCallId } from "./text-tool-calls.js"
 import { malformedToolArguments, toolArgumentsText } from "../runtime/tool-arguments.js"
 import { normalizeOpenAIUsage } from "./usage-normalizer.js"
 import {
@@ -89,6 +90,10 @@ export interface OpenAIChatStreamState {
   cacheReadTokens: number
   finishReason?: string
   rawUsage?: unknown
+  /** Plan task 9.0 · text held back because it may begin tool-call markup. */
+  heldText?: string
+  /** Plan task 9.0 · tool-call markup the model wrote as text, from its first marker on. */
+  markup?: string
 }
 
 export interface OpenAIChatStreamChunkRequest {
@@ -240,6 +245,55 @@ function messages(
   return output
 }
 
+function textualToolCallError(): ProtocolResponseError {
+  return new ProtocolResponseError("openai-chat", TEXTUAL_TOOL_CALL_MESSAGE, {
+    providerCode: TEXTUAL_TOOL_CALL_CODE,
+    retryable: true,
+  })
+}
+
+/** Text content for the turn, with tool-call markup held out of it (plan task 9.0). */
+function contentEvents(state: OpenAIChatStreamState, text: string): TextDelta[] {
+  const emit = (delta: string): TextDelta[] => {
+    if (!delta) return []
+    state.accumulatedContent += delta
+    return [{ type: "text_delta", delta } as TextDelta]
+  }
+  if (!state.dialect.textToolCallMarkup) return emit(text)
+  if (state.markup !== undefined) {
+    state.markup += text
+    return []
+  }
+  const combined = (state.heldText ?? "") + text
+  state.heldText = undefined
+  const at = markupStart(combined)
+  if (at >= 0) {
+    state.markup = combined.slice(at)
+    return emit(combined.slice(0, at))
+  }
+  const held = partialMarkupLength(combined)
+  if (held > 0) state.heldText = combined.slice(combined.length - held)
+  return emit(combined.slice(0, combined.length - held))
+}
+
+/** At the end of a turn: release held text, and turn text markup into tool calls or fail. */
+function settleTextToolCalls(state: OpenAIChatStreamState): TextDelta[] {
+  const held = state.heldText ?? ""
+  state.heldText = undefined
+  const events: TextDelta[] = held ? [{ type: "text_delta", delta: held } as TextDelta] : []
+  if (held) state.accumulatedContent += held
+  if (state.markup === undefined) return events
+  const calls = parseTextToolCalls(state.markup)
+  state.markup = undefined
+  if (!calls) throw textualToolCallError()
+  let index = Math.max(-1, ...Object.keys(state.toolCallBuffers).map(Number)) + 1
+  for (const call of calls) {
+    state.toolCallBuffers[index++] = { id: textToolCallId(), name: call.name, argsBuffer: JSON.stringify(call.arguments) }
+  }
+  state.finishReason = "tool_calls"
+  return events
+}
+
 function nativeToolCalls(buffers: OpenAIChatStreamState["toolCallBuffers"]): unknown[] {
   return Object.values(buffers).map(call => ({
     id: call.id,
@@ -345,9 +399,19 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
     dialect: OpenAIChatWireDialect = openAIChatDialects.openai,
   ): { message: ModelMessage; replay?: ProviderReplay } {
     const choice = raw.choices?.[0]?.message ?? {}
-    const nativeCalls = choice.tool_calls ?? []
+    const nativeCalls = [...(choice.tool_calls ?? [])]
+    let content = choice.content ?? ""
+    // Plan task 9.0 · tool-call markup written as text becomes tool calls, or the call fails.
+    const at = dialect.textToolCallMarkup && typeof content === "string" ? markupStart(content) : -1
+    if (at >= 0) {
+      const calls = parseTextToolCalls(content.slice(at))
+      if (!calls) throw textualToolCallError()
+      content = content.slice(0, at)
+      for (const call of calls) {
+        nativeCalls.push({ id: textToolCallId(), type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })
+      }
+    }
     const toolCalls = this.normalizeToolCalls(nativeCalls)
-    const content = choice.content ?? ""
     const usage = raw.usage as Record<string, unknown> | undefined
     if (usage) this.normalizeUsage(usage)
     const message: ModelMessage = {
@@ -413,13 +477,11 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
             state.accumulatedReasoning += part.content
             events.push({ type: "thinking_delta", delta: part.content } as ThinkingDelta)
           } else {
-            state.accumulatedContent += part.content
-            events.push({ type: "text_delta", delta: part.content } as TextDelta)
+            events.push(...contentEvents(state, part.content))
           }
         }
       } else {
-        state.accumulatedContent += String(delta.content)
-        events.push({ type: "text_delta", delta: String(delta.content) } as TextDelta)
+        events.push(...contentEvents(state, String(delta.content)))
       }
     }
     for (const call of delta.tool_calls ?? []) {
@@ -450,11 +512,11 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
           state.accumulatedReasoning += part.content
           events.push({ type: "thinking_delta", delta: part.content } as ThinkingDelta)
         } else {
-          state.accumulatedContent += part.content
-          events.push({ type: "text_delta", delta: part.content } as TextDelta)
+          events.push(...contentEvents(state, part.content))
         }
       }
     }
+    events.push(...settleTextToolCalls(state))
     events.push(...pendingToolEvents(state))
     if (state.totalTokens > 0) {
       const providerUsage = this.normalizeUsage(state.rawUsage)

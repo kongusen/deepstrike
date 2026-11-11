@@ -20,6 +20,12 @@ written by 0.2.82 carry the new optional field `cache_ledger`; 0.2.81 cannot rea
   `cache_tail_tokens`. A consumer that validates the event strictly should accept them. The break
   causes are `toolset`, `system`, `promotion`, `collapse`, `reprojection`, `narration`,
   `budget_drop`, `snip`, `micro`, `auto`, `renewal`, `provider` and `other`.
+- DeepSeek on the OpenAI-chat protocol (plan task 9.0): tool-call markup the model writes as text
+  no longer appears in text deltas or the assistant message; it becomes tool calls with ids
+  `call_text_…`, or, when it does not parse, a retryable `protocol` provider error with code
+  `textual_tool_call`. A host that scraped tool calls out of DeepSeek's text should stop doing so.
+- Rust `OpenAIProvider` now emits every tool call of a turn, in index order, and the usage event
+  after them; WASM `OpenAIProvider` no longer drops tool calls when the stream ends with `[DONE]`.
 - Rendering, compaction and provider requests are unchanged. Cache-aware compaction (plan task
   8.3) was measured and is not part of this release; see the plan.
 
@@ -32,3 +38,7 @@ Trials gain `cost.requests[]` (each request's `input_tokens`, `cache_read_tokens
 Trials also gain `model` and `cost.cache_write_tokens`, which `weighted_cost` prices; a trial
 without them is priced at the default prices with no cache writes. `gate --paired` needs at least
 `--min-pairs` (30) runs of the same tasks under both variants.
+
+`deepstrike-lab gate` runs the paired checks `success_rate:0.05,weighted_cost:0` when `--paired`
+is not given, so a gate that used to pass on summary checks alone can now fail, or fail with
+"insufficient samples" below 30 pairs. Pass `--paired none` for the old behavior.

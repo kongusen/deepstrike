@@ -21,6 +21,13 @@ from deepstrike.providers.replay_validator import (
     validate_openai_chat_replay,
 )
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
+from deepstrike.providers.text_tool_calls import (
+    markup_start,
+    parse_text_tool_calls,
+    partial_markup_length,
+    text_tool_call_id,
+    textual_tool_call_error,
+)
 from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 from deepstrike.providers.usage import normalize_usage
 from deepstrike.types.content import CanonicalAdapterInput
@@ -56,6 +63,10 @@ class OpenAIChatStreamState:
     cache_read_tokens: int = 0
     finish_reason: str | None = None
     raw_usage: Any = None
+    #: Plan task 9.0 · text held back because it may begin tool-call markup.
+    held_text: str = ""
+    #: Plan task 9.0 · tool-call markup the model wrote as text, from its first marker on.
+    markup: str | None = None
 
 
 def _get(raw: Any, name: str) -> Any:
@@ -69,6 +80,54 @@ def _number(raw: Any, field: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         raise ProtocolResponseError("openai-chat", f"usage.{field} must be a non-negative number")
     return int(value)
+
+
+def _content_events(state: "OpenAIChatStreamState", text: str) -> list[TextDelta]:
+    """Text content for the turn, with tool-call markup held out of it (plan task 9.0)."""
+    def emit(delta: str) -> list[TextDelta]:
+        if not delta:
+            return []
+        state.accumulated_content += delta
+        return [TextDelta(delta=delta)]
+
+    if not getattr(state.dialect, "text_tool_call_markup", None):
+        return emit(text)
+    if state.markup is not None:
+        state.markup += text
+        return []
+    combined = state.held_text + text
+    state.held_text = ""
+    at = markup_start(combined)
+    if at >= 0:
+        state.markup = combined[at:]
+        return emit(combined[:at])
+    held = partial_markup_length(combined)
+    if held:
+        state.held_text = combined[len(combined) - held:]
+    return emit(combined[:len(combined) - held])
+
+
+def _settle_text_tool_calls(state: "OpenAIChatStreamState") -> list[TextDelta]:
+    """At the end of a turn: release held text, and turn text markup into tool calls or fail."""
+    held, state.held_text = state.held_text, ""
+    events = []
+    if held:
+        state.accumulated_content += held
+        events.append(TextDelta(delta=held))
+    if state.markup is None:
+        return events
+    calls = parse_text_tool_calls(state.markup)
+    state.markup = None
+    if calls is None:
+        raise textual_tool_call_error()
+    index = max(state.tool_call_buffers, default=-1) + 1
+    for call in calls:
+        state.tool_call_buffers[index] = {
+            "id": text_tool_call_id(), "name": call["name"], "args_buf": json.dumps(call["arguments"]),
+        }
+        index += 1
+    state.finish_reason = "tool_calls"
+    return events
 
 
 class OpenAIChatAdapter:
@@ -236,7 +295,17 @@ class OpenAIChatAdapter:
         choices = _get(raw, "choices") or []
         choice = _get(choices[0], "message") if choices else None
         content = _get(choice, "content") or ""
-        native_calls = _get(choice, "tool_calls") or []
+        native_calls = list(_get(choice, "tool_calls") or [])
+        # Plan task 9.0 · tool-call markup written as text becomes tool calls, or the call fails.
+        at = markup_start(content) if getattr(dialect, "text_tool_call_markup", None) and isinstance(content, str) else -1
+        if at >= 0:
+            calls = parse_text_tool_calls(content[at:])
+            if calls is None:
+                raise textual_tool_call_error()
+            content = content[:at]
+            native_calls.extend({"id": text_tool_call_id(), "type": "function", "function": {
+                "name": call["name"], "arguments": json.dumps(call["arguments"]),
+            }} for call in calls)
         tool_calls = []
         for call in native_calls:
             function = _get(call, "function")
@@ -319,11 +388,9 @@ class OpenAIChatAdapter:
                         state.accumulated_reasoning += part["content"]
                         events.append(ThinkingDelta(delta=part["content"]))
                     else:
-                        state.accumulated_content += part["content"]
-                        events.append(TextDelta(delta=part["content"]))
+                        events.extend(_content_events(state, part["content"]))
             else:
-                state.accumulated_content += str(content)
-                events.append(TextDelta(delta=str(content)))
+                events.extend(_content_events(state, str(content)))
         for call in _get(delta, "tool_calls") or []:
             index = int(_get(call, "index") or 0)
             state.tool_call_buffers.setdefault(index, {"id": _get(call, "id") or "", "name": "", "args_buf": ""})
@@ -347,8 +414,8 @@ class OpenAIChatAdapter:
                     state.accumulated_reasoning += part["content"]
                     events.append(ThinkingDelta(delta=part["content"]))
                 else:
-                    state.accumulated_content += part["content"]
-                    events.append(TextDelta(delta=part["content"]))
+                    events.extend(_content_events(state, part["content"]))
+        events.extend(_settle_text_tool_calls(state))
         events.extend(self._pending_tool_events(state))
         if state.total_tokens:
             provider_usage = self.normalize_usage(state.raw_usage)

@@ -756,7 +756,7 @@ bottleneck is no longer missing mechanism: the books are wrong, and decisions ig
 Deferred items stay deferred: the model `RelevanceJudge` and Anthropic reporting compaction facts
 are scheduled once long-horizon can measure them.
 
-### Stage 9: the model builds, repairs and indexes the context graph (0.2.83 on)
+### Stage 9: the model builds, repairs and indexes the context graph (0.2.82)
 
 **Why.**
 - Both of stage 8's attempts to change decisions failed the gate, and they share one trait: the
@@ -810,7 +810,7 @@ are scheduled once long-horizon can measure them.
   - DeepSeek writing tool-call markup (`｜DSML｜`) as text: recognize it in the OpenAI-chat dialect
     layer; parse it into tool calls when possible, otherwise hand it to the kernel's existing
     recovery as a provider protocol error. It never enters history as plain text.
-  - New baseline: re-run long-horizon, 30 tasks, on 0.2.82 (`0.2.83-baseline`); later gates compare
+  - New baseline: re-run long-horizon, 30 tasks, on 9.0's code (`0.2.82-9.0`); later gates compare
     against it.
   - Lab: without `--paired`, `gate` compares `success_rate:0.05,weighted_cost:0` by default, so a
     false PASS like 8.4's cannot happen.
@@ -831,7 +831,7 @@ are scheduled once long-horizon can measure them.
     read again from the files (counts, lists, conclusions), and cite where it came from"; no
     prohibitions.
   - Acceptance: on long-horizon `undercount` and `count_error` fall and success is higher than
-    `0.2.83-baseline` (paired), with `weighted_cost` not higher; ledger does not regress.
+    `0.2.82-9.0` (paired), with `weighted_cost` not higher; ledger does not regress.
   - Files: `context/item.rs`, `context/task_state.rs`, `context/manager.rs`,
     `context/renderer.rs`; event projection and contracts in the four SDKs
 - [ ] Task 9.2: compaction reads the graph (evidence leaves, notes stay)
@@ -917,9 +917,9 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next (updated 2026-11-11): 0.2.82 ships stage 8's measurement (8.0–8.2); 8.3 and 8.4 failed the
-gate and are not part of it. From 0.2.83 on, stage 9 (the model builds, repairs and indexes the
-context graph), starting with 9.0. Deferred: the
+Next (updated 2026-11-11): 0.2.82 holds stage 8's measurement (8.0–8.2) and stage 9 (the model
+builds, repairs and indexes the context graph) and ships once stage 9 is done; 8.3 and 8.4 failed
+the gate and are not part of it. Stage 9 starts with 9.0. Deferred: the
 model `RelevanceJudge` (another source of in-edge weight) and Anthropic reporting compaction facts,
 scheduled once the long-horizon benchmark can measure them.
 
@@ -950,7 +950,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
 | 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate, not merged, direction abandoned (`exp/8.3c`); 8.4 failed the gate when measured and was withdrawn (`exp/8.4-model-summaries`) |
-| 0.2.83 | Stage 9: the model builds, repairs and indexes the context graph. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes; 9.2 compaction reads the graph. 9.3 consolidation at boundaries and 9.4 across sessions go to 0.2.84 depending on the data | Planned |
+| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes; 9.2 compaction reads the graph; 9.3 consolidation at boundaries; 9.4 across sessions | In progress |
 
 0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
 rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that
@@ -1070,7 +1070,7 @@ their dependencies.
 - Stage 8 (0.2.82): the kernel's self-reported cache_loss within 15% of measured; `weighted_cost`
   on ledger and long-horizon below the 0.2.81 baseline with success not lower (paired 95%
   confidence interval)
-- Stage 9 (0.2.83 on): long-horizon success above `0.2.83-baseline` with `weighted_cost` not
+- Stage 9 (0.2.82): long-horizon success above `0.2.82-9.0` with `weighted_cost` not
   higher (paired 95% confidence interval); on multi-session, success at session N above the
   no-memory variant, with injected tokens not growing linearly in the number of sessions; every
   note leads to its evidence along `derived_from`
