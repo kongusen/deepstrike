@@ -92,3 +92,50 @@ describe("notes (plan task 9.1)", () => {
     expect(normalizeContextPolicy(contextPolicy()).notes_budget_tokens).toBeUndefined()
   })
 })
+
+// Plan task 9.2 · compaction reads the notes: a range compaction about to take uncited results is
+// announced one turn ahead, and a cited result it archives shows on its note as a read-back handle.
+describe("compaction reads the notes (plan task 9.2)", () => {
+  function reader(reads: number) {
+    const states: string[] = []
+    let calls = 0
+    const provider: LLMProvider = {
+      async complete(): Promise<ModelMessage> {
+        return { role: "assistant", content: "", toolCalls: [] }
+      },
+      async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
+        calls += 1
+        states.push(JSON.stringify(context.stateTurn ?? ""))
+        if (calls === 3) {
+          yield { type: "tool_call", id: "n1", name: "note", arguments: { title: "File 1", body: "logs/1.log: 2 errors", evidence: ["c1"] } }
+          return
+        }
+        if (calls <= reads) {
+          yield { type: "tool_call", id: `c${calls}`, name: "read", arguments: { path: `logs/${calls}.log` } }
+          return
+        }
+        yield { type: "text_delta", delta: "done" }
+      },
+    }
+    return { provider, states }
+  }
+
+  it("announces the page-out and leaves a read-back handle on the note", async () => {
+    const { provider, states } = reader(26)
+    const sessionLog = new InMemorySessionLog()
+    const plane = new LocalExecutionPlane()
+    plane.register(tool("read", "read a file", { type: "object", properties: { path: { type: "string" } } }, ({ path }) => `${path}: ${"line ".repeat(120)}`))
+    const run = new RuntimeRunner({
+      provider, sessionLog, executionPlane: plane, maxTokens: 2_400, maxTurns: 40, baselineToolIds: ["read"],
+      repeatFuse: false,
+      contextPolicy: { notesBudgetTokens: 400, compactionReadsNotes: true, pageOutNotice: true },
+    })
+    await collectText(run.run({ sessionId: "reads-notes", goal: "count the errors" }))
+    const announced = states.findIndex(state => state.includes("leaving context at the next compaction"))
+    expect(announced).toBeGreaterThan(0)
+    expect(states.slice(announced + 1).some(state => state.includes("archived evidence: c1"))).toBe(true)
+    const events = (await sessionLog.read("reads-notes")).map(entry => entry.event)
+    const compressed = events.filter(event => event.kind === "compressed") as Array<{ summary?: string }>
+    expect(compressed.some(event => (event.summary ?? "").startsWith("archived "))).toBe(true)
+  })
+})

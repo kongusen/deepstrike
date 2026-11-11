@@ -15,7 +15,15 @@ pub struct UtilitySelectionContext<'a> {
     pub criteria: &'a [String],
     pub preserved_refs: &'a [String],
     pub active_directives: &'a [String],
+    /// Plan task 9.2 · call ids whose results a note cites. A unit holding one leaves first: its
+    /// meaning is in the note and the original can be read back. Empty unless compaction reads
+    /// the notes.
+    pub cited_calls: &'a BTreeSet<String>,
 }
+
+/// Plan task 9.2 · how much a note's citation lowers a unit's utility: enough to send it out
+/// ahead of uncited units of similar size, not enough to override an unresolved call.
+const CITED_BY_NOTE_PENALTY: i64 = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UtilityUnitScore {
@@ -29,6 +37,8 @@ pub struct UtilityUnitScore {
     pub recency: u32,
     pub token_cost: u32,
     pub prefix_invalidation_cost: u32,
+    /// Plan task 9.2 · a result in this unit is cited by a note.
+    pub cited_by_note: bool,
     pub utility: i64,
 }
 
@@ -130,6 +140,14 @@ pub fn plan_utility_archive_with_measurements(
                 .iter()
                 .any(|directive| directive_dependency(text, directive));
         let mandatory = index >= recent_start || has_unresolved || dependency;
+        let cited_by_note = !context.cited_calls.is_empty()
+            && slice.iter().any(|message| match &message.content {
+                Content::Parts(parts) => parts.iter().any(|part| matches!(
+                    part,
+                    ContentPart::ToolResult { call_id, .. } if context.cited_calls.contains(call_id.as_str())
+                )),
+                _ => false,
+            });
         let recency = ((index as u64 + 1) * 1_000 / u64::from(unit_count)) as u32;
         let token_cost = (u64::from(tokens) * 1_000 / u64::from(denominator)) as u32;
         let prefix_invalidation_cost =
@@ -140,7 +158,8 @@ pub fn plan_utility_archive_with_measurements(
             + if is_error_or_decision { 6_000 } else { 0 }
             + i64::from(recency) * 2
             - i64::from(token_cost) * 2
-            - i64::from(prefix_invalidation_cost);
+            - i64::from(prefix_invalidation_cost)
+            - if cited_by_note { CITED_BY_NOTE_PENALTY } else { 0 };
         scores.push(UtilityUnitScore {
             range: range.clone(),
             tokens,
@@ -152,6 +171,7 @@ pub fn plan_utility_archive_with_measurements(
             recency,
             token_cost,
             prefix_invalidation_cost,
+            cited_by_note,
             utility,
         });
     }
@@ -396,6 +416,7 @@ mod tests {
                 criteria: &[],
                 preserved_refs: &[],
                 active_directives: &[],
+                cited_calls: &BTreeSet::new(),
             },
         );
         assert!(plan.scores[0].mandatory);
@@ -423,6 +444,7 @@ mod tests {
                 criteria: &[],
                 preserved_refs: &[],
                 active_directives: &["必须用中文回答".into()],
+                cited_calls: &BTreeSet::new(),
             },
         );
         assert!(
@@ -461,6 +483,7 @@ mod tests {
                 criteria: &[],
                 preserved_refs: &["call-keep".into()],
                 active_directives: &[],
+                cited_calls: &BTreeSet::new(),
             },
         );
         assert!(plan.scores[0].mandatory);
@@ -484,6 +507,7 @@ mod tests {
                 criteria: &[],
                 preserved_refs: &[],
                 active_directives: &[],
+                cited_calls: &BTreeSet::new(),
             },
         );
         assert_eq!(plan.scores[0].tokens, 2);

@@ -107,6 +107,12 @@ pub struct ContextConfig {
     // ── Notes (plan task 9.1) ───────────────────────────────────────────────
     /// Tokens the model's notes may hold in the state turn. `0` turns the `note` tool off.
     pub notes_budget_tokens: u32,
+    /// Plan task 9.2 · range compaction pages out results a note already cites first, renders
+    /// archived citations as read-back handles, and the rule summary becomes an archive locator.
+    pub compaction_reads_notes: bool,
+    /// Plan task 9.2 · a range compaction that would archive results no note cites is deferred
+    /// once, with the items about to leave listed in the state turn.
+    pub page_out_notice: bool,
 }
 
 impl Default for ContextConfig {
@@ -132,6 +138,8 @@ impl Default for ContextConfig {
             delegate_tool_result_clearing: false,
             delegate_compaction: false,
             notes_budget_tokens: 0,
+            compaction_reads_notes: false,
+            page_out_notice: false,
         }
     }
 }

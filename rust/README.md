@@ -65,7 +65,7 @@ async fn main() {
         compression_store: None,
         payload_store: None,
         kernel_reliability: None,
-        notes_budget_tokens: None,
+        notes: None,
         session_id: None,
         max_tokens: 32_000,
         max_turns: Some(10),

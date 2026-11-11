@@ -887,6 +887,9 @@ pub struct LogicalTaskState {
     pub notes_retired: u32,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub notes_watermark: u64,
+    /// Plan task 9.2 · a deferred compaction's page-out notice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_out_notice: Vec<String>,
 }
 
 /// Plan task 9.1 · one note, projected.
@@ -900,6 +903,10 @@ pub struct LogicalNote {
     pub evidence: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cites: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub archived: Vec<String>,
     pub item: u64,
     pub turn: u32,
 }

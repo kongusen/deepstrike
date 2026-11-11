@@ -33,6 +33,11 @@ written by 0.2.82 carry the new optional field `cache_ledger`; 0.2.81 cannot rea
   `derived_from`, `links_to` and `supersedes`, and `context_lifecycle_reported` may carry
   `notes_written` and `notes_active`. Checkpoints carry `task_state.notes` only when notes exist;
   0.2.81 cannot restore such a checkpoint.
+- Compaction reading the notes (plan task 9.2) is off unless `compactionReadsNotes` /
+  `pageOutNotice` (Python and Rust: `compaction_reads_notes` / `page_out_notice`) are set. With
+  `compactionReadsNotes`, `compressed.summary` is an archive locator (`archived N turn(s), …`), not
+  the rule digest; with `pageOutNotice`, a collapse can run one turn later than the pressure
+  threshold alone would put it.
 - Rendering, compaction and provider requests are unchanged. Cache-aware compaction (plan task
   8.3) was measured and is not part of this release; see the plan.
 

@@ -861,7 +861,7 @@ are scheduled once long-horizon can measure them.
       from in `evidence`". No prohibitions. `update_plan` is unchanged.
     - Reporting: `context_lifecycle_reported` gains `notes_written` (rewrites count again) and
       `notes_active`; the four SDKs' `ContextPolicy` gains `notesBudgetTokens` /
-      `notes_budget_tokens`; Rust `RuntimeOptions.notes_budget_tokens`.
+      `notes_budget_tokens`; Rust `RuntimeOptions.notes: Option<NotesOptions>` (holding the 9.2 switches too).
     - Tests: kernel `context/notes.rs` (budget refusal, evidence resolution, links and retirement,
       notes survive compaction of their history); three driver tests (the tool appears only with a
       budget; a write renders and checkpoints; an over-budget write is refused); two to three
@@ -869,28 +869,35 @@ are scheduled once long-horizon can measure them.
     - Acceptance (final round): on long-horizon `undercount` and `count_error` fall, success is not
       below `0.2.82-9.0` (paired) and `weighted_cost` is not higher; ledger does not regress.
       Variables: budget (600 / 1500) and instruction text.
-- [ ] Task 9.2: compaction reads the graph (evidence leaves, notes stay).
-    - Page-out order reads the graph: when choosing units to archive, tool results cited by an
-      active note's `derived_from` go first (their meaning is in the note; the original can be read
-      back along the edge with `read_result`); results no note cites that lie within the current
-      work count as "unprocessed" and go last. `utility.rs` gains a `cited_by_note` term.
-    - Page-out notice: when the pressure recommendation would archive uncited results, the kernel
-      lists the items about to leave in the state turn (call id, tool name, argument digest, at
-      most 8 lines) and defers the compaction by one turn, so the model can write notes first.
-      Deferred once only; the hard window limit takes precedence and over it compaction runs now.
-      No model call.
-    - After page-out, evidence cited by a note renders as read-back handles: each note line ends
-      with `(evidence: c12, c15 → read_result)`, listing only archived items.
-    - `RuleSummarizer` is demoted to an archive locator: it records which call ids, file paths and
-      how many turns were archived and no longer fills semantic slots such as rules or errors. It
-      carries no memory from here on.
-    - Switches: `ContextPolicy.compaction_reads_notes` (order + handle rendering) and
-      `ContextPolicy.page_out_notice`, both off by default, measurable separately.
-    - Acceptance: with 9.1 on, success does not drop, `weighted_cost` falls, and `read_back` and
-      `brief_rereads` do not rise; the `cache_loss_tokens` change caused by deferred compaction is
-      reported.
-    - Files: `context/utility.rs`, `context/compression.rs`, `context/pressure.rs`,
-      `context/summarizer.rs`, `context/renderer.rs`, `context/policy.rs`
+- [x] Task 9.2 (implemented 2026-11-11; measured in the final round): compaction reads the graph
+  (evidence leaves, notes stay).
+    - Notes keep the call ids their evidence resolved to (`Note.cites`). With
+      `ContextPolicy.compaction_reads_notes`, collapse and auto compaction score units with an extra
+      `cited_by_note` term (−12000: enough to send a cited result out ahead of an uncited one of
+      similar size, not enough to override an unfinished call). Cited call ids a compaction
+      archives go into `Note.archived`, and the note line ends with
+      `(archived evidence: c12, c15 → read_result)`. That compaction's summary becomes an archive
+      locator (`archive_locator`: how many turns, which call ids, which paths); `RuleSummarizer`
+      carries no memory.
+    - With `ContextPolicy.page_out_notice`, a collapse first plans with the same scoring; if the
+      archive would take results no note cites, it skips this turn and lists them in the state turn
+      (`call id tool(first 60 characters of the arguments)`, at most 8 lines); the next turn it
+      runs and the notice clears. It defers once only; auto compaction and renewal sit closer to
+      the hard limit and never defer. Renewal clears the notice.
+    - Both are checkpointed (`LogicalNote.cites` / `archived`, `LogicalTaskState.page_out_notice`,
+      omitted when empty). Off by default; goldens unchanged. SDKs: `compactionReadsNotes` /
+      `pageOutNotice` (Node/WASM), `compaction_reads_notes` / `page_out_notice` (Python), the same
+      fields of Rust `NotesOptions`.
+    - Tests: four kernel tests (with the switch off the oldest result c0 leaves, with it on the
+      cited c2 does; the notice defers once and lists only uncited results; no deferral without the
+      switch; notes survive renewal); one Node end-to-end test (in a small window: notice → the
+      compaction next turn → a read-back handle for c1 on the note → a locator summary); Python
+      switch serialization.
+    - Acceptance (final round): with 9.1 on, success does not drop, `weighted_cost` falls, and
+      `read_back` and `brief_rereads` do not rise; the `cache_loss_tokens` change caused by the
+      deferral is reported.
+    - Files: `context/utility.rs`, `context/compression.rs`, `context/notes.rs`,
+      `context/summarizer.rs`, `context/task_state.rs`, `scheduler/state_machine/eviction.rs`
 - [ ] Task 9.3: the model repairs its own notes (the kernel computes the diagnostics).
     - Every turn the kernel computes structural diagnostics deterministically, reading only the
       graph and the notes, never their meaning:
@@ -1017,7 +1024,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
 | 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate, not merged, direction abandoned (`exp/8.3c`); 8.4 failed the gate when measured and was withdrawn (`exp/8.4-model-summaries`) |
-| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented); 9.2 compaction reads the graph; 9.3 the model repairs its notes (the kernel only diagnoses); 9.4 cross-session promotion and a consolidation run. Measured in one round at the end of the stage | In progress |
+| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented); 9.2 compaction reads the graph (implemented); 9.3 the model repairs its notes (the kernel only diagnoses); 9.4 cross-session promotion and a consolidation run. Measured in one round at the end of the stage | In progress |
 
 0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
 rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that

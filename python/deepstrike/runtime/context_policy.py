@@ -32,6 +32,11 @@ class ContextPolicy(TypedDict, total=False):
     #: Plan task 9.1 · tokens the model's notes may hold in the state turn; 0 (the default) turns
     #: the ``note`` tool off.
     notes_budget_tokens: int
+    #: Plan task 9.2 · range compaction pages out results a note cites first, shows archived
+    #: citations as ``read_result`` handles, and its summary only locates the archive.
+    compaction_reads_notes: bool
+    #: Plan task 9.2 · a range compaction about to archive uncited results waits one turn.
+    page_out_notice: bool
 
 
 class ContextPolicyWire(TypedDict, total=False):
@@ -43,6 +48,8 @@ class ContextPolicyWire(TypedDict, total=False):
     idle_micro_compact_minutes: int
     delegated_tiers: DelegatedContextTiers
     notes_budget_tokens: int
+    compaction_reads_notes: bool
+    page_out_notice: bool
 
 
 DEFAULT_CONTEXT_POLICY: ContextPolicy = {
@@ -104,6 +111,12 @@ def normalize_context_policy(policy: ContextPolicy) -> ContextPolicyWire:
     _integer_at_least(notes, 0, "notes_budget_tokens")
     if notes > 0:
         wire["notes_budget_tokens"] = notes
+    for field in ("compaction_reads_notes", "page_out_notice"):
+        value = policy.get(field, False)
+        if not isinstance(value, bool):
+            raise TypeError(f"{field} must be boolean")
+        if value:
+            wire[field] = True
     delegated = policy.get("delegated_tiers")
     if delegated and any(delegated.values()):
         wire["delegated_tiers"] = {

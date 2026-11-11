@@ -23,6 +23,12 @@ pub const NOTE_TITLE_MAX_CHARS: usize = 120;
 /// Tool results a note written without explicit evidence derives from, at most.
 pub const NOTE_DEFAULT_EVIDENCE_CAP: usize = 16;
 
+/// Plan task 9.2 · results a page-out notice lists before `(+N more)`.
+pub const PAGE_OUT_NOTICE_LINES: usize = 8;
+
+/// Plan task 9.2 · characters of a call's arguments a notice line shows.
+pub const PAGE_OUT_ARGS_CHARS: usize = 60;
+
 /// What the model asks of the `note` tool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +146,8 @@ you no longer need."
             body: body.to_string(),
             evidence: request.evidence.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect(),
             links: request.links.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+            cites: Vec::new(),
+            archived: Vec::new(),
             item: existing.map_or(0, |i| self.partitions.task_state.notes[i].item),
             turn,
         };
@@ -171,9 +179,11 @@ you no longer need."
             self.partitions.task_state.notes[index].item = note.item;
         }
         let evidence = self.note_evidence(&note.evidence);
-        for &to in &evidence {
-            self.add_note_edge(note.item, to, Relation::DerivedFrom);
+        for (to, _) in &evidence {
+            self.add_note_edge(note.item, *to, Relation::DerivedFrom);
         }
+        let index = self.partitions.task_state.note_index(&note.title).expect("the note was just stored");
+        self.partitions.task_state.notes[index].cites = evidence.iter().map(|(_, call)| call.clone()).collect();
         let mut dead = Vec::new();
         for link in &note.links {
             match self.partitions.task_state.note_index(link) {
@@ -201,6 +211,94 @@ you no longer need."
         Ok(ack)
     }
 
+    /// Plan task 9.2 · record, on each note, which of its cited results `archived` just took out.
+    pub(crate) fn mark_archived_citations(&mut self, archived: &[crate::types::message::CoreMessage]) {
+        let gone: std::collections::BTreeSet<&str> = archived
+            .iter()
+            .filter_map(|message| match &message.content {
+                Content::Parts(parts) => Some(parts.iter().filter_map(|part| match part {
+                    ContentPart::ToolResult { call_id, .. } => Some(call_id.as_str()),
+                    _ => None,
+                })),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        for note in &mut self.partitions.task_state.notes {
+            for call in &note.cites {
+                if gone.contains(call.as_str()) && !note.archived.contains(call) {
+                    note.archived.push(call.clone());
+                }
+            }
+        }
+    }
+
+    /// Plan task 9.2 · whether a range compaction toward `target_tokens` should wait one turn so
+    /// the model can note what it is about to lose. It waits only when the page-out notice is on,
+    /// has not been given for this compaction yet, and the archive would take results no note
+    /// cites; the notice lists them. A second call (the next turn) always lets it run.
+    pub fn defer_for_page_out_notice(&mut self, target_tokens: u32) -> bool {
+        if !self.config.page_out_notice || !self.partitions.task_state.page_out_notice.is_empty() {
+            return false;
+        }
+        let partitions = &self.partitions;
+        let non_history = partitions.total_tokens(&self.engine).saturating_sub(partitions.history.token_count());
+        let cited = super::compression::cited_calls(partitions);
+        let plan = super::utility::plan_utility_archive_with_measurements(
+            partitions.history.messages(),
+            partitions.history.measurements(),
+            partitions.history.token_count(),
+            target_tokens.saturating_sub(non_history),
+            self.config.preserve_recent_turns,
+            &self.engine,
+            &super::utility::UtilitySelectionContext {
+                goal: &partitions.task_state.goal,
+                criteria: &partitions.task_state.criteria,
+                preserved_refs: &partitions.task_state.preserved_refs,
+                active_directives: &partitions.task_state.directives,
+                cited_calls: &if self.config.compaction_reads_notes { cited.clone() } else { Default::default() },
+            },
+        );
+        let messages = partitions.history.messages();
+        let mut lines = Vec::new();
+        for range in &plan.archived_ranges {
+            for message in &messages[range.clone()] {
+                let Content::Parts(parts) = &message.content else { continue };
+                for part in parts {
+                    let ContentPart::ToolResult { call_id, .. } = part else { continue };
+                    if cited.contains(call_id.as_str()) {
+                        continue;
+                    }
+                    let call = messages
+                        .iter()
+                        .flat_map(|m| m.tool_calls.iter())
+                        .find(|call| call.id == *call_id);
+                    let line = match call {
+                        Some(call) => {
+                            let mut args = call.arguments.to_string();
+                            if args.chars().count() > PAGE_OUT_ARGS_CHARS {
+                                args = args.chars().take(PAGE_OUT_ARGS_CHARS).collect::<String>() + "…";
+                            }
+                            format!("{call_id} {}({args})", call.name)
+                        }
+                        None => call_id.to_string(),
+                    };
+                    lines.push(line);
+                }
+            }
+        }
+        if lines.is_empty() {
+            return false;
+        }
+        if lines.len() > PAGE_OUT_NOTICE_LINES {
+            let more = lines.len() - PAGE_OUT_NOTICE_LINES;
+            lines.truncate(PAGE_OUT_NOTICE_LINES);
+            lines.push(format!("(+{more} more)"));
+        }
+        self.partitions.task_state.page_out_notice = lines;
+        true
+    }
+
     fn add_note_edge(&mut self, from: ItemId, to: ItemId, relation: Relation) {
         if from != 0 && to != 0 && from != to {
             self.add_graph_edge(from, to, relation);
@@ -215,7 +313,7 @@ you no longer need."
     /// The items a note's evidence names. Each reference is a tool call id, a handle's source, or
     /// text found in a tool call's arguments (a path, a query); without references, the tool
     /// results that arrived since the last note was written.
-    pub(crate) fn note_evidence(&self, references: &[String]) -> Vec<ItemId> {
+    pub(crate) fn note_evidence(&self, references: &[String]) -> Vec<(ItemId, String)> {
         let history = &self.partitions.history;
         // (result item, call id) of every tool result still in history.
         let results: Vec<(ItemId, &str)> = (0..history.len())
@@ -235,18 +333,18 @@ you no longer need."
             })
             .filter(|(id, _)| *id != 0)
             .collect();
-        let mut items = Vec::new();
-        let push = |item: ItemId, items: &mut Vec<ItemId>| {
-            if item != 0 && !items.contains(&item) {
-                items.push(item);
+        let mut items: Vec<(ItemId, String)> = Vec::new();
+        let push = |item: ItemId, call: &str, items: &mut Vec<(ItemId, String)>| {
+            if item != 0 && !items.iter().any(|(id, _)| *id == item) {
+                items.push((item, call.to_string()));
             }
         };
         if references.is_empty() {
             let watermark = self.partitions.task_state.notes_watermark;
-            let fresh: Vec<ItemId> = results.iter().map(|(id, _)| *id).filter(|id| *id > watermark).collect();
+            let fresh: Vec<&(ItemId, &str)> = results.iter().filter(|(id, _)| *id > watermark).collect();
             let skip = fresh.len().saturating_sub(NOTE_DEFAULT_EVIDENCE_CAP);
-            for id in fresh.into_iter().skip(skip) {
-                push(id, &mut items);
+            for (id, call) in fresh.into_iter().skip(skip) {
+                push(*id, call, &mut items);
             }
             return items;
         }
@@ -266,7 +364,7 @@ you no longer need."
         };
         for reference in references {
             if let Some(item) = result_of(reference) {
-                push(item, &mut items);
+                push(item, reference, &mut items);
                 continue;
             }
             if reference.chars().count() < 3 {
@@ -277,7 +375,7 @@ you no longer need."
                     if call.arguments.to_string().contains(reference.as_str())
                         && let Some(item) = result_of(call.id.as_str())
                     {
-                        push(item, &mut items);
+                        push(item, call.id.as_str(), &mut items);
                     }
                 }
             }
@@ -291,6 +389,7 @@ mod tests {
     use super::*;
     use crate::context::token_engine::ContextTokenEngine;
     use crate::context::config::ContextConfig;
+    use crate::context::pressure::PressureAction;
     use crate::types::message::{CoreMessage, ToolCall};
 
     fn manager(budget: u32) -> ContextManager {
@@ -403,6 +502,97 @@ mod tests {
         assert_eq!(edges(&mgr, Relation::LinksTo).len(), 1);
         assert_eq!(edges(&mgr, Relation::Supersedes).len(), 1);
         assert!(mgr.write_note(&NoteRequest { action: NoteAction::Retire, ..NoteRequest { title: "Tally".into(), ..NoteRequest::default() } }, 5).is_err());
+    }
+
+    fn reading_manager(reads_notes: bool, notice: bool) -> ContextManager {
+        let mut mgr = ContextManager::with_config(
+            100_000,
+            ContextConfig {
+                notes_budget_tokens: 800,
+                compaction_reads_notes: reads_notes,
+                page_out_notice: notice,
+                ..ContextConfig::default()
+            },
+            ContextTokenEngine::char_approx(),
+        );
+        mgr.init_task("count the errors".into(), vec![]);
+        for n in 0..6 {
+            read(&mut mgr, &format!("c{n}"), &format!("logs/{n}.log"), &format!("{n} ").repeat(200));
+        }
+        mgr
+    }
+
+    fn archived_calls(archived: &[CoreMessage]) -> Vec<String> {
+        archived
+            .iter()
+            .filter_map(|m| match &m.content {
+                Content::Parts(parts) => Some(parts.iter().filter_map(|p| match p {
+                    ContentPart::ToolResult { call_id, .. } => Some(call_id.to_string()),
+                    _ => None,
+                }).collect::<Vec<_>>()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// Just under the current total: the compaction has to archive exactly one unit.
+    fn one_unit_target(mgr: &ContextManager) -> u32 {
+        mgr.partitions.total_tokens(&mgr.engine) - 20
+    }
+
+    #[test]
+    fn with_compaction_reading_notes_the_cited_result_leaves_first() {
+        for (reads, expected) in [(false, "c0"), (true, "c2")] {
+            let mut mgr = reading_manager(reads, false);
+            let cite = NoteRequest { evidence: vec!["c2".into()], ..write("File 2", "2 errors") };
+            mgr.write_note(&cite, 1).unwrap();
+            let target = one_unit_target(&mgr);
+            let (_, summary, archived, _) = mgr.compress_with_target(PressureAction::ContextCollapse, target, None);
+            assert_eq!(archived_calls(&archived), vec![expected.to_string()], "reads_notes={reads}");
+            let state = &mgr.partitions.task_state;
+            if reads {
+                assert_eq!(state.notes[0].archived, vec!["c2".to_string()]);
+                assert!(state.format_compact().contains("(archived evidence: c2 → read_result)"));
+                assert!(summary.unwrap().starts_with("archived 1 turn(s)"));
+            } else {
+                assert!(state.notes[0].archived.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_page_out_notice_defers_one_compaction_and_lists_uncited_results() {
+        let mut mgr = reading_manager(true, true);
+        mgr.write_note(&NoteRequest { evidence: vec!["c2".into()], ..write("File 2", "2 errors") }, 1).unwrap();
+        // Everything but the preserved tail must go: c0, c1, c3 are uncited, c2 is cited.
+        let target = 10;
+        assert!(mgr.defer_for_page_out_notice(target));
+        let notice = mgr.partitions.task_state.page_out_notice.clone();
+        assert!(notice.iter().any(|line| line.starts_with("c0 read_file(")), "{notice:?}");
+        assert!(!notice.iter().any(|line| line.starts_with("c2 ")), "{notice:?}");
+        assert!(mgr.partitions.task_state.format_compact().contains("leaving context at the next compaction"));
+        // The next turn the compaction runs, and the notice is spent.
+        assert!(!mgr.defer_for_page_out_notice(target));
+        let (_, _, archived, _) = mgr.compress_with_target(PressureAction::ContextCollapse, target, None);
+        assert!(!archived.is_empty());
+        assert!(mgr.partitions.task_state.page_out_notice.is_empty());
+    }
+
+    #[test]
+    fn without_the_notice_switch_nothing_is_deferred() {
+        let mut mgr = reading_manager(true, false);
+        assert!(!mgr.defer_for_page_out_notice(10));
+        assert!(mgr.partitions.task_state.page_out_notice.is_empty());
+    }
+
+    #[test]
+    fn notes_survive_renewal() {
+        let mut mgr = manager(500);
+        mgr.write_note(&write("Tally", "6 files read, 4 errors"), 1).unwrap();
+        mgr.renew();
+        assert_eq!(mgr.partitions.task_state.notes.len(), 1);
+        assert!(mgr.partitions.task_state.format_compact().contains("6 files read, 4 errors"));
     }
 
     #[test]

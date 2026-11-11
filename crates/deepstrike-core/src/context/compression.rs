@@ -422,7 +422,10 @@ pub fn plan_drop_oldest(
 
 /// rho > collapse_threshold: drop oldest messages until within target. Selection via
 /// [`plan_drop_oldest`]; this executor only drains the chosen count.
-pub struct CollapseCompactor;
+pub struct CollapseCompactor {
+    /// Plan task 9.2 · results notes cite leave first.
+    pub reads_notes: bool,
+}
 
 impl Compressor for CollapseCompactor {
     fn compress(
@@ -437,6 +440,7 @@ impl Compressor for CollapseCompactor {
             .total_tokens(engine)
             .saturating_sub(partitions.history.token_count());
         let history_target = target_tokens.saturating_sub(non_history_tokens);
+        let cited = if self.reads_notes { cited_calls(partitions) } else { Default::default() };
         let plan = super::utility::plan_utility_archive_with_measurements(
             partitions.history.messages(),
             partitions.history.measurements(),
@@ -449,6 +453,7 @@ impl Compressor for CollapseCompactor {
                 criteria: &partitions.task_state.criteria,
                 preserved_refs: &partitions.task_state.preserved_refs,
                 active_directives: &partitions.task_state.directives,
+                cited_calls: &cited,
             },
         );
         if plan.archived_ranges.is_empty() {
@@ -469,7 +474,10 @@ impl Compressor for CollapseCompactor {
 }
 
 /// rho > auto_threshold: collapse history entirely except last K turns, updating compression log.
-pub struct AutoCompactor;
+pub struct AutoCompactor {
+    /// Plan task 9.2 · results notes cite leave first.
+    pub reads_notes: bool,
+}
 
 impl Compressor for AutoCompactor {
     fn compress(
@@ -487,6 +495,7 @@ impl Compressor for AutoCompactor {
             .total_tokens(engine)
             .saturating_sub(partitions.history.token_count());
         let history_target = target_tokens.saturating_sub(non_history_tokens);
+        let cited = if self.reads_notes { cited_calls(partitions) } else { Default::default() };
         let plan = super::utility::plan_utility_archive_with_measurements(
             partitions.history.messages(),
             partitions.history.measurements(),
@@ -499,6 +508,7 @@ impl Compressor for AutoCompactor {
                 criteria: &partitions.task_state.criteria,
                 preserved_refs: &partitions.task_state.preserved_refs,
                 active_directives: &partitions.task_state.directives,
+                cited_calls: &cited,
             },
         );
         if plan.archived_ranges.is_empty() {
@@ -540,12 +550,25 @@ fn apply_utility_plan(
 pub struct CompressionPipeline {
     stages: Vec<(PressureAction, Box<dyn Compressor>)>,
     preserve_recent_turns: usize,
+    /// Plan task 9.2 · the summary of an archived range is a locator, not a digest of meaning.
+    locator_summaries: bool,
+}
+
+/// Plan task 9.2 · call ids of the results the notes cite.
+pub fn cited_calls(partitions: &ContextPartitions) -> std::collections::BTreeSet<String> {
+    partitions
+        .task_state
+        .notes
+        .iter()
+        .flat_map(|note| note.cites.iter().cloned())
+        .collect()
 }
 
 impl CompressionPipeline {
     pub fn new(config: &ContextConfig) -> Self {
         Self {
             preserve_recent_turns: config.preserve_recent_turns,
+            locator_summaries: config.compaction_reads_notes,
             stages: vec![
                 (
                     PressureAction::SnipCompact,
@@ -554,8 +577,14 @@ impl CompressionPipeline {
                     }),
                 ),
                 (PressureAction::MicroCompact, Box::new(MicroCompactor)),
-                (PressureAction::ContextCollapse, Box::new(CollapseCompactor)),
-                (PressureAction::AutoCompact, Box::new(AutoCompactor)),
+                (
+                    PressureAction::ContextCollapse,
+                    Box::new(CollapseCompactor { reads_notes: config.compaction_reads_notes }),
+                ),
+                (
+                    PressureAction::AutoCompact,
+                    Box::new(AutoCompactor { reads_notes: config.compaction_reads_notes }),
+                ),
             ],
         }
     }
@@ -623,12 +652,11 @@ impl CompressionPipeline {
                 .iter()
                 .map(|row| (row.message.clone(), row.measurement.clone()))
                 .unzip();
-            let s = summarizer.summarize(
-                &messages,
-                &measurements,
-                action,
-                summary_budget,
-            );
+            let s = if self.locator_summaries {
+                super::summarizer::archive_locator(&messages)
+            } else {
+                summarizer.summarize(&messages, &measurements, action, summary_budget)
+            };
             partitions
                 .task_state
                 .log_compression(action.label(), s.clone());
@@ -780,7 +808,7 @@ mod tests {
 
     #[test]
     fn collapse_compactor_drops_oldest_to_reach_target() {
-        let compactor = CollapseCompactor;
+        let compactor = CollapseCompactor { reads_notes: false };
         let mut ctx = ContextPartitions::new(&config());
         for _ in 0..8 {
             ctx.history.push(CoreMessage::user("msg"), 50);
@@ -827,7 +855,7 @@ mod tests {
         assert!(ctx.history.tags().iter().filter(|tag| tag.id < 8).all(|tag| tag.fidelity == Fidelity::Full));
 
         // Archiving takes whole rows out: the archived ids and the retained ids partition the table.
-        let result = CollapseCompactor.compress(&mut ctx, 250, MAX, 2, &engine());
+        let result = CollapseCompactor { reads_notes: false }.compress(&mut ctx, 250, MAX, 2, &engine());
         let archived: Vec<_> = result.archived.iter().map(|row| row.tag.id).collect();
         let retained: Vec<_> = ctx.history.tags().iter().map(|tag| tag.id).collect();
         assert!(!archived.is_empty());
@@ -840,7 +868,7 @@ mod tests {
 
     #[test]
     fn collapse_utility_selection_changes_the_archived_units_not_only_the_score() {
-        let compactor = CollapseCompactor;
+        let compactor = CollapseCompactor { reads_notes: false };
         let mut ctx = ContextPartitions::new(&config());
         ctx.task_state.goal = "ship ORCHID release".into();
         for (user, assistant) in [
@@ -880,7 +908,7 @@ mod tests {
 
     #[test]
     fn utility_selector_deducts_fixed_context_before_budgeting_history() {
-        let compactor = CollapseCompactor;
+        let compactor = CollapseCompactor { reads_notes: false };
         let mut ctx = ContextPartitions::new(&config());
         ctx.system.push(CoreMessage::system("fixed"), 600);
         for index in 0..4 {
@@ -955,7 +983,7 @@ mod tests {
 
     #[test]
     fn auto_compactor_merges_all_except_last_two_turns() {
-        let compactor = AutoCompactor;
+        let compactor = AutoCompactor { reads_notes: false };
         let mut ctx = ContextPartitions::new(&config());
         for i in 0..10 {
             ctx.history.push(CoreMessage::user(format!("msg {i}")), 10);
@@ -1023,7 +1051,7 @@ mod tests {
 
     #[test]
     fn auto_compactor_preserves_the_latest_complete_tool_unit() {
-        let compactor = AutoCompactor;
+        let compactor = AutoCompactor { reads_notes: false };
         let mut ctx = ContextPartitions::new(&config());
         ctx.history.push(CoreMessage::user("old"), 10);
         ctx.history.push(CoreMessage::assistant("old answer"), 10);

@@ -191,7 +191,7 @@ fn harness_with_hits(
         compression_store: None,
         payload_store: None,
         kernel_reliability: None,
-        notes_budget_tokens: None,
+        notes: None,
         session_id: None,
         max_tokens: 8000,
         max_turns: Some(3),

@@ -1498,6 +1498,8 @@ fn project_task_state(state: &TaskState) -> LogicalTaskState {
                 body: note.body.clone(),
                 evidence: note.evidence.clone(),
                 links: note.links.clone(),
+                cites: note.cites.clone(),
+                archived: note.archived.clone(),
                 item: note.item,
                 turn: note.turn,
             })
@@ -1505,6 +1507,7 @@ fn project_task_state(state: &TaskState) -> LogicalTaskState {
         notes_written: state.notes_written,
         notes_retired: state.notes_retired,
         notes_watermark: state.notes_watermark,
+        page_out_notice: state.page_out_notice.clone(),
     }
 }
 
@@ -1546,6 +1549,8 @@ fn restore_task_state(state: &LogicalTaskState) -> TaskState {
                 body: note.body.clone(),
                 evidence: note.evidence.clone(),
                 links: note.links.clone(),
+                cites: note.cites.clone(),
+                archived: note.archived.clone(),
                 item: note.item,
                 turn: note.turn,
             })
@@ -1553,6 +1558,7 @@ fn restore_task_state(state: &LogicalTaskState) -> TaskState {
         notes_written: state.notes_written,
         notes_retired: state.notes_retired,
         notes_watermark: state.notes_watermark,
+        page_out_notice: state.page_out_notice.clone(),
     }
 }
 
@@ -3254,6 +3260,8 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
             delegate_tool_result_clearing: context.delegated_tiers.tool_result_clearing,
             delegate_compaction: context.delegated_tiers.compaction,
             notes_budget_tokens: context.notes_budget_tokens,
+            compaction_reads_notes: context.compaction_reads_notes,
+            page_out_notice: context.page_out_notice,
         });
     engine
         .ctx

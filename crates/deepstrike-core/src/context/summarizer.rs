@@ -8,6 +8,45 @@ use crate::types::message::{Content, ContentPart, CoreMessage};
 /// Deterministic six-slot summariser used before archived units page out.
 pub struct RuleSummarizer;
 
+/// Plan task 9.2 · where an archived range went, without claiming what it meant: the call ids
+/// (each readable back with `read_result`), the paths its tool calls named, and how many turns.
+/// Memory is the notes' job; this only locates the archive.
+pub fn archive_locator(messages: &[CoreMessage]) -> String {
+    let mut calls = Vec::new();
+    let mut paths = Vec::new();
+    let mut turns = 0usize;
+    for message in messages {
+        if message.role == crate::types::message::Role::Assistant {
+            turns += 1;
+        }
+        for call in &message.tool_calls {
+            calls.push(call.id.to_string());
+            for key in ["path", "file", "file_path", "url"] {
+                if let Some(path) = call.arguments.get(key).and_then(|v| v.as_str())
+                    && !paths.iter().any(|p: &String| p == path)
+                {
+                    paths.push(path.to_string());
+                }
+            }
+        }
+    }
+    let list = |items: &[String]| {
+        if items.len() <= SLOT_ITEM_CAP * 2 {
+            items.join(", ")
+        } else {
+            format!("{} (+{} more)", items[..SLOT_ITEM_CAP * 2].join(", "), items.len() - SLOT_ITEM_CAP * 2)
+        }
+    };
+    let mut out = format!("archived {turns} turn(s), {} message(s)", messages.len());
+    if !calls.is_empty() {
+        out.push_str(&format!("; results by call id (read_result): {}", list(&calls)));
+    }
+    if !paths.is_empty() {
+        out.push_str(&format!("; paths: {}", list(&paths)));
+    }
+    out
+}
+
 /// Items rendered per slot before an honest `(+N more)` line. Bounds each digest so the
 /// task-state compression history can afford to keep MANY digests visible instead of a few
 /// bloated ones.

@@ -83,3 +83,16 @@ def test_a_negative_budget_is_rejected() -> None:
 
     with pytest.raises(ValueError, match="notes_budget_tokens"):
         context_policy({"notes_budget_tokens": -1})
+
+
+def test_the_compaction_switches_reach_the_wire_only_when_on() -> None:
+    from deepstrike.runtime.context_policy import context_policy, normalize_context_policy
+
+    wire = normalize_context_policy(context_policy({
+        "notes_budget_tokens": 400, "compaction_reads_notes": True, "page_out_notice": True,
+    }))
+    assert wire["compaction_reads_notes"] is True and wire["page_out_notice"] is True
+    off = normalize_context_policy(context_policy())
+    assert "compaction_reads_notes" not in off and "page_out_notice" not in off
+    with pytest.raises(TypeError, match="page_out_notice"):
+        normalize_context_policy(context_policy({"page_out_notice": "yes"}))

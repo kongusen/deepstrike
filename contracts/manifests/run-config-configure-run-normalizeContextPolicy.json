@@ -51,7 +51,9 @@
         "renewalCarryover",
         "collapseOldAssistantNarration",
         "idleMicroCompactMinutes",
-        "notesBudgetTokens"
+        "notesBudgetTokens",
+        "compactionReadsNotes",
+        "pageOutNotice"
       ]
     },
     "derived": [
