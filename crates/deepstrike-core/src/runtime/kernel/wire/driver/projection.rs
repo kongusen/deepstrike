@@ -230,6 +230,7 @@ impl CanonicalOperationDriver {
             prefix_sent: ctx.cache_checkpoint_state().0,
             cache_invalidated_tokens: ctx.cache_checkpoint_state().1,
             cache_ledger: ctx.cache_ledger.clone(),
+            model_summaries: ctx.model_summaries,
             evicted_knowledge_keys: ctx.partitions.knowledge.evicted_keys.iter().cloned().collect(),
             knowledge_regret: ctx.partitions.knowledge.regret,
             knowledge_wasted_tokens: ctx.partitions.knowledge.wasted_tokens,

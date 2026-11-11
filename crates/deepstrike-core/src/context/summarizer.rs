@@ -305,6 +305,128 @@ fn compact(text: &str, max_chars: usize) -> String {
     output
 }
 
+/// Plan task 8.4 · the most a model summary may take. It renders in the task state on every request,
+/// so it is bounded the same way the rule summary's slots are.
+pub const MODEL_SUMMARY_MAX_TOKENS: u32 = 800;
+
+/// The most of the archived range a summary request carries. The newest messages are kept: a
+/// running tally lives in the latest narration, and the previous summary covers what came before.
+pub const SUMMARY_TRANSCRIPT_MAX_TOKENS: u32 = 16_000;
+
+/// Characters kept of each tool result in a summary transcript: the model's own notes carry the
+/// state of the work; a raw tool output is evidence it can read again.
+const TRANSCRIPT_TOOL_RESULT_CHARS: usize = 1_500;
+
+const SUMMARY_INSTRUCTIONS: &str = "You compress the earlier part of an AI agent's working session. \
+The agent will continue from your summary alone: the messages below leave its context for good. \
+Write a plain-text summary that keeps, exactly as stated: the task's rules and constraints; every \
+running count, total or tally with what it covers so far (for example which files or pages are \
+done); numbers, identifiers and file names the work depends on; decisions made; failures and what \
+was tried; and what remains to be done next. If a previous summary is given, carry its facts \
+forward and update its counts with the new messages; never restart a count. Do not add commentary, \
+advice or facts that are not in the messages.";
+
+/// What the host is asked to summarize, built by the kernel so every SDK sends the same request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SummaryRequest {
+    /// The compaction tier label (`context_collapse` / `auto_compact`).
+    pub action: &'static str,
+    pub instructions: String,
+    pub transcript: String,
+    pub max_tokens: u32,
+    pub archived_count: u32,
+    /// The rule summary in place now.
+    pub fallback: String,
+}
+
+impl SummaryRequest {
+    /// The request for the range `archived` a `action` compaction just took out, given the summary
+    /// that covered the range before it (`previous`) and the rule summary now in place.
+    pub fn build(
+        archived: &[CoreMessage],
+        previous: Option<&str>,
+        fallback: &str,
+        action: PressureAction,
+        engine: &ContextTokenEngine,
+    ) -> Self {
+        let lines: Vec<String> = archived.iter().map(transcript_line).collect();
+        // Newest first until the budget is spent, then back into order.
+        let mut kept = Vec::new();
+        let mut used = 0u32;
+        for line in lines.iter().rev() {
+            let tokens = engine.count(line);
+            if used.saturating_add(tokens) > SUMMARY_TRANSCRIPT_MAX_TOKENS && !kept.is_empty() {
+                break;
+            }
+            used = used.saturating_add(tokens);
+            kept.push(line.as_str());
+        }
+        kept.reverse();
+        let mut transcript = String::new();
+        if let Some(previous) = previous.filter(|text| !text.trim().is_empty()) {
+            transcript.push_str("Previous summary (covers everything before these messages):\n");
+            transcript.push_str(previous.trim());
+            transcript.push_str("\n\n");
+        }
+        let omitted = lines.len() - kept.len();
+        transcript.push_str("Messages to summarize, oldest first:\n");
+        if omitted > 0 {
+            transcript.push_str(&format!("({omitted} earlier messages omitted)\n"));
+        }
+        transcript.push_str(&kept.join("\n"));
+        Self {
+            action: action.label(),
+            instructions: format!(
+                "{SUMMARY_INSTRUCTIONS} Stay under {MODEL_SUMMARY_MAX_TOKENS} tokens."
+            ),
+            transcript,
+            max_tokens: MODEL_SUMMARY_MAX_TOKENS,
+            archived_count: archived.len() as u32,
+            fallback: fallback.to_string(),
+        }
+    }
+}
+
+/// One message of a summary transcript: its role, its text, its tool calls, and the head of each
+/// tool result.
+fn transcript_line(message: &CoreMessage) -> String {
+    let role = match message.role {
+        crate::types::message::Role::System => "system",
+        crate::types::message::Role::User => "user",
+        crate::types::message::Role::Assistant => "assistant",
+        crate::types::message::Role::Tool => "tool",
+    };
+    let mut parts: Vec<String> = Vec::new();
+    match &message.content {
+        Content::Text(text) if !text.trim().is_empty() => parts.push(text.trim().to_string()),
+        Content::Text(_) => {}
+        Content::Parts(items) => {
+            for part in items {
+                match part {
+                    ContentPart::Text { text } if !text.trim().is_empty() => {
+                        parts.push(text.trim().to_string())
+                    }
+                    ContentPart::ToolResult {
+                        call_id,
+                        output,
+                        is_error,
+                        ..
+                    } => parts.push(format!(
+                        "[{} {call_id}] {}",
+                        if *is_error { "error" } else { "result" },
+                        compact(output, TRANSCRIPT_TOOL_RESULT_CHARS)
+                    )),
+                    _ => {}
+                }
+            }
+        }
+    }
+    for call in &message.tool_calls {
+        parts.push(format!("-> {}({})", call.name, call.arguments));
+    }
+    format!("{role}: {}", parts.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +496,61 @@ mod tests {
             RuleSummarizer.summarize(&[message], &[], PressureAction::AutoCompact, 0),
             ""
         );
+    }
+
+    #[test]
+    fn summary_request_keeps_the_newest_messages_and_the_previous_summary() {
+        let engine = ContextTokenEngine::char_approx();
+        let mut messages: Vec<CoreMessage> = (0..400)
+            .map(|n| CoreMessage::assistant(format!("note {n}: {}", "x".repeat(400))))
+            .collect();
+        messages.push(CoreMessage::assistant("7 matches so far, through svc-12"));
+        let request = SummaryRequest::build(
+            &messages,
+            Some("3 matches in svc-01..svc-05"),
+            "[Compressed: auto_compact]",
+            PressureAction::AutoCompact,
+            &engine,
+        );
+        assert_eq!(request.action, "auto_compact");
+        assert_eq!(request.archived_count, 401);
+        assert_eq!(request.max_tokens, MODEL_SUMMARY_MAX_TOKENS);
+        assert!(request.transcript.starts_with("Previous summary"));
+        assert!(request.transcript.contains("3 matches in svc-01..svc-05"));
+        assert!(
+            request
+                .transcript
+                .ends_with("assistant: 7 matches so far, through svc-12")
+        );
+        assert!(request.transcript.contains("earlier messages omitted"));
+        assert!(!request.transcript.contains("note 0:"));
+        assert!(engine.count(&request.transcript) <= SUMMARY_TRANSCRIPT_MAX_TOKENS + 200);
+    }
+
+    #[test]
+    fn summary_transcript_shows_calls_and_cuts_tool_results() {
+        let mut call = CoreMessage::assistant("reading the next log");
+        call.tool_calls.push(ToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "logs/svc-01.log"}),
+        });
+        let result = CoreMessage::tool(vec![ContentPart::ToolResult {
+            call_id: "call-1".into(),
+            output: "y".repeat(5_000),
+            is_error: false,
+            durable_content: None,
+        }]);
+        let request = SummaryRequest::build(
+            &[call, result],
+            None,
+            "",
+            PressureAction::ContextCollapse,
+            &ContextTokenEngine::char_approx(),
+        );
+        assert!(!request.transcript.contains("Previous summary"));
+        assert!(request.transcript.contains("-> read_file("));
+        assert!(request.transcript.contains("[result call-1] "));
+        assert!(!request.transcript.contains(&"y".repeat(1_600)));
     }
 }

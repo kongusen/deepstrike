@@ -435,6 +435,13 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
     return KernelRunnerAction(kind="load_payload", effect_id=effect_id,
                               handle_id=str(effect.get("handle_id") or ""),
                               payload_ref=str(effect.get("payload_ref") or ""))
+  if kind == "summarize_context":
+    return KernelRunnerAction(kind="summarize_context", effect_id=effect_id,
+                              action=str(effect.get("action") or ""),
+                              instructions=str(effect.get("instructions") or ""),
+                              transcript=str(effect.get("transcript") or ""),
+                              max_tokens=int(effect.get("max_tokens") or 0),
+                              archived_count=int(effect.get("archived_count") or 0))
   if kind == "evaluate_milestone":
     request = _object(effect.get("request"))
     return KernelRunnerAction(kind="evaluate_milestone", effect_id=effect_id,
@@ -476,6 +483,7 @@ class CanonicalRunnerRuntime:
     max_wall_ms: int | None = None,
     memory_binding_id: str = "python-memory",
     persist_payload: Any = None,
+    summarize_context: bool = False,
   ) -> None:
     self.host = CanonicalKernelHost(kernel, journal, operation_id)
     self._config: dict[str, Any] = {
@@ -489,6 +497,8 @@ class CanonicalRunnerRuntime:
         "call_provider", "execute_tools", "request_approval", "spawn_tasks",
         "preempt_tasks", "persist_memory", "query_memory", "archive_page_out",
         "load_payload", "evaluate_milestone",
+        # Plan task 8.4 · optional: range compactions ask the runner's model for their summary.
+        *(["summarize_context"] if summarize_context else []),
       ]},
       "kernel_limits": {
         "max_json_depth": 64,
@@ -881,6 +891,11 @@ class CanonicalRunnerRuntime:
                                          "payload": event.get("payload")})
     if kind == "payload_load_failed":
       return await self._failed(event, "storage_unavailable", str(event.get("error") or "payload load failed"), True)
+    if kind == "context_summary_result":
+      # Plan task 8.4 · a failure keeps the kernel's rule summary.
+      if event.get("error") is not None:
+        return await self._failed(event, "transport_exhausted", str(event["error"]), True)
+      return await self._resolve(event, {"kind": "context_summarized", "summary": str(event.get("summary") or "")})
     if kind == "deliver_signal":
       return await self._commit({"kind": "deliver_external_event", "event": self._signal(event)})
     if kind == "add_knowledge_message":

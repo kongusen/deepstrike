@@ -227,6 +227,17 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
       payloadRef: String(payload.payload_ref ?? ""),
     }
   }
+  if (action.kind === "summarize_context") {
+    return {
+      kind: "summarize_context",
+      effectId,
+      action: String(payload.action ?? ""),
+      instructions: String(payload.instructions ?? ""),
+      transcript: String(payload.transcript ?? ""),
+      maxTokens: Number(payload.max_tokens ?? 0),
+      archivedCount: Number(payload.archived_count ?? 0),
+    }
+  }
   if (action.kind === "evaluate_milestone") {
     // The kernel ABI carries only the phase identity (config.rs `MilestonePhase`); criteria,
     // evidence and verifier are host data the runner resolves from its own contract by `phaseId`.
@@ -608,6 +619,9 @@ export interface CanonicalRunnerRuntimeOptions {
   maxTotalTokens?: number
   maxWallMs?: number
   memoryBindingId?: string
+  /** Plan task 8.4 · declare `summarize_context`: range compactions ask the runner's model for
+   *  their summary. */
+  summarizeContext?: boolean
   persistPayload?: (callId: string, content: string, previewBytes: number) => Promise<{
     payloadRef: string
     digest: string
@@ -979,6 +993,7 @@ export class CanonicalRunnerRuntime {
           "archive_page_out",
           "load_payload",
           "evaluate_milestone",
+          ...(options.summarizeContext ? ["summarize_context"] : []),
         ],
       },
       kernel_limits: {
@@ -1495,6 +1510,12 @@ export class CanonicalRunnerRuntime {
         break
       case "payload_load_failed":
         input = this.failedEffect(event, "storage_unavailable", String(event.error ?? "payload load failed"), true)
+        break
+      case "context_summary_result":
+        // Plan task 8.4 · a failure keeps the kernel's rule summary.
+        input = event.error !== undefined
+          ? this.failedEffect(event, "transport_exhausted", String(event.error), true)
+          : this.succeededEffect(event, { kind: "context_summarized", summary: String(event.summary ?? "") })
         break
       case "cancel_operation":
         input = {

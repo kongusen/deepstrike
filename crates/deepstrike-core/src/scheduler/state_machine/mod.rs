@@ -151,6 +151,10 @@ pub enum LoopAction {
         verifier: Option<crate::types::milestone::MilestoneVerifier>,
         required_evidence: Vec<String>,
     },
+    /// Plan task 8.4 · ask the host's model for the summary of a range a compaction just archived.
+    SummarizeContext {
+        request: crate::context::summarizer::SummaryRequest,
+    },
     /// Kernel is suspended awaiting a non-approval internal continuation.
     AwaitingResume,
 }
@@ -184,11 +188,20 @@ pub(super) enum PendingHostEffect {
         archived: Vec<CoreMessage>,
         tier: String,
     },
+    /// Plan task 8.4 · held until the host answers; a failure keeps the rule summary.
+    SummarizeContext {
+        summary: crate::context::manager::CompactionSummary,
+        action: crate::context::pressure::PressureAction,
+        request: crate::context::summarizer::SummaryRequest,
+    },
 }
 
 impl PendingHostEffect {
     fn action(&self) -> LoopAction {
         match self {
+            Self::SummarizeContext { request, .. } => LoopAction::SummarizeContext {
+                request: request.clone(),
+            },
             Self::ArchivePageOut {
                 turn,
                 action,
@@ -402,6 +415,9 @@ pub struct LoopStateMachine {
     /// transition. The normal continuation is held until every effect commits.
     pub(super) pending_host_effects: VecDeque<PendingHostEffect>,
     pub(super) active_host_effect: Option<PendingHostEffect>,
+    /// Plan task 8.4 · the host declared `summarize_context`: range compactions ask its model for
+    /// their summary.
+    pub(super) summarize_context: bool,
     pub(super) deferred_action: Option<Box<LoopAction>>,
     /// O6: repeat-fuse thresholds (the hard rungs above the 2c soft STOP). Default enabled with
     /// generous thresholds; tune/disable via `SetRepeatFuse` / `ConfigureRun.repeat_fuse`.
@@ -490,6 +506,7 @@ impl LoopStateMachine {
             pending_workflow_spawn: None,
             pending_preempt: None,
             pending_host_effects: VecDeque::new(),
+            summarize_context: false,
             active_host_effect: None,
             deferred_action: None,
             repeat_fuse: RepeatFuseConfig::default(),
@@ -679,7 +696,10 @@ impl LoopStateMachine {
             summary,
             archived,
             tier,
-        } = pending;
+        } = pending
+        else {
+            panic!("page-out result requires an active page-out effect");
+        };
         self.observations.push(KernelObservation::PageOutArchived {
             turn: *turn,
             action: *action,
@@ -716,7 +736,10 @@ impl LoopStateMachine {
             archived,
             tier,
             ..
-        } = pending;
+        } = pending
+        else {
+            panic!("page-out failure requires an active page-out effect");
+        };
         self.observations
             .push(KernelObservation::PageOutArchiveFailed {
                 turn: *turn,
@@ -725,6 +748,29 @@ impl LoopStateMachine {
                 message_count: archived.len() as u32,
                 error,
             });
+    }
+
+    /// Plan task 8.4 · whether range compactions ask the host's model for their summary.
+    pub fn set_summarize_context(&mut self, enabled: bool) {
+        self.summarize_context = enabled;
+    }
+
+    /// Plan task 8.4 · put the model's summary in place of the rule summary, and release the
+    /// continuation the request was holding.
+    pub(crate) fn commit_context_summary(&mut self, text: &str) -> LoopAction {
+        if let Some(PendingHostEffect::SummarizeContext {
+            summary, action, ..
+        }) = self.active_host_effect.take()
+        {
+            self.ctx.replace_compaction_summary(&summary, text, action);
+        }
+        self.next_after_host_effect()
+    }
+
+    /// Plan task 8.4 · the host could not summarize: the rule summary already in place stays.
+    pub(crate) fn abandon_context_summary(&mut self) -> LoopAction {
+        self.active_host_effect = None;
+        self.next_after_host_effect()
     }
 
     /// O6: tune or disable the repeat fuse (see [`RepeatFuseConfig`]).
@@ -1842,6 +1888,7 @@ impl LoopStateMachine {
             prefix_breaks: metrics.prefix_breaks,
             prefix_breaks_omitted: metrics.prefix_breaks_omitted,
             cache_tail_tokens: metrics.cache_tail_tokens,
+            model_summaries: metrics.model_summaries,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,

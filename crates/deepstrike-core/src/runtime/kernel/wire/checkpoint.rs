@@ -635,6 +635,9 @@ pub struct ContextVmState {
     /// Plan task 8.0 · the last request's prefix fingerprint and the prefix breaks so far.
     #[serde(default, skip_serializing_if = "is_default_ledger")]
     pub cache_ledger: crate::context::cache_ledger::CacheLedger,
+    /// Plan task 8.4 · compaction summaries a model wrote so far.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub model_summaries: u32,
     /// Knowledge keys a boundary sweep removed, for regret counting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evicted_knowledge_keys: Vec<String>,

@@ -169,7 +169,9 @@ export function recordingSessionLog(inner) {
 /** One trial line from a task run's recorded session events. */
 export function trialFrom({ scenario, variant, task, success, error, provider, events, model }) {
   const attempts = events.filter(event => event.kind === "provider_attempt")
-  const usage = attempts.map(attempt => attempt.usage).filter(Boolean)
+  // Plan task 8.4 · a model-written summary is a provider call of its own: it costs like one.
+  const summaries = events.filter(event => event.kind === "context_summarized")
+  const usage = [...attempts, ...summaries].map(attempt => attempt.usage).filter(Boolean)
   const sum = key => usage.reduce((total, entry) => total + (Number(entry[key]) || 0), 0)
   const observedByEffect = new Map(attempts
     .filter(attempt => attempt.usage?.inputTokens)
@@ -196,7 +198,7 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
       output_tokens: sum("outputTokens"),
       cache_read_tokens: sum("cacheReadInputTokens"),
       cache_write_tokens: sum("cacheCreationInputTokens"),
-      requests: requestCosts(attempts),
+      requests: [...requestCosts(attempts), ...summaryCosts(summaries)],
     },
     token_estimates: tokenEstimates,
     ...(provider.trace?.length ? { trace: provider.trace } : {}),
@@ -216,6 +218,20 @@ function requestCosts(attempts) {
       cache_read_tokens: Number(attempt.usage.cacheReadInputTokens) || 0,
       cache_write_tokens: Number(attempt.usage.cacheCreationInputTokens) || 0,
       output_tokens: Number(attempt.usage.outputTokens) || 0,
+    }))
+}
+
+/** Plan task 8.4 · each summary call as a request of its own run: it shares no prefix with the
+ *  agent's requests, so its whole input is uncached unless the provider says otherwise. */
+function summaryCosts(summaries) {
+  return summaries
+    .filter(summary => summary.usage)
+    .map(summary => ({
+      run: `summary:${summary.effect_id}`,
+      input_tokens: Number(summary.usage.inputTokens) || 0,
+      cache_read_tokens: Number(summary.usage.cacheReadInputTokens) || 0,
+      cache_write_tokens: Number(summary.usage.cacheCreationInputTokens) || 0,
+      output_tokens: Number(summary.usage.outputTokens) || 0,
     }))
 }
 

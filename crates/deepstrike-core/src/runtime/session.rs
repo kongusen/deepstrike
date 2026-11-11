@@ -278,6 +278,9 @@ pub enum SessionEvent {
         /// never reusable and not a break, but part of a provider's uncached input count.
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
         cache_tail_tokens: u64,
+        /// Plan task 8.4 · compaction summaries a model wrote through `summarize_context`.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        model_summaries: u32,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).
@@ -455,6 +458,22 @@ pub enum SessionEvent {
         effect_id: String,
         error: String,
     },
+    /// Plan task 8.4 · one `summarize_context` model call: its reply, or why the rule summary
+    /// stayed. `usage` is the provider's count for the call (camelCase keys, as in
+    /// `provider_attempt`).
+    ContextSummarized {
+        effect_id: String,
+        action: String,
+        archived_count: u32,
+        /// `success` or `failed`.
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<serde_json::Value>,
+    },
     /// Memory retrieval result (SDK → kernel via Resume or other async mechanism).
     MemoryRetrievalResult {
         hits: Vec<crate::mm::memory::MemoryRecall>,
@@ -531,6 +550,7 @@ impl SessionEvent {
         "semantic_archive_pending",
         "semantic_archive_completed",
         "semantic_archive_failed",
+        "context_summarized",
         "memory_retrieval_result",
         "memory_candidate_pending",
         "memory_candidate_rejected",
@@ -619,6 +639,7 @@ impl SessionEvent {
             Self::SemanticArchivePending { .. } => "semantic_archive_pending",
             Self::SemanticArchiveCompleted { .. } => "semantic_archive_completed",
             Self::SemanticArchiveFailed { .. } => "semantic_archive_failed",
+            Self::ContextSummarized { .. } => "context_summarized",
             Self::MemoryRetrievalResult { .. } => "memory_retrieval_result",
             Self::MemoryCandidatePending { .. } => "memory_candidate_pending",
             Self::MemoryCandidateRejected { .. } => "memory_candidate_rejected",
@@ -660,6 +681,7 @@ impl SessionEvent {
                 | Self::SemanticArchivePending { .. }
                 | Self::SemanticArchiveCompleted { .. }
                 | Self::SemanticArchiveFailed { .. }
+                | Self::ContextSummarized { .. }
                 | Self::MemoryCandidatePending { .. }
                 | Self::MemoryCandidateRejected { .. }
         )

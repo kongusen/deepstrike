@@ -37,7 +37,7 @@ export interface ContextItemRecord {
   /** The item's id, shared with history items and item-graph edges. */
   id?: number
   key?: string
-  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary"
+  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary" | "summary"
   tokens: number
   value: {
     injected_turn: number
@@ -175,6 +175,8 @@ export type SessionEvent =
       prefix_breaks_omitted?: number
       /** State-turn tokens of every request a later one followed: never reusable, so not a break, but part of a provider's uncached input count. */
       cache_tail_tokens?: number
+      /** Plan task 8.4 · compaction summaries a model wrote (the other `summary` items are rule-written). */
+      model_summaries?: number
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }
@@ -285,6 +287,17 @@ export type SessionEvent =
     }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
+  /** Plan task 8.4 · one `summarize_context` model call: its reply, or why the rule summary stayed. */
+  | {
+      kind: "context_summarized"
+      effect_id: string
+      action: string
+      archived_count: number
+      status: "success" | "failed"
+      summary?: string
+      error?: string
+      usage?: { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }
+    }
   // L1 (RunGroup): group-ledger events, appended under a group-anchor key (= the group id) so the
   // governance domain's cumulative budget + membership (lineage) persist and rebuild by fold-on-read.
   | { kind: "group_member_joined"; session_id: string; role?: string; member_kind?: "peer" | "vehicle" }

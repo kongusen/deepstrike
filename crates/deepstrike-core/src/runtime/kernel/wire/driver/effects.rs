@@ -336,6 +336,14 @@ impl CanonicalOperationDriver {
             EffectSuccess::PayloadLoaded(loaded) => {
                 self.commit_payload_load(context, effect_id, loaded)
             }
+            // Plan task 8.4 · the model's summary takes the rule summary's place.
+            EffectSuccess::ContextSummarized(summarized) => {
+                let root_kind = self.require_root_kind()?;
+                let action = self
+                    .engine_mut()?
+                    .commit_context_summary(&summarized.summary);
+                self.continue_after(context, action, root_kind)
+            }
         }
     }
 
@@ -542,6 +550,12 @@ impl CanonicalOperationDriver {
                 let mut step = self.continue_after(context, action, root_kind)?;
                 step.focus = self.focus.clone();
                 Ok(step)
+            }
+            // Plan task 8.4 · keep the rule summary already in place and go on.
+            EffectKindTag::SummarizeContext => {
+                let root_kind = self.require_root_kind()?;
+                let action = self.engine_mut()?.abandon_context_summary();
+                self.continue_after(context, action, root_kind)
             }
             // Abandon the archive: its compaction already happened in this kernel, so the run stays
             // live and degraded rather than dying on a best-effort durability effect.

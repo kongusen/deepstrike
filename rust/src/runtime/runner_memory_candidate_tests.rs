@@ -228,6 +228,7 @@ fn harness_with_hits(
         on_turn_metrics: None,
         stable_core_tool_ids: vec![],
         on_milestone_evaluate: None,
+        model_summaries: None,
     });
     Harness {
         runner,
@@ -489,6 +490,7 @@ async fn the_kernel_candidate_observation_is_projected_into_the_session_log() {
                 max_wall_ms: None,
                 memory_binding_id: "memory".into(),
                 persist_payload: None,
+                summarize_context: false,
             },
         )
         .unwrap(),

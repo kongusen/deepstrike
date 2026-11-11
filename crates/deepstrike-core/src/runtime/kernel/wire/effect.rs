@@ -259,6 +259,9 @@ pub enum EffectKind {
     /// to it instead of scanning a session log for the original bytes (§7.10 rule 4).
     LoadPayload(LoadPayloadEffect),
     EvaluateMilestone(EvaluateMilestoneEffect),
+    /// Plan task 8.4 · write the summary of a range compaction just archived. Optional: published
+    /// only to a host that declares it; a failure keeps the rule summary already in place.
+    SummarizeContext(SummarizeContextEffect),
 }
 
 impl EffectKind {
@@ -274,6 +277,7 @@ impl EffectKind {
             Self::ArchivePageOut(_) => EffectKindTag::ArchivePageOut,
             Self::LoadPayload(_) => EffectKindTag::LoadPayload,
             Self::EvaluateMilestone(_) => EffectKindTag::EvaluateMilestone,
+            Self::SummarizeContext(_) => EffectKindTag::SummarizeContext,
         }
     }
 }
@@ -297,10 +301,11 @@ pub enum EffectKindTag {
     ArchivePageOut,
     LoadPayload,
     EvaluateMilestone,
+    SummarizeContext,
 }
 
 impl EffectKindTag {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::CallProvider,
         Self::ExecuteTools,
         Self::RequestApproval,
@@ -311,6 +316,7 @@ impl EffectKindTag {
         Self::ArchivePageOut,
         Self::LoadPayload,
         Self::EvaluateMilestone,
+        Self::SummarizeContext,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -325,6 +331,7 @@ impl EffectKindTag {
             Self::ArchivePageOut => "archive_page_out",
             Self::LoadPayload => "load_payload",
             Self::EvaluateMilestone => "evaluate_milestone",
+            Self::SummarizeContext => "summarize_context",
         }
     }
 
@@ -341,6 +348,7 @@ impl EffectKindTag {
             Self::ArchivePageOut => EffectSuccessTag::PageOutArchived,
             Self::LoadPayload => EffectSuccessTag::PayloadLoaded,
             Self::EvaluateMilestone => EffectSuccessTag::MilestoneEvaluated,
+            Self::SummarizeContext => EffectSuccessTag::ContextSummarized,
         }
     }
 }
@@ -424,6 +432,26 @@ pub struct LoadPayloadEffect {
 #[serde(deny_unknown_fields)]
 pub struct EvaluateMilestoneEffect {
     pub request: MilestoneRequest,
+}
+
+/// Plan task 8.4 · the host asks a model for a summary of what a compaction archived.
+///
+/// The kernel writes everything the call needs: the host sends `instructions` as the system prompt
+/// and `transcript` as the one user message, caps the reply at `max_tokens`, and returns the text.
+/// The kernel has already written its rule summary (`fallback`); a failure keeps it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SummarizeContextEffect {
+    /// The compaction tier that archived the range (`context_collapse` or `auto_compact`).
+    pub action: String,
+    pub instructions: String,
+    pub transcript: String,
+    pub max_tokens: u32,
+    /// Items the range covered, oldest first.
+    pub archived_count: u32,
+    /// The rule summary in place now, kept if the host fails.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fallback: String,
 }
 
 /// What the kernel rendered for one provider call.
@@ -770,6 +798,7 @@ pub enum EffectSuccess {
     PageOutArchived(PageOutArchivedSuccess),
     PayloadLoaded(PayloadLoadedSuccess),
     MilestoneEvaluated(MilestoneEvaluatedSuccess),
+    ContextSummarized(ContextSummarizedSuccess),
 }
 
 impl EffectSuccess {
@@ -785,6 +814,7 @@ impl EffectSuccess {
             Self::PageOutArchived(_) => EffectSuccessTag::PageOutArchived,
             Self::PayloadLoaded(_) => EffectSuccessTag::PayloadLoaded,
             Self::MilestoneEvaluated(_) => EffectSuccessTag::MilestoneEvaluated,
+            Self::ContextSummarized(_) => EffectSuccessTag::ContextSummarized,
         }
     }
 }
@@ -803,10 +833,11 @@ pub enum EffectSuccessTag {
     PageOutArchived,
     PayloadLoaded,
     MilestoneEvaluated,
+    ContextSummarized,
 }
 
 impl EffectSuccessTag {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Provider,
         Self::Tools,
         Self::Approval,
@@ -817,6 +848,7 @@ impl EffectSuccessTag {
         Self::PageOutArchived,
         Self::PayloadLoaded,
         Self::MilestoneEvaluated,
+        Self::ContextSummarized,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -831,6 +863,7 @@ impl EffectSuccessTag {
             Self::PageOutArchived => "page_out_archived",
             Self::PayloadLoaded => "payload_loaded",
             Self::MilestoneEvaluated => "milestone_evaluated",
+            Self::ContextSummarized => "context_summarized",
         }
     }
 
@@ -848,6 +881,7 @@ impl EffectSuccessTag {
             Self::PageOutArchived => EffectKindTag::ArchivePageOut,
             Self::PayloadLoaded => EffectKindTag::LoadPayload,
             Self::MilestoneEvaluated => EffectKindTag::EvaluateMilestone,
+            Self::ContextSummarized => EffectKindTag::SummarizeContext,
         }
     }
 }
@@ -1168,6 +1202,14 @@ pub struct MilestoneEvaluatedSuccess {
     pub result: MilestoneCheckResult,
 }
 
+/// Plan task 8.4 · the model's summary. The kernel caps it at the request's `max_tokens`; an empty
+/// summary keeps the rule summary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextSummarizedSuccess {
+    pub summary: String,
+}
+
 /// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
 /// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
 /// only legal crossing is the driver's exhaustive conversion.
@@ -1484,10 +1526,7 @@ mod tests {
             parameters: BoundedJson::null(),
         }];
         vec![
-            EffectKind::CallProvider(CallProviderEffect {
-                context,
-                tools,
-            }),
+            EffectKind::CallProvider(CallProviderEffect { context, tools }),
             EffectKind::ExecuteTools(ExecuteToolsEffect {
                 calls: vec![ToolCall {
                     call_id: call_id("call-1"),
@@ -1561,6 +1600,14 @@ mod tests {
                     contract_id: "brief-quality-primary".to_string(),
                     phase_id: "phase-2".to_string(),
                 },
+            }),
+            EffectKind::SummarizeContext(SummarizeContextEffect {
+                action: "auto_compact".to_string(),
+                instructions: "Summarize.".to_string(),
+                transcript: "user: hello".to_string(),
+                max_tokens: 800,
+                archived_count: 1,
+                fallback: String::new(),
             }),
         ]
     }
@@ -1674,6 +1721,9 @@ mod tests {
                     notes: String::new(),
                 },
             }),
+            EffectSuccess::ContextSummarized(ContextSummarizedSuccess {
+                summary: "the run so far".to_string(),
+            }),
         ]
     }
 
@@ -1690,7 +1740,7 @@ mod tests {
     // -----------------------------------------------------------------------------------------
 
     #[test]
-    fn the_effect_union_is_exactly_the_ten_host_executable_actions() {
+    fn the_effect_union_is_exactly_the_eleven_host_executable_actions() {
         let tags: BTreeSet<&str> = EffectKindTag::ALL.iter().map(|tag| tag.as_str()).collect();
         assert_eq!(
             tags,
@@ -1705,9 +1755,10 @@ mod tests {
                 "archive_page_out",
                 "load_payload",
                 "evaluate_milestone",
+                "summarize_context",
             ])
         );
-        assert_eq!(EffectKindTag::ALL.len(), 10);
+        assert_eq!(EffectKindTag::ALL.len(), 11);
 
         let sampled: Vec<EffectKindTag> = effect_samples().iter().map(EffectKind::tag).collect();
         assert_eq!(

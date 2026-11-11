@@ -405,6 +405,19 @@ class RuntimeOptions:
   # Optional lease/budget store. Only physical memory_store.put writes consume it; candidate-sink
   # submissions are not metered, since the host's review decides what is stored.
   memory_lifecycle: Any | None = None
+  # Plan task 8.4 · write the summary of each range compaction with a model, through the kernel's
+  # ``summarize_context`` effect: the reply replaces the rule summary in the task state before the
+  # next provider call, and the call is recorded as a ``context_summarized`` session event. Off by
+  # default. ``True`` uses the run's provider; a ``ModelSummaryOptions`` picks another or a timeout.
+  # A failure or timeout keeps the rule summary.
+  model_summaries: "bool | ModelSummaryOptions" = False
+
+
+@dataclass
+class ModelSummaryOptions:
+  """Plan task 8.4 · how the runner answers ``summarize_context``."""
+  provider: LLMProvider | None = None
+  timeout_ms: int = 60_000
 
 
 OperationCancellationReason = Literal["user", "deadline", "lease_lost", "host_shutdown"]
@@ -627,7 +640,47 @@ class RuntimeRunner:
       max_wall_ms=self._opts.timeout_ms,
       memory_binding_id=f"python-memory-{self._opts.agent_id or 'root'}",
       persist_payload=persist_payload,
+      summarize_context=bool(self._opts.model_summaries),
     )
+
+  async def _write_model_summary(self, action: KernelRunnerAction) -> dict[str, Any]:
+    """Plan task 8.4 · one model call for the kernel's ``summarize_context`` effect."""
+    options = self._opts.model_summaries if isinstance(self._opts.model_summaries, ModelSummaryOptions) \
+      else ModelSummaryOptions()
+    provider = options.provider or self._opts.provider
+    context = RenderedContext(
+      system_text=action.instructions or "",
+      system_stable=action.instructions or "",
+      turns=[ModelMessage(role="user", content=action.transcript or "")],
+    )
+    usage: dict[str, int] = {}
+
+    async def call() -> str:
+      text = ""
+      async for event in provider.stream(context, []):
+        kind = getattr(event, "type", "")
+        if kind == "text_delta":
+          text += getattr(event, "delta", "")
+        elif kind == "usage":
+          for wire, attr in (("inputTokens", "input_tokens"), ("outputTokens", "output_tokens"),
+                             ("cacheReadInputTokens", "cache_read_input_tokens"),
+                             ("cacheCreationInputTokens", "cache_creation_input_tokens")):
+            value = getattr(event, attr, None)
+            if isinstance(value, int):
+              usage[wire] = value
+        elif kind == "error":
+          raise RuntimeError(getattr(event, "message", "") or "summary call failed")
+      return text
+
+    try:
+      text = (await asyncio.wait_for(call(), options.timeout_ms / 1000)).strip()
+    except asyncio.TimeoutError:
+      return {"error": f"summary timed out after {options.timeout_ms} ms", **({"usage": usage} if usage else {})}
+    except Exception as exc:  # noqa: BLE001 — every failure keeps the rule summary
+      return {"error": format_tool_error(exc), **({"usage": usage} if usage else {})}
+    if not text:
+      return {"error": "the model returned an empty summary", **({"usage": usage} if usage else {})}
+    return {"summary": text, **({"usage": usage} if usage else {})}
 
   def _payload_store(self) -> Any:
     if self._opts.payload_store is not None:
@@ -3053,6 +3106,22 @@ class RuntimeRunner:
           "effect_id": action.effect_id,
           "approved_calls": approved,
           "denied_calls": denied,
+        })
+
+      elif action.kind == "summarize_context":
+        summary_effect_id = action.effect_id
+        outcome = await self._write_model_summary(action)
+        await self._opts.session_log.append(session_id, {
+          "kind": "context_summarized",
+          "effect_id": summary_effect_id,
+          "action": action.action or "",
+          "archived_count": action.archived_count or 0,
+          "status": "failed" if "error" in outcome else "success",
+          **outcome,
+        })
+        action = await action_host(runtime, self._pending_observations, {
+          "kind": "context_summary_result", "effect_id": summary_effect_id,
+          **({"error": outcome["error"]} if "error" in outcome else {"summary": outcome["summary"]}),
         })
 
       elif action.kind == "load_payload":

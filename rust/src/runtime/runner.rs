@@ -199,6 +199,21 @@ pub struct RuntimeOptions {
     /// exactly their declared tools + meta-tools. Opt-in: no skill declaring tools ⇒ never engages.
     pub stable_core_tool_ids: Vec<String>,
     pub on_milestone_evaluate: Option<MilestoneEvaluationHandler>,
+    /// Plan task 8.4 · write the summary of each range compaction with a model, through the
+    /// kernel's `summarize_context` effect: the reply replaces the rule summary in the task state
+    /// before the next provider call, and the call is recorded as a `context_summarized` session
+    /// event. `None` (the default) keeps the rule summary.
+    pub model_summaries: Option<ModelSummaryOptions>,
+}
+
+/// Plan task 8.4 · how the runner answers `summarize_context`. A failure or timeout keeps the rule
+/// summary.
+#[derive(Clone, Default)]
+pub struct ModelSummaryOptions {
+    /// The model that writes summaries. `None`: the run's provider.
+    pub provider: Option<Arc<dyn LLMProvider>>,
+    /// Give up after this long. `None`: 60 s.
+    pub timeout_ms: Option<u64>,
 }
 
 /// P0-A: compute the effective top-level run spec from an optional explicit `run_spec`, an optional
@@ -873,6 +888,7 @@ impl RuntimeRunner {
                     .clone()
                     .unwrap_or_else(|| format!("memory:{session_id}")),
                 persist_payload: Some(persist_payload),
+                summarize_context: self.opts.model_summaries.is_some(),
             },
         )?;
         if let Some(contract) = self.opts.milestone_contract.as_ref() {
@@ -2159,6 +2175,44 @@ impl RuntimeRunner {
                             }),
                         ).await?;
                     }
+                    HostEffect::SummarizeContext {
+                        action: compaction,
+                        instructions,
+                        transcript,
+                        archived_count,
+                        ..
+                    } => {
+                        let effect_id = action.effect_id.clone();
+                        let (summary, error, usage) = self
+                            .write_model_summary(instructions, transcript)
+                            .await;
+                        self.log(
+                            &session_id,
+                            SessionEvent::ContextSummarized {
+                                effect_id: effect_id.clone(),
+                                action: compaction.clone(),
+                                archived_count: *archived_count,
+                                status: if error.is_some() { "failed" } else { "success" }.into(),
+                                summary: summary.clone(),
+                                error: error.clone(),
+                                usage,
+                            },
+                        )
+                        .await;
+                        let event = match error {
+                            Some(error) => serde_json::json!({
+                                "kind": "context_summary_result",
+                                "effect_id": effect_id,
+                                "error": error,
+                            }),
+                            None => serde_json::json!({
+                                "kind": "context_summary_result",
+                                "effect_id": effect_id,
+                                "summary": summary.unwrap_or_default(),
+                            }),
+                        };
+                        action = kernel_action(&kernel, &mut pending_observations, event).await?;
+                    }
                     HostEffect::LoadPayload { handle_id, payload_ref } => {
                         let effect_id = action.effect_id.clone();
                         let content = self
@@ -2873,6 +2927,7 @@ impl RuntimeRunner {
             on_turn_metrics: opts.on_turn_metrics.clone(),
             stable_core_tool_ids: opts.stable_core_tool_ids.clone(),
             on_milestone_evaluate: opts.on_milestone_evaluate.clone(),
+            model_summaries: opts.model_summaries.clone(),
         }
     }
 
@@ -3046,6 +3101,66 @@ impl RuntimeRunner {
             log.read(session_id, 0, None).await.map_err(Error::Io)
         } else {
             Ok(Vec::new())
+        }
+    }
+
+    /// Plan task 8.4 · one model call for the kernel's `summarize_context` effect:
+    /// `(summary, error, usage)`, exactly one of the first two set.
+    async fn write_model_summary(
+        &self,
+        instructions: &str,
+        transcript: &str,
+    ) -> (Option<String>, Option<String>, Option<serde_json::Value>) {
+        let options = self.opts.model_summaries.clone().unwrap_or_default();
+        let context = rendered_context_from_messages(vec![
+            CoreMessage::system(instructions.to_string()),
+            CoreMessage::user(transcript.to_string()),
+        ]);
+        let mut usage = None;
+        let call = async {
+            let mut stream = match &options.provider {
+                Some(provider) => provider.stream(&context, &[], None, None).await?,
+                None => self.opts.provider.stream(&context, &[], None, None).await?,
+            };
+            let mut text = String::new();
+            while let Some(event) = stream.next().await {
+                match event? {
+                    StreamEvent::TextDelta { delta } => text.push_str(&delta),
+                    StreamEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        cache_read_input_tokens,
+                        cache_creation_input_tokens,
+                        ..
+                    } => {
+                        usage = Some(serde_json::json!({
+                            "inputTokens": input_tokens,
+                            "outputTokens": output_tokens,
+                            "cacheReadInputTokens": cache_read_input_tokens,
+                            "cacheCreationInputTokens": cache_creation_input_tokens,
+                        }));
+                    }
+                    StreamEvent::Done => break,
+                    _ => {}
+                }
+            }
+            crate::Result::Ok(text)
+        };
+        let timeout = std::time::Duration::from_millis(options.timeout_ms.unwrap_or(60_000));
+        let outcome = tokio::time::timeout(timeout, call).await;
+        match outcome {
+            Err(_) => (
+                None,
+                Some(format!("summary timed out after {} ms", timeout.as_millis())),
+                usage,
+            ),
+            Ok(Err(error)) => (None, Some(error.to_string()), usage),
+            Ok(Ok(text)) if text.trim().is_empty() => (
+                None,
+                Some("the model returned an empty summary".into()),
+                usage,
+            ),
+            Ok(Ok(text)) => (Some(text.trim().to_string()), None, usage),
         }
     }
 

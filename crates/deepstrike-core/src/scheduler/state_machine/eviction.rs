@@ -114,6 +114,26 @@ impl LoopStateMachine {
     ) {
         let rho_after = self.ctx.rho();
         let kernel_action = KernelPressureAction::from(action);
+        // Plan task 8.4 · a range compaction asks the host's model for its summary once the
+        // archive is committed, before the next provider call renders it.
+        let compaction_summary = self.ctx.take_compaction_summary();
+        let summarize = match compaction_summary {
+            Some(summary)
+                if self.summarize_context
+                    && matches!(
+                        action,
+                        PressureAction::ContextCollapse | PressureAction::AutoCompact
+                    ) =>
+            {
+                let request = self.ctx.summary_request(&summary, &archived, action);
+                Some(PendingHostEffect::SummarizeContext {
+                    summary,
+                    action,
+                    request,
+                })
+            }
+            _ => None,
+        };
         self.observations.push(KernelObservation::Compressed {
             turn: self.turn,
             action: kernel_action,
@@ -131,6 +151,9 @@ impl LoopStateMachine {
                     archived,
                     tier: tier_hint_for_compress(action).label().to_string(),
                 });
+        }
+        if let Some(effect) = summarize {
+            self.pending_host_effects.push_back(effect);
         }
         // K1: surface any boundary knowledge sweep that ran inside this compaction (an
         // in-place compaction can still have swept knowledge).

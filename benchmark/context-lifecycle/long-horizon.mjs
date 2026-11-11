@@ -3,7 +3,8 @@
 //
 //   node benchmark/context-lifecycle/long-horizon.mjs [--repo <checkout>] [--variant <name>]
 //        [--policy '<ContextPolicy overrides JSON>'] [--tasks N] [--start N] [--concurrency N]
-//        [--logs N] [--lines N] [--provider deepseek|openai] [--max-tokens N] [--out trials.jsonl]
+//        [--logs N] [--lines N] [--provider deepseek|openai] [--max-tokens N] [--model-summaries]
+//        [--out trials.jsonl]
 //
 // The model first reads `brief.md`, which holds the scoring rules and nothing else does: the error
 // code to count, request ids to skip, and — needed only for the final answer — a multiplier and an
@@ -35,6 +36,8 @@ const maxTokens = Number(arg("--max-tokens", "100000"))
 const LOGS = Number(arg("--logs", "40"))
 const LINES = Number(arg("--lines", "110"))
 const out = arg("--out")
+// Plan task 8.4 · `--model-summaries`: range compactions ask the run's model for their summary.
+const modelSummaries = process.argv.includes("--model-summaries")
 
 await loadEnv()
 const dist = sdk(repo)
@@ -182,6 +185,7 @@ async function runTask(index) {
     enablePlanTool: true,
     agentId: "incident-investigator",
     ...(Object.keys(policy).length ? { contextPolicy: policy } : {}),
+    ...(modelSummaries ? { modelSummaries: true } : {}),
   })
   const goal = "Investigate incident INC-7731. Read brief.md first: it defines how to score the incident. Then list the files and read every log under logs/, one file per read_file call, applying the brief's rules to each. Reply with the final incident score only, as an integer."
   let answer = ""
@@ -209,6 +213,9 @@ async function runTask(index) {
       brief_rereads: Math.max(0, briefReads - 1),
       compactions: recorder.events.filter(event => event.kind === "compressed").length,
       renewals: recorder.events.filter(event => event.kind === "context_renewed").length,
+      // Plan task 8.4 · summary calls, and those that fell back to the rule summary.
+      model_summaries: recorder.events.filter(event => event.kind === "context_summarized" && event.status === "success").length,
+      summary_fallbacks: recorder.events.filter(event => event.kind === "context_summarized" && event.status !== "success").length,
       ...answerOracles(t, answer),
     },
     expected: t.expected,

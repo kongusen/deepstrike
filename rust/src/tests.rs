@@ -596,6 +596,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -711,6 +712,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -843,6 +845,7 @@ mod tests {
             stable_core_tool_ids: vec!["bash".to_string()],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -971,6 +974,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -1213,6 +1217,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -1326,6 +1331,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -1420,6 +1426,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -1531,6 +1538,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: Some(verifier),
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -1724,6 +1732,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -1751,6 +1760,7 @@ mod tests {
                     max_wall_ms: None,
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
+                    summarize_context: false,
                 },
             )
             .unwrap(),
@@ -1878,6 +1888,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -2003,6 +2014,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -2175,6 +2187,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -2291,6 +2304,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -2358,6 +2372,7 @@ mod tests {
                     max_wall_ms: None,
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
+                    summarize_context: false,
                 },
             )
             .unwrap(),
@@ -2480,6 +2495,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -2589,6 +2605,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -2714,6 +2731,7 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            model_summaries: None,
             memory_runtime_policy: None,
             memory_candidate_sink: None,
         });
@@ -2905,6 +2923,7 @@ mod tests {
                 stable_core_tool_ids: vec![],
                 pre_query_memory: None,
                 on_milestone_evaluate: None,
+                model_summaries: None,
                 memory_runtime_policy: None,
                 memory_candidate_sink: None,
             }
@@ -3414,6 +3433,206 @@ mod tests {
             ));
             let error = runner.force_compact().await.expect_err("no active run");
             assert!(error.to_string().contains("requires an active run"));
+        }
+    }
+
+    /// Plan task 8.4 · the kernel's `summarize_context` effect, end to end on the Rust runner
+    /// (mirrors node/tests/model-summaries.test.ts).
+    mod model_summaries {
+        use crate::providers::{LLMProvider, ProviderRunState, StreamEvent};
+        use crate::runtime::{
+            InMemorySessionLog, LocalExecutionPlane, ModelSummaryOptions, RuntimeOptions,
+            RuntimeRunner, SessionLog,
+        };
+        use crate::tools::RegisteredTool;
+        use deepstrike_core::context::renderer::InternalRenderedContext;
+        use deepstrike_core::runtime::session::SessionEvent;
+        use deepstrike_core::types::message::ToolSchema;
+        use futures::StreamExt;
+        use std::sync::{Arc, Mutex};
+
+        const SUMMARY: &str = "MODEL SUMMARY: filled rows 1-6, 6 rows so far";
+
+        #[derive(Default)]
+        struct Script {
+            fail_summary: bool,
+            calls: Mutex<u32>,
+            summary_calls: Mutex<u32>,
+            states: Mutex<Vec<String>>,
+        }
+
+        struct ScriptedProvider(Arc<Script>);
+
+        #[async_trait::async_trait]
+        impl LLMProvider for ScriptedProvider {
+            async fn stream(
+                &self,
+                context: &InternalRenderedContext,
+                _tools: &[ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&ProviderRunState>,
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
+                let script = &self.0;
+                let events: Vec<crate::Result<StreamEvent>> =
+                    if context.system_stable.starts_with("You compress") {
+                        *script.summary_calls.lock().unwrap() += 1;
+                        if script.fail_summary {
+                            vec![Err(crate::Error::Provider(
+                                "model unreachable".into(),
+                            ))]
+                        } else {
+                            vec![
+                                Ok(StreamEvent::TextDelta { delta: SUMMARY.into() }),
+                                Ok(StreamEvent::Usage {
+                                    total_tokens: 120,
+                                    input_tokens: 100,
+                                    output_tokens: 20,
+                                    cache_read_input_tokens: 0,
+                                    cache_creation_input_tokens: 0,
+                                    cache_read_input_tokens_by_slot: None,
+                                    stop_reason: None,
+                                }),
+                            ]
+                        }
+                    } else {
+                        let call = {
+                            let mut calls = script.calls.lock().unwrap();
+                            *calls += 1;
+                            *calls
+                        };
+                        script.states.lock().unwrap().push(
+                            serde_json::to_string(&context.state_turn).unwrap_or_default(),
+                        );
+                        if call <= 12 {
+                            vec![
+                                Ok(StreamEvent::TextDelta {
+                                    delta: format!("row {call} filled; {call} rows so far. "),
+                                }),
+                                Ok(StreamEvent::ToolCall {
+                                    id: format!("c{call}"),
+                                    name: "fill".into(),
+                                    arguments: serde_json::json!({ "n": call }),
+                                }),
+                            ]
+                        } else {
+                            vec![Ok(StreamEvent::TextDelta { delta: "done".into() })]
+                        }
+                    };
+                Ok(Box::new(futures::stream::iter(events)))
+            }
+        }
+
+        async fn run(script: Arc<Script>, model_summaries: Option<ModelSummaryOptions>) -> Vec<SessionEvent> {
+            let mut plane = LocalExecutionPlane::new();
+            plane.register(RegisteredTool::text(
+                "fill",
+                "Fill one row",
+                serde_json::json!({ "type": "object", "properties": { "n": { "type": "number" } } }),
+                |_args| Box::pin(async { Ok("w".repeat(600)) }),
+            ));
+            let log = Arc::new(InMemorySessionLog::new());
+            let runner = RuntimeRunner::new(RuntimeOptions {
+                provider: Box::new(ScriptedProvider(script)),
+                execution_plane: Some(Box::new(plane)),
+                session_log: Some(log.clone()),
+                compression_store: None,
+                payload_store: None,
+                kernel_reliability: None,
+                session_id: Some("model-summaries".into()),
+                max_tokens: 1200,
+                max_turns: Some(30),
+                timeout_ms: None,
+                extensions: None,
+                agent_id: None,
+                memory_scope: None,
+                system_prompt: None,
+                initial_memory: vec![],
+                dependency_outputs: Default::default(),
+                inherited_knowledge: Vec::new(),
+                skill_dir: None,
+                memory_store: None,
+                knowledge_source: None,
+                signal_source: None,
+                governance: None,
+                os_profile: None,
+                governance_policy: None,
+                signal_policy: None,
+                scheduler_policy: None,
+                resource_quota: None,
+                memory_policy: None,
+                tokenizer: None,
+                enable_plan_tool: None,
+                on_tool_suspend: None,
+                on_permission_request: None,
+                milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+                milestone_contract: None,
+                run_spec: None,
+                allowed_tool_ids: None,
+                baseline_tool_ids: Some(vec!["fill".into()]),
+                on_turn_metrics: None,
+                stable_core_tool_ids: vec![],
+                pre_query_memory: None,
+                on_milestone_evaluate: None,
+                model_summaries,
+                memory_runtime_policy: None,
+                memory_candidate_sink: None,
+            });
+            let mut stream = runner.run_streaming("fill rows", &[], None, None).await.unwrap();
+            while stream.next().await.transpose().unwrap().is_some() {}
+            log.read("model-summaries", 0, None)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.event)
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn the_model_summary_replaces_the_rule_summary() {
+            let script = Arc::new(Script::default());
+            let events = run(script.clone(), Some(ModelSummaryOptions::default())).await;
+            let summary_calls = *script.summary_calls.lock().unwrap();
+            assert!(summary_calls > 0, "a range compaction asked for a summary");
+            let summarized: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    SessionEvent::ContextSummarized { status, summary, usage, .. } => {
+                        Some((status.clone(), summary.clone(), usage.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(summarized.len() as u32, summary_calls);
+            assert_eq!(summarized[0].0, "success");
+            assert_eq!(summarized[0].1.as_deref(), Some(SUMMARY));
+            assert_eq!(summarized[0].2.as_ref().unwrap()["inputTokens"], 100);
+            let states = script.states.lock().unwrap();
+            assert!(states.iter().any(|state| state.contains("model summary") && state.contains(SUMMARY)));
+        }
+
+        #[tokio::test]
+        async fn a_failed_summary_keeps_the_rule_summary() {
+            let script = Arc::new(Script { fail_summary: true, ..Default::default() });
+            let events = run(script.clone(), Some(ModelSummaryOptions::default())).await;
+            assert!(*script.summary_calls.lock().unwrap() > 0);
+            assert!(events.iter().any(|event| matches!(
+                event,
+                SessionEvent::ContextSummarized { status, error: Some(error), .. }
+                    if status == "failed" && error.contains("model unreachable")
+            )));
+            let states = script.states.lock().unwrap();
+            assert!(states.iter().any(|state| state.contains("[Compressed:")));
+            assert!(!states.iter().any(|state| state.contains("model summary")));
+        }
+
+        #[tokio::test]
+        async fn no_summary_is_asked_for_unless_enabled() {
+            let script = Arc::new(Script::default());
+            let events = run(script.clone(), None).await;
+            assert!(events.iter().any(|event| matches!(event, SessionEvent::Compressed { .. })));
+            assert_eq!(*script.summary_calls.lock().unwrap(), 0);
         }
     }
 }

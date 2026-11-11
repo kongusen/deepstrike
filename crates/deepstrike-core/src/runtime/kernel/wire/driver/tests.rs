@@ -12182,3 +12182,145 @@ fn a_dependency_output_is_read_in_full_through_read_result() {
     assert_eq!(kinds(&missing), vec![EffectKindTag::CallProvider]);
     assert!(history_text(&runtime).iter().any(|line| line.contains("no dependency output from wf-node9")));
 }
+
+// -----------------------------------------------------------------------------------------
+// plan task 8.4 · model-written compaction summaries
+// -----------------------------------------------------------------------------------------
+
+/// An agent whose overflow compaction archived a range, with the archive committed: what the
+/// kernel publishes next.
+fn agent_after_committed_archive(support: HostEffectSupport) -> (Runtime, PlannedStep) {
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(move |config| {
+        config.host_effect_support = support;
+    }));
+    let started = runtime.submit(&agent_start_with_history("in-start", 1_700_000_001_000, 14));
+    let provider = sole_effect(&started).effect_id.clone();
+    let compacted = runtime.submit(&provider_overflow(
+        "in-overflow",
+        1_700_000_002_000,
+        &provider,
+    ));
+    let archive = compacted
+        .published_effects()
+        .iter()
+        .find(|effect| effect.tag() == EffectKindTag::ArchivePageOut)
+        .expect("the compaction externalised its archive")
+        .clone();
+    let EffectKind::ArchivePageOut(published) = &archive.effect else {
+        panic!("expected a page-out archive");
+    };
+    let committed = runtime.submit(&resolved(
+        "in-archived",
+        1_700_000_003_000,
+        &archive.effect_id,
+        EffectSuccess::PageOutArchived(super::super::effect::PageOutArchivedSuccess {
+            receipt: ArchiveReceipt {
+                handle_id: published.handle_id.clone(),
+                payload_ref: PayloadRef::new("payload:archive-1").unwrap(),
+                digest: published.payload.digest.clone(),
+                original_size: published.payload.original_size,
+            },
+        }),
+    ));
+    (runtime, committed.step)
+}
+
+fn rendered_state(effect: &KernelEffect) -> String {
+    let EffectKind::CallProvider(call) = &effect.effect else {
+        panic!("expected a provider call, got {:?}", effect.tag());
+    };
+    serde_json::to_string(&call.context).unwrap()
+}
+
+#[test]
+fn a_declared_host_writes_the_compaction_summary_with_its_model() {
+    let (mut runtime, step) = agent_after_committed_archive(support_with([
+        EffectKindTag::ArchivePageOut,
+        EffectKindTag::SummarizeContext,
+    ]));
+    let effects = step.disposition.effects();
+    assert_eq!(effects.len(), 1);
+    let EffectKind::SummarizeContext(request) = &effects[0].effect else {
+        panic!("the committed archive releases the summary request, got {:?}", effects[0].tag());
+    };
+    assert_eq!(request.action, "auto_compact");
+    assert_eq!(
+        request.max_tokens,
+        crate::context::summarizer::MODEL_SUMMARY_MAX_TOKENS
+    );
+    assert!(request.archived_count > 0);
+    assert!(request.transcript.contains("Messages to summarize"));
+    assert!(request.fallback.starts_with("[Compressed: auto_compact]"));
+
+    let summarized = runtime.submit(&resolved(
+        "in-summarized",
+        1_700_000_004_000,
+        &effects[0].effect_id,
+        EffectSuccess::ContextSummarized(super::super::effect::ContextSummarizedSuccess {
+            summary: "7 matches so far, through svc-12".to_string(),
+        }),
+    ));
+    let call = sole_effect(&summarized);
+    let state = rendered_state(call);
+    assert!(state.contains("model summary"), "{state}");
+    assert!(state.contains("7 matches so far, through svc-12"), "{state}");
+
+    let engine = runtime.driver.engine().expect("the arc built an engine");
+    assert_eq!(engine.ctx.model_summaries, 1);
+    let summaries: Vec<_> = engine
+        .ctx
+        .graph
+        .edges()
+        .iter()
+        .filter(|edge| edge.relation == crate::context::item::Relation::Summarizes)
+        .collect();
+    assert_eq!(
+        summaries.len() as u32,
+        request.archived_count,
+        "the summary item names every item of the range it stands in for"
+    );
+}
+
+#[test]
+fn a_failed_summary_keeps_the_rule_summary() {
+    let (mut runtime, step) = agent_after_committed_archive(support_with([
+        EffectKindTag::ArchivePageOut,
+        EffectKindTag::SummarizeContext,
+    ]));
+    let request = step.disposition.effects()[0].effect_id.clone();
+    let fell_back = runtime.submit(&failed(
+        "in-summary-failed",
+        1_700_000_004_000,
+        &request,
+        HostEffectFailureKind::TransportExhausted,
+        "summary timed out",
+    ));
+    let state = rendered_state(sole_effect(&fell_back));
+    assert!(state.contains("[Compressed: auto_compact]"), "{state}");
+    assert!(!state.contains("model summary"), "{state}");
+    let engine = runtime.driver.engine().expect("the arc built an engine");
+    assert_eq!(engine.ctx.model_summaries, 0);
+    assert!(
+        engine
+            .ctx
+            .graph
+            .edges()
+            .iter()
+            .any(|edge| edge.relation == crate::context::item::Relation::Summarizes),
+        "the rule summary is an item with its own summarizes edges"
+    );
+}
+
+#[test]
+fn an_undeclared_host_is_never_asked_for_a_summary() {
+    let (_, step) = agent_after_committed_archive(support_with([EffectKindTag::ArchivePageOut]));
+    assert_eq!(
+        step.disposition
+            .effects()
+            .iter()
+            .map(KernelEffect::tag)
+            .collect::<Vec<_>>(),
+        vec![EffectKindTag::CallProvider]
+    );
+}

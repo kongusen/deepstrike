@@ -10,7 +10,7 @@ use super::driver::PlannedStep;
 use super::effect::{
     ArchivePageOutEffect, CallProviderEffect, EffectKind, EffectKindTag, EvaluateMilestoneEffect,
     ExecuteToolsEffect, KernelEffect, LoadPayloadEffect, PersistMemoryEffect, PreemptTasksEffect,
-    QueryMemoryEffect, RequestApprovalEffect, SpawnTasksEffect,
+    QueryMemoryEffect, RequestApprovalEffect, SpawnTasksEffect, SummarizeContextEffect,
 };
 use super::scalar::EffectId;
 
@@ -76,6 +76,11 @@ pub enum CanonicalHostAction {
         effect_id: EffectId,
         causation_input_id: super::scalar::InputId,
         payload: EvaluateMilestoneEffect,
+    },
+    SummarizeContext {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: SummarizeContextEffect,
     },
 }
 
@@ -143,6 +148,11 @@ pub fn project_effect(effect: &KernelEffect) -> CanonicalHostAction {
             payload: payload.clone(),
         },
         EffectKind::EvaluateMilestone(payload) => CanonicalHostAction::EvaluateMilestone {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::SummarizeContext(payload) => CanonicalHostAction::SummarizeContext {
             effect_id,
             causation_input_id,
             payload: payload.clone(),

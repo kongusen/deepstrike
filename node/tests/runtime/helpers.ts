@@ -28,6 +28,7 @@ export function createRunner(
     governancePolicy?: GovernancePolicy
     signalPolicy?: import("../../src/runtime/os-profile.js").SignalPolicy
     asyncSummarizer?: AsyncSummarizer
+    modelSummaries?: import("../../src/runtime/runner.js").RuntimeOptions["modelSummaries"]
     allowedToolIds?: string[]
     baselineToolIds?: string[]
     enablePlanTool?: boolean
@@ -69,6 +70,7 @@ export function createRunner(
     signalPolicy: opts.signalPolicy,
     promptBudget: opts.promptBudget,
     asyncSummarizer: opts.asyncSummarizer,
+    modelSummaries: opts.modelSummaries,
     allowedToolIds: opts.allowedToolIds,
     // Tests that exercise tools declare them as the explicit baseline. Individual exposure tests
     // construct RuntimeRunner directly when they need to verify the omitted-baseline contract.
