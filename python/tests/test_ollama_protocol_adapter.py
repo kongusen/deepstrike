@@ -52,7 +52,9 @@ def test_adapter_finalizes_buffered_tool_calls_usage_and_stop_reason() -> None:
     })
 
     assert pushed.events == [TextDelta(delta="working")]
-    assert finished.events[0] == ToolCallEvent(id="call_1", name="lookup", arguments={"q": "x"})
+    call = finished.events[0]
+    assert isinstance(call, ToolCallEvent) and call.id.startswith("call_")
+    assert (call.name, call.arguments) == ("lookup", {"q": "x"})
     assert finished.events[1] == UsageEvent(
         total_tokens=15,
         input_tokens=12,
@@ -77,3 +79,19 @@ def test_adapter_rejects_malformed_usage_shape() -> None:
         OllamaAdapter().normalize_usage({"prompt_eval_count": "12"})
     with pytest.raises(ValueError, match="integer"):
         OllamaAdapter().normalize_usage({"prompt_eval_count": 1.5})
+
+
+def test_every_tool_call_gets_a_run_unique_id() -> None:
+    # The native API gives tool calls no id; a per-turn counter repeated `call_1` every turn, and
+    # the kernel ends a run whose call id repeats on a syscall (`invalid_authority`).
+    adapter = OllamaAdapter()
+
+    def turn(chunk: dict) -> str:
+        state = adapter.create_stream_state(_input())
+        adapter.push_stream_chunk(chunk, state)
+        return next(e for e in adapter.finish_stream(state, {"done": True}).events if isinstance(e, ToolCallEvent)).id
+
+    plain = {"message": {"content": "", "tool_calls": [{"function": {"name": "lookup", "arguments": {}}}]}}
+    assert turn(plain) != turn(plain)
+    given = {"message": {"content": "", "tool_calls": [{"id": "srv-1", "function": {"name": "lookup", "arguments": {}}}]}}
+    assert turn(given) == "srv-1"

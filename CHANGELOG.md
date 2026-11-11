@@ -81,6 +81,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Ollama (native API, Node and Python): every tool call got a per-turn id (`call_1` each turn), so a
+  run ended with `invalid_authority` the second time the model called a kernel tool such as
+  `update_plan` or `note`. Tool calls now keep the server's id when there is one and otherwise get
+  a run-unique one; Node's non-streaming decode also stops dropping tool calls.
 - WASM `OpenAIProvider` dropped every tool call of a stream that ended with `data: [DONE]` (it
   returned before emitting them).
 - Rust `OpenAIProvider` emitted only one tool call of a turn (picked from a hash map, so parallel

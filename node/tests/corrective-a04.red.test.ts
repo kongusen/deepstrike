@@ -64,7 +64,7 @@ describe("SPC-013 A-04 Ollama ProtocolAdapter lifecycle", () => {
       eval_count: 3,
     })).toEqual({
       events: [
-        { type: "tool_call", id: "call_1", name: "lookup", arguments: { q: "x" } },
+        { type: "tool_call", id: expect.stringMatching(/^call_[a-z0-9]+$/), name: "lookup", arguments: { q: "x" } },
         {
           type: "usage",
           totalTokens: 15,
@@ -77,6 +77,23 @@ describe("SPC-013 A-04 Ollama ProtocolAdapter lifecycle", () => {
       ],
     })
     expect(adapter.normalizeStopReason("length")).toBe("max_tokens")
+  })
+
+  it("gives every tool call a run-unique id (the native API gives none)", () => {
+    const adapter = new OllamaAdapter()
+    const turn = () => {
+      const state = adapter.createStreamState({ input })
+      adapter.pushStreamChunk({ message: { content: "", tool_calls: [{ function: { name: "lookup", arguments: { q: "x" } } }] } }, state)
+      return adapter.finishStream(state, { done: true }).events.find(event => event.type === "tool_call") as { id: string }
+    }
+    // Two turns each calling one tool used to get `call_1` both times; the kernel ends a run whose
+    // call id repeats on a syscall (`invalid_authority`).
+    expect(turn().id).not.toBe(turn().id)
+    const given = adapter.createStreamState({ input })
+    adapter.pushStreamChunk({ message: { content: "", tool_calls: [{ id: "srv-1", function: { name: "lookup", arguments: {} } }] } }, given)
+    expect((adapter.finishStream(given, { done: true }).events[0] as { id: string }).id).toBe("srv-1")
+    const complete = adapter.decodeComplete({ message: { content: "", tool_calls: [{ function: { name: "lookup", arguments: { q: "y" } } }] } }, { input } as never)
+    expect(complete.message.toolCalls).toEqual([{ id: expect.stringMatching(/^call_/), name: "lookup", arguments: "{\"q\":\"y\"}" }])
   })
 
   it("parses a final NDJSON record even when EOF has no trailing newline", () => {
