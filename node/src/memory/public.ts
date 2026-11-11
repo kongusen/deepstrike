@@ -29,3 +29,6 @@ export type {
   MemoryKind, MemoryAuthor, MemoryTrustLevel,
 } from "./protocols.js"
 export type { KnowledgeSource } from "../knowledge/source.js"
+// Plan task 9.4 · consolidation is an ordinary run with a transcript search tool.
+export { DEFAULT_CONSOLIDATION_GOAL, TRANSCRIPT_SEARCH_TOOL_NAME, consolidateMemory, searchTranscripts, transcriptLines, transcriptSearchTool } from "./consolidate.js"
+export type { ConsolidateMemoryOptions, TranscriptLine, TranscriptSearchOptions } from "./consolidate.js"

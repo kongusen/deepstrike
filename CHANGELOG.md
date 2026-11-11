@@ -60,6 +60,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repeated with the same arguments, near-duplicate notes and long-open questions (at most 4
   lines); the model fixes them with `note` on its own turn or leaves them. No model call is added.
   `context_lifecycle_reported` gains `note_diagnostics`.
+- Consolidation as an ordinary run (plan task 9.4). A host tool `transcript_search` (keyword search
+  over session logs, each hit labeled with its session, turn and source) and a helper
+  `consolidateMemory` / `consolidate_memory` that runs an agent with the host's memory options plus
+  that tool, so the model can check long-term memory against what happened and propose
+  corrections with `propose_memory`. Node, Python, WASM (`memory`) and Rust (`consolidate`). When
+  the model can propose memories, the `note` tool says that notes end with the task and points at
+  `propose_memory`.
+- Benchmarks: `multi-session` (sequences of sessions with unwritten rules learned from failures;
+  `--memory none | notes | consolidate`, `--dry`, `--provider mock`).
 
 ### Changed
 

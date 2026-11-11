@@ -389,13 +389,14 @@ ContextItem {
     - 测试：kernel 两个（四类诊断都能标出，模型补笔记、退役、重写后清空；不开开关没有诊断）；Node 端到端一个（链接到不存在的笔记 → 下一轮状态块里出现诊断 → 模型补上后消失）。
     - 验收（最后一轮实测）：在 9.1 + 9.2 开启的前提下，正确率不降、`weighted_cost` 不升；`note_diagnostics` 在运行中出现后会下降（模型确实在修）。
     - 文件：`context/notes.rs`、`context/task_state.rs`、`scheduler/state_machine/mod.rs`
-- [ ] 任务 9.4：跨会话（索引与提升），只用已有的记忆通道。
-    - 提升：run 结束时，`rule` 与 `index` 笔记作为 memory candidate 提交（已有的 candidate ABI，与 `propose_memory` 同一条路），附带 `derived_from` 所指证据的 digest 和会话 id；`state` 与 `question` 永不提升。宿主显式开启（`promote_notes`），默认关闭。
-    - 注入：新会话沿现有 recall 路径只注入索引行（`MemoryRecall` 的 handle fidelity 本来就是一行一条），`index` 类的记忆排在最前；正文用 `memory(record_id)` 读。注入上限沿用 recall 的行数和字节上限。
-    - 离线整理：**不是 kernel 的事**。宿主用 SDK 起一个普通的 agent run，目标是"对照 transcripts 整理记忆库"，工具是 `memory`、`propose_memory`，加一个宿主侧的 `transcript_search`（在会话日志上检索，新的 host 工具，Node/Python/WASM/Rust 各一份）；修正以新 candidate 覆盖旧记录（`supersedes`），死链补页，重复合并。SDK 给一个 helper（`consolidateMemory` / `consolidate_memory`）封装这个 run；什么时候跑、花多少，由宿主决定，和任务的窗口无关。kernel 不知道 dreaming 的存在。
-    - 新基准 `benchmark/context-lifecycle/multi-session.mjs`：同一领域连续 N 个会话（先定 N = 8），隐性规则只能从前面会话的失败中学到（例如某个 API 的调用约定、某类报错的根因）；指标是第 k 个会话的正确率与成本；变体为无记忆、只有笔记提升、笔记提升加整理 run；指令文本为另一变量。
-    - 验收：第 N 个会话的正确率高于无记忆变体（配对），注入的 token 不随会话数线性增长；整理 run 的成本计入该变体的 `weighted_cost`。
-    - 文件：`mm/memory_candidate.rs`、`mm/memory.rs`；四端 SDK 的 run-end 提升与 `transcript_search` 工具；`benchmark/context-lifecycle/multi-session.mjs`
+- [x] 任务 9.4（2026-11-12 实现，待实测）：跨会话，只用已有的记忆通道。
+    - 提升由模型自己做（2026-11-12 决定，替代"run 结束时 kernel 自动提交 `rule` / `index` 笔记"）：自动提交本身是一条"标成 rule 就进长期记忆"的规则，又是 kernel 替模型判断；机制上 kernel 一次只允许一个待处理的 `PersistMemory`（DEC-3），终止阶段排队多条会牵动 `run_terminal` 的时序。改为：模型可用 `propose_memory`（宿主开启时）时，`note` 工具说明里多一句"笔记随任务结束；值得留给以后任务的规则或索引，可以用 `propose_memory` 提交"。准入、配额、审核照旧由 kernel 和宿主的候选通道负责。
+    - 注入沿用现有 recall：新会话按目标召回，命中以索引行进入 knowledge，正文用 `memory(record_id)` 读。
+    - 离线整理是一个普通 run：四端 SDK 新增宿主侧工具 `transcript_search`（在会话日志上按关键词检索，每条结果标明会话、轮次和来源：目标、模型的话、或 `调用 id 工具 参数` 的结果）和 helper `consolidateMemory` / `consolidate_memory`（宿主自己的记忆选项原样传入，加上这个工具和一个方向性的默认目标："对照记录核对记忆；被推翻的提交更正，缺的规则补上，最后提交一条索引；注明依据的会话和轮次"）。kernel 不知道它存在；何时跑、花多少由宿主决定。
+    - 新基准 `benchmark/context-lifecycle/multi-session.mjs`：每个序列 8 个会话（`--sessions`），每个会话数 6 份日志里某个代码的 ERROR 行，用 `submit` 交一次答案。每个序列有两条从不写明的规则（重试请求、canary 主机、回放行、合成探针四选二），答错时 `submit` 告诉期望值并给出几行"不该计入"的例子，足够推出规则。变体 `--memory none | notes | consolidate`：后两者开笔记（预算 600），宿主接受所有提议直接写入记忆库；`consolidate` 每个会话后再跑一次整理，成本计入该会话。每个会话一条 trial（`SEQ#<序列>@<会话>`），可跨变体配对；oracle `memory_records`、`proposals`、`memory_reads`。`--dry` 打印题目，`--provider mock` 用脚本化模型验证流程（不调真实模型）。
+    - 测试：kernel 一个（只有能提议时工具说明才提 `propose_memory`）；Node / Python / Rust 各有 transcript 检索与一次整理 run（提议到达宿主的候选队列）；WASM 检索。
+    - 验收（实测）：第 N 个会话的正确率高于 `none`（配对），注入的 token 不随会话数线性增长；整理 run 的成本计入 `consolidate` 的 `weighted_cost`。
+    - 文件：`context/notes.rs`；四端 SDK 的 `memory/consolidate`（Rust `consolidate.rs`）；`benchmark/context-lifecycle/multi-session.mjs`
 
 **实测计划（阶段末一次做完）。** 9.1–9.3 全部实现后，在 DeepSeek 上跑一轮：long-horizon 每组 30 题，分组 `0.2.82-9.0`（已有）/ `0.2.82-9.1`（预算 600）/ `0.2.82-9.1b`（预算 1500）/ `0.2.82-9.2`（9.1 + 9.2）/ `0.2.82-9.3`（9.1 + 9.2 + 9.3）；最终组另跑 ledger 30 题确认不回退。每组约 20–25 元，开跑前确认余额（2026-11-11 为 31.51 元，需先充值）。9.4 在 multi-session 上单独测。本地 Ollama（`qwen3.8-27b-ctx8k`，8k 窗口）的极限测试由使用者自行跑，结果用同一个 lab 报告。
 
@@ -436,7 +437,7 @@ ContextItem {
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
 | 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入，方向放弃（`exp/8.3c`）；8.4 实测未通过 gate，已撤回（`exp/8.4-model-summaries`） |
-| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记（已实现）；9.2 压缩读图（已实现）；9.3 模型自己修笔记（kernel 只算诊断，已实现）；9.4 跨会话提升与整理 run。实测在阶段末一次做完 | 进行中 |
+| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记（已实现）；9.2 压缩读图（已实现）；9.3 模型自己修笔记（kernel 只算诊断，已实现）；9.4 跨会话：模型用 `propose_memory` 提升，整理是普通 run（已实现）。实测在阶段末一次做完 | 进行中 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 

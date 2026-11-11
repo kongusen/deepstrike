@@ -77,16 +77,25 @@ impl ContextManager {
         if !self.notes_enabled() {
             return None;
         }
-        Some(ToolSchema {
-            name: CompactString::new(NOTE_TOOL_NAME),
-            description: "Keep notes that survive compaction. As the conversation grows, older \
+        let mut description = "Keep notes that survive compaction. As the conversation grows, older \
 tool results and turns are archived; your notes stay in [TASK STATE] word for word. Write down \
 what you work out and could not simply read again: running counts and totals, lists of what is \
 done and what is left, conclusions, rules you learned. When it changes, write the same title \
 again to update it. `evidence` names what it came from (call ids, file paths or arguments); \
 without it the note is linked to the results you received since your last note. Retire a note \
 you no longer need."
-                .to_string(),
+            .to_string();
+        // Plan task 9.4 · notes end with the session; what outlives it is the model's call, made
+        // through the memory proposal it already has. No promotion happens behind its back.
+        if self.propose_memory_enabled {
+            description.push_str(
+                " Notes end with this task: a rule or index worth keeping for later tasks can be \
+proposed for long-term memory with `propose_memory`.",
+            );
+        }
+        Some(ToolSchema {
+            name: CompactString::new(NOTE_TOOL_NAME),
+            description,
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -514,6 +523,14 @@ mod tests {
 
     fn edges(mgr: &ContextManager, relation: Relation) -> Vec<(ItemId, ItemId)> {
         mgr.graph.edges().iter().filter(|e| e.relation == relation).map(|e| (e.from, e.to)).collect()
+    }
+
+    #[test]
+    fn the_tool_points_at_propose_memory_only_when_the_model_can_propose() {
+        let mut mgr = manager(500);
+        assert!(!mgr.note_tool_schema().unwrap().description.contains("propose_memory"));
+        mgr.set_propose_memory_enabled(true);
+        assert!(mgr.note_tool_schema().unwrap().description.contains("propose_memory"));
     }
 
     #[test]

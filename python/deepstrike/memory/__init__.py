@@ -31,7 +31,24 @@ from .in_memory_store import InMemoryMemoryStore
 from .retention import memory_retention_score
 from .ranking import RankedMemory, rank_memories
 
+from .consolidate import (
+    DEFAULT_CONSOLIDATION_GOAL,
+    TRANSCRIPT_SEARCH_TOOL_NAME,
+    TranscriptLine,
+    consolidate_memory,
+    search_transcripts,
+    transcript_lines,
+    transcript_search_tool,
+)
+
 __all__ = [
+    "DEFAULT_CONSOLIDATION_GOAL",
+    "TRANSCRIPT_SEARCH_TOOL_NAME",
+    "TranscriptLine",
+    "consolidate_memory",
+    "search_transcripts",
+    "transcript_lines",
+    "transcript_search_tool",
     "MemoryRetrievalPolicy",
     "MemoryWritePolicy",
     "MemoryRuntimePolicy",

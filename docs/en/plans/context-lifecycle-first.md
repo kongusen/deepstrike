@@ -924,33 +924,45 @@ are scheduled once long-horizon can measure them.
     - Acceptance (final round): with 9.1 + 9.2 on, success does not drop and `weighted_cost` does
       not rise; `note_diagnostics` falls after it appears during a run (the model does repair).
     - Files: `context/notes.rs`, `context/task_state.rs`, `scheduler/state_machine/mod.rs`
-- [ ] Task 9.4: across sessions (index and promotion), through the existing memory channel only.
-    - Promotion: at run end, `rule` and `index` notes are submitted as memory candidates (the
-      existing candidate ABI, the same path as `propose_memory`) with digests of the evidence their
-      `derived_from` edges point at and the session id; `state` and `question` are never promoted.
-      Host opt-in (`promote_notes`), off by default.
-    - Injection: a new session gets index lines only, along the existing recall path
-      (`MemoryRecall`'s handle fidelity is already one line per record), with `index` memories
-      first; bodies are read with `memory(record_id)`. The injection cap is recall's existing line
-      and byte limits.
-    - Offline consolidation: **not the kernel's business.** The host starts an ordinary agent run
-      through the SDK whose goal is "reconcile the memory store against the transcripts", with the
-      tools `memory`, `propose_memory` and a host-side `transcript_search` (search over session
-      logs; a new host tool, one per SDK). Corrections overwrite old records with new candidates
-      (`supersedes`), dead links get pages, duplicates merge. The SDK ships a helper
-      (`consolidateMemory` / `consolidate_memory`) that wraps this run; when it runs and what it
-      costs is the host's decision, unrelated to any task's window. The kernel does not know
-      dreaming exists.
-    - New benchmark `benchmark/context-lifecycle/multi-session.mjs`: N consecutive sessions in one
-      domain (N = 8 to start) where latent rules can only be learned from earlier sessions'
-      failures (an API's calling convention, the root cause of a class of errors); the metric is
-      success and cost at session k; variants are no memory, note promotion only, and promotion
-      plus a consolidation run; instruction text is the other variable.
-    - Acceptance: success at session N above the no-memory variant (paired); injected tokens do not
-      grow linearly with the number of sessions; the consolidation run's cost counts in that
-      variant's `weighted_cost`.
-    - Files: `mm/memory_candidate.rs`, `mm/memory.rs`; run-end promotion and the
-      `transcript_search` tool in the four SDKs; `benchmark/context-lifecycle/multi-session.mjs`
+- [x] Task 9.4 (implemented 2026-11-12; to be measured): across sessions, through the existing
+  memory channel only.
+    - Promotion is the model's (decided 2026-11-12, replacing "the kernel submits `rule` / `index`
+      notes at run end"): automatic submission is itself a rule — "marked rule, so it goes to
+      long-term memory" — the kernel judging for the model again; and mechanically the kernel
+      admits one pending `PersistMemory` at a time (DEC-3), so queueing several at termination
+      would entangle `run_terminal` ordering. Instead, when the model can call `propose_memory`
+      (the host enabled it), the `note` description adds "notes end with this task: a rule or index
+      worth keeping for later tasks can be proposed for long-term memory with `propose_memory`".
+      Admission, quota and review stay with the kernel and the host's candidate channel.
+    - Injection uses the existing recall: a new session recalls on its goal; hits arrive as index
+      lines in knowledge, bodies are read with `memory(record_id)`.
+    - Offline consolidation is an ordinary run: the four SDKs gain a host tool `transcript_search`
+      (keyword search over session logs; each result names its session, turn and source — the
+      goal, the model's text, or the result of `call id tool arguments`) and a helper
+      `consolidateMemory` / `consolidate_memory` (the host's own memory options passed through,
+      plus that tool and a directional default goal: "check memory against the transcripts;
+      propose corrections for what they contradict, the rules they show that memory lacks, and
+      finally one index record; cite the session and turn"). The kernel does not know it exists;
+      when it runs and what it costs is the host's call.
+    - New benchmark `benchmark/context-lifecycle/multi-session.mjs`: sequences of 8 sessions
+      (`--sessions`); each session counts one code's ERROR lines across six logs and answers once
+      with `submit`. Each sequence has two rules never written down (retried requests, canary
+      hosts, replayed lines, synthetic probes — two of four); a wrong `submit` gives the expected
+      count and a few lines that should not have counted, enough to work the rule out. Variants
+      `--memory none | notes | consolidate`: the latter two turn notes on (budget 600) and the host
+      accepts every proposal straight into the store; `consolidate` also runs one consolidation
+      after each session, its cost charged to that session. One trial per session
+      (`SEQ#<sequence>@<session>`), paired across variants; oracles `memory_records`, `proposals`,
+      `memory_reads`. `--dry` prints the tasks; `--provider mock` checks the plumbing with a
+      scripted model (no real model call).
+    - Tests: one kernel test (the tool mentions `propose_memory` only when the model can
+      propose); transcript search and one consolidation run (the proposal reaches the host's
+      candidate sink) in Node, Python and Rust; search in WASM.
+    - Acceptance (measured): success at session N above `none` (paired); injected tokens do not grow
+      linearly with the number of sessions; consolidation cost counts in `consolidate`'s
+      `weighted_cost`.
+    - Files: `context/notes.rs`; `memory/consolidate` in the four SDKs (Rust `consolidate.rs`);
+      `benchmark/context-lifecycle/multi-session.mjs`
 
 **Measurement plan (one round at the end of the stage).** Once 9.1–9.3 are implemented, one round
 on DeepSeek: long-horizon, 30 tasks per group, groups `0.2.82-9.0` (done) / `0.2.82-9.1` (budget
@@ -1031,7 +1043,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
 | 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate, not merged, direction abandoned (`exp/8.3c`); 8.4 failed the gate when measured and was withdrawn (`exp/8.4-model-summaries`) |
-| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented); 9.2 compaction reads the graph (implemented); 9.3 the model repairs its notes (the kernel only diagnoses; implemented); 9.4 cross-session promotion and a consolidation run. Measured in one round at the end of the stage | In progress |
+| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented); 9.2 compaction reads the graph (implemented); 9.3 the model repairs its notes (the kernel only diagnoses; implemented); 9.4 across sessions: the model promotes with `propose_memory`, consolidation is an ordinary run (implemented). Measured in one round at the end of the stage | In progress |
 
 0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
 rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that
