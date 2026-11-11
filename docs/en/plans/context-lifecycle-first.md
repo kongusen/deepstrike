@@ -800,11 +800,15 @@ are scheduled once long-horizon can measure them.
 - **Instructions give direction, not prohibitions.** Tool descriptions and system text say what is
   useful to record, never what is forbidden; the instruction text is an experimental variable
   compared in the lab.
-- **Every change has a switch, off by default, on by default only after passing the gate.** 9.1–9.3
-  are each a `ContextPolicy` field; the final round is measured in groups (baseline / +9.1 /
-  +9.1+9.2 / +9.1+9.2+9.3) with 8.1's paired gate (`--paired success_rate:0.05,weighted_cost:0`)
-  against `0.2.82-9.0`. A feature that fails stays off by default, as 8.4 did, but its code stays
-  on main.
+- **Every change starts behind a switch, off by default, and the measurement has only two
+  outcomes: pass the gate and become the default, or fail and be deleted.** 9.1–9.3 are each a
+  `ContextPolicy` field, measured in groups (baseline / +9.1 / +9.1+9.2 / +9.1+9.2+9.3); 9.4 is
+  measured on multi-session as `none / notes / consolidate`; all with 8.1's paired gate
+  (`--paired success_rate:0.05,weighted_cost:0`), long-horizon against `0.2.82-9.0`. A feature that
+  fails leaves no off-by-default code behind: its implementation in the kernel, the four SDKs,
+  the contracts, the tests and the docs is removed, and the plan keeps only the measurement
+  (decided 2026-11-12). The principle is that the model leads: a mechanism that does not make the
+  model do better has no place in the framework, waiting to be misused.
 - **The memory-write freeze from "Out of scope" is lifted.** Cross-session writes reuse the
   existing candidate ABI (`propose_memory`, attestation, leases); no new write channel.
 
