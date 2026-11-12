@@ -20,12 +20,6 @@ pub struct ContextPolicy {
     /// Plan task 9.1 · tokens the model's notes may hold; `0` turns the `note` tool off.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub notes_budget_tokens: u32,
-    /// Plan task 9.2 · compaction reads the notes (see `ContextConfig::compaction_reads_notes`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub compaction_reads_notes: bool,
-    /// Plan task 9.2 · one deferred compaction with a page-out notice.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub page_out_notice: bool,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -85,8 +79,6 @@ impl ContextPolicy {
         config.delegate_tool_result_clearing = self.delegate_tool_result_clearing;
         config.delegate_compaction = self.delegate_compaction;
         config.notes_budget_tokens = self.notes_budget_tokens;
-        config.compaction_reads_notes = self.compaction_reads_notes;
-        config.page_out_notice = self.page_out_notice;
     }
 }
 
@@ -115,8 +107,6 @@ mod tests {
             delegate_tool_result_clearing: false,
             delegate_compaction: false,
             notes_budget_tokens: 0,
-            compaction_reads_notes: false,
-            page_out_notice: false,
         }
     }
 

@@ -343,12 +343,6 @@ pub struct ContextPolicy {
     /// Plan task 9.1 · tokens the model's notes may hold; `0` (the default) turns `note` off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes_budget_tokens: Option<u32>,
-    /// Plan task 9.2 · compaction reads the notes; off by default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compaction_reads_notes: Option<bool>,
-    /// Plan task 9.2 · one deferred compaction with a page-out notice; off by default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_out_notice: Option<bool>,
 }
 
 /// The compaction tiers a provider performs natively. The host declares them only when the
@@ -736,10 +730,6 @@ pub struct ResolvedContextPolicy {
     /// Plan task 9.1 · absent when notes are off, so earlier configurations digest as before.
     #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
     pub notes_budget_tokens: u32,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub compaction_reads_notes: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub page_out_notice: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1024,8 +1014,6 @@ impl ConfigDefaults {
                     },
                     delegated_tiers: DelegatedContextTiers::default(),
                     notes_budget_tokens: 0,
-                    compaction_reads_notes: false,
-                    page_out_notice: false,
                 },
                 recovery_policy: ResolvedRecoveryPolicy {
                     provider_recovery_attempts: 1,
@@ -1834,12 +1822,6 @@ fn resolve_context(
         if let Some(value) = policy.notes_budget_tokens {
             resolved.notes_budget_tokens = value;
         }
-        if let Some(value) = policy.compaction_reads_notes {
-            resolved.compaction_reads_notes = value;
-        }
-        if let Some(value) = policy.page_out_notice {
-            resolved.page_out_notice = value;
-        }
     }
 
     let t = &resolved.pressure_thresholds_ppm;
@@ -2315,8 +2297,6 @@ mod tests {
                 }),
                 delegated_tiers: None,
                 notes_budget_tokens: None,
-                compaction_reads_notes: None,
-                page_out_notice: None,
             }),
             recovery_policy: Some(RecoveryPolicy {
                 provider_recovery_attempts: Some(2),

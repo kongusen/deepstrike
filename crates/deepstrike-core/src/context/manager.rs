@@ -720,14 +720,6 @@ impl ContextManager {
             self.retire_history_item(record);
         }
         let archived: Vec<CoreMessage> = archived.into_iter().map(|row| row.message).collect();
-        // Plan task 9.2 · the compaction ran, so its notice is spent; citations it archived become
-        // read-back handles on their notes.
-        if !archived.is_empty() {
-            self.partitions.task_state.page_out_notice.clear();
-            if self.config.compaction_reads_notes {
-                self.mark_archived_citations(&archived);
-            }
-        }
         if saved > 0 || !archived.is_empty() {
             // The measurement describes the request before this rewrite, not the new context.
             self.last_observed_prompt_tokens = None;
@@ -796,8 +788,6 @@ impl ContextManager {
             }
         }
         self.partitions = renewed;
-        // Plan task 9.2 · the renewal replaced the history the notice was about.
-        self.partitions.task_state.page_out_notice.clear();
         self.sprint += 1;
         self.cache_ledger.note_cause(BreakCause::Renewal);
         self.last_observed_prompt_tokens = None;

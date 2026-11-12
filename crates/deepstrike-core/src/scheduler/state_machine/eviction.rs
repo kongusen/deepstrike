@@ -184,12 +184,6 @@ impl LoopStateMachine {
                 }
             }
             EvictionOp::Collapse { target_tokens } => {
-                // Plan task 9.2 · a range compaction about to take results no note cites waits one
-                // turn, with those results listed in the state turn. Only Collapse waits: auto
-                // compaction and renewal sit closer to the hard limit and always run.
-                if self.ctx.defer_for_page_out_notice(*target_tokens) {
-                    return;
-                }
                 // Layer 4: collapse to the planner's explicit target (W1-1 收口 — the executor honors
                 // the plan's `target_tokens` verbatim instead of re-deriving it from config). The
                 // planner stamps `config.target_tokens(max)`, so this is behavior-identical to the

@@ -118,18 +118,6 @@ pub struct RunLimits {
 }
 
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
-/// Plan tasks 9.1–9.2 · notes the model writes with the kernel's `note` tool.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NotesOptions {
-    /// Tokens the notes may hold in the state turn; `0` leaves the `note` tool off.
-    pub budget_tokens: u32,
-    /// Range compaction pages out results a note cites first, shows archived citations as
-    /// `read_result` handles, and its summary only locates the archive.
-    pub compaction_reads_notes: bool,
-    /// A range compaction about to archive results no note cites waits one turn, listing them.
-    pub page_out_notice: bool,
-}
-
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
     pub execution_plane: Option<Box<dyn ExecutionPlane>>,
@@ -140,8 +128,9 @@ pub struct RuntimeOptions {
     pub payload_store: Option<Arc<dyn PayloadStore>>,
     /// Bounded recovery and replay policy. Omitted fields retain kernel defaults.
     pub kernel_reliability: Option<KernelReliability>,
-    /// Plan tasks 9.1–9.2 · notes the model writes and the kernel keeps. `None` leaves them off.
-    pub notes: Option<NotesOptions>,
+    /// Plan task 9.1 · tokens the model's notes may hold in the state turn. `None` or `0` leaves
+    /// the `note` tool off; notes are written by the model and kept verbatim through compaction.
+    pub notes_budget_tokens: Option<u32>,
     /// When set, `execute` reuses this session id.
     pub session_id: Option<String>,
     pub max_tokens: u32,
@@ -1190,14 +1179,12 @@ impl RuntimeRunner {
 
             if !resume_mid_run {
                 let native_context = self.opts.provider.native_context_tiers();
-                let notes = self.opts.notes.clone().unwrap_or_default();
+                let notes_budget = self.opts.notes_budget_tokens.unwrap_or(0);
                 if self.opts.kernel_reliability.is_some()
                     || self.opts.scheduler_policy.is_some()
                     || native_context.tool_result_clearing
                     || native_context.compaction
-                    || notes.budget_tokens > 0
-                    || notes.compaction_reads_notes
-                    || notes.page_out_notice
+                    || notes_budget > 0
                 {
                     let mut config = serde_json::Map::new();
                     let mut context_policy = serde_json::Map::new();
@@ -1207,14 +1194,8 @@ impl RuntimeRunner {
                             "compaction": native_context.compaction,
                         }));
                     }
-                    if notes.budget_tokens > 0 {
-                        context_policy.insert("notes_budget_tokens".into(), notes.budget_tokens.into());
-                    }
-                    if notes.compaction_reads_notes {
-                        context_policy.insert("compaction_reads_notes".into(), true.into());
-                    }
-                    if notes.page_out_notice {
-                        context_policy.insert("page_out_notice".into(), true.into());
+                    if notes_budget > 0 {
+                        context_policy.insert("notes_budget_tokens".into(), notes_budget.into());
                     }
                     if !context_policy.is_empty() {
                         config.insert("context_policy".into(), serde_json::Value::Object(context_policy));
@@ -2865,7 +2846,7 @@ impl RuntimeRunner {
             compression_store: opts.compression_store.clone(),
             payload_store: opts.payload_store.clone(),
             kernel_reliability: opts.kernel_reliability.clone(),
-            notes: opts.notes.clone(),
+            notes_budget_tokens: opts.notes_budget_tokens,
             session_id: Some(session_id),
             max_tokens: opts.max_tokens,
             max_turns: node.max_turns.or(opts.max_turns),

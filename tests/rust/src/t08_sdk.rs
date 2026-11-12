@@ -154,7 +154,7 @@ fn runtime_options_can_be_constructed() {
         compression_store: None,
         payload_store: None,
         kernel_reliability: None,
-        notes: None,
+        notes_budget_tokens: None,
         session_id: None,
         max_tokens: 4096,
         max_turns: Some(25),

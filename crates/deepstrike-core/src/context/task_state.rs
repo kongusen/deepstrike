@@ -69,15 +69,7 @@ pub struct TaskState {
     /// derives from the tool results that arrived after it.
     #[serde(default, skip_serializing_if = "u64_is_zero")]
     pub notes_watermark: u64,
-    /// Plan task 9.2 · results a deferred compaction is about to archive, one line each. Rendered
-    /// in the state turn until the compaction runs.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub page_out_notice: Vec<String>,
 }
-
-/// The heading of the page-out notice in the state turn.
-pub const PAGE_OUT_NOTICE_HEADING: &str = "leaving context at the next compaction (results no note \
-cites yet; write a note for anything you will still need):";
 
 fn u32_is_zero(value: &u32) -> bool {
     *value == 0
@@ -123,12 +115,6 @@ pub struct Note {
     /// Titles of related notes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<String>,
-    /// Plan task 9.2 · call ids of the results this note's evidence resolved to.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cites: Vec<String>,
-    /// Plan task 9.2 · the cited results compaction has archived since (read back by call id).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub archived: Vec<String>,
     /// The note's id in the item graph (its `derived_from` / `links_to` edges start here).
     pub item: u64,
     /// The turn it was last written.
@@ -138,11 +124,7 @@ pub struct Note {
 impl Note {
     /// The note's line in the state turn.
     pub fn render(&self) -> String {
-        let mut line = format!("  - [{}] {}: {}", self.kind.label(), self.title, self.body);
-        if !self.archived.is_empty() {
-            line.push_str(&format!(" (archived evidence: {} → read_result)", self.archived.join(", ")));
-        }
-        line
+        format!("  - [{}] {}: {}", self.kind.label(), self.title, self.body)
     }
 }
 
@@ -258,10 +240,6 @@ impl TaskState {
         let notes = self.render_notes();
         if !notes.is_empty() {
             lines.push(notes);
-        }
-        if !self.page_out_notice.is_empty() {
-            lines.push(PAGE_OUT_NOTICE_HEADING.to_string());
-            lines.extend(self.page_out_notice.iter().map(|line| format!("  - {line}")));
         }
 
         if !self.scratchpad.is_empty() {
