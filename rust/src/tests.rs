@@ -3627,7 +3627,7 @@ mod consolidate {
             compression_store: None,
             payload_store: None,
             kernel_reliability: None,
-            notes: None,
+            notes_budget_tokens: None,
             session_id: None,
             max_tokens: 8_000,
             max_turns: Some(8),

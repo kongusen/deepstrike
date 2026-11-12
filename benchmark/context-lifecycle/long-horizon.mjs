@@ -20,7 +20,7 @@
 // end-only fact did not survive; `brief_rereads` counts reads of the brief after the first;
 // `compactions` and `renewals` count the kernel's compaction and renewal events, so a run that never
 // reached them can be told apart. With notes on (`--policy '{"notesBudgetTokens":600}'`),
-// `notes_written`, `notes_active` and `note_diagnostics_max` show whether the model used them.
+// `notes_written` and `notes_active` show whether the model used them.
 // Writes one trial per task for `deepstrike-lab`; never prints a key.
 
 import { resolve } from "node:path"
@@ -123,15 +123,12 @@ function answerOracles(t, answer) {
   }
 }
 
-/** Plan task 9 · notes written and held at the last lifecycle report, the most diagnostics seen at
- *  once, and how many collapses waited for a page-out notice. Zero when notes are off. */
+/** Plan task 9.1 · notes written and held at the last lifecycle report. Zero when notes are off. */
 function noteOracles(events) {
-  const reports = events.filter(event => event.kind === "context_lifecycle_reported")
-  const last = reports.at(-1) ?? {}
+  const last = events.filter(event => event.kind === "context_lifecycle_reported").at(-1) ?? {}
   return {
     notes_written: last.notes_written ?? 0,
     notes_active: last.notes_active ?? 0,
-    note_diagnostics_max: Math.max(0, ...reports.map(report => report.note_diagnostics ?? 0)),
   }
 }
 

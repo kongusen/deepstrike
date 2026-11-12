@@ -41,7 +41,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Benchmarks: `--provider ollama` (model from `OLLAMA_MODEL`) for local runs; long-horizon trials
   keep the runner's error message instead of only `termination: error`.
 - Notes the model writes (plan task 9.1), off by default. With `ContextPolicy.notesBudgetTokens`
-  (Node/WASM) or `notes_budget_tokens` (Python; Rust `RuntimeOptions.notes`, a `NotesOptions`) above
+  (Node/WASM) or `notes_budget_tokens` (Python; Rust `RuntimeOptions.notes_budget_tokens`) above
   0, the kernel offers a `note` tool: the model writes, rewrites (by title) or retires notes of kind
   `state`, `rule`, `question` or `index`. The kernel executes it itself; notes live in the working
   partition, no compaction tier touches them, they render in the state turn and are checkpointed.
@@ -49,17 +49,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   note for the model. Each note is an item of the graph, with new relations `derived_from` (to the
   results it cites, or by default the results since the last note), `links_to` and `supersedes`.
   `context_lifecycle_reported` gains `notes_written` and `notes_active`.
-- Compaction reads the notes (plan task 9.2), two switches, off by default.
-  `compactionReadsNotes` / `compaction_reads_notes`: collapse and auto compaction archive results a
-  note cites first, the note then shows them as `(archived evidence: … → read_result)`, and the
-  compaction summary becomes an archive locator (turns, call ids, paths) instead of a rule digest.
-  `pageOutNotice` / `page_out_notice`: a collapse about to archive results no note cites waits one
-  turn and lists them in the task state; auto compaction and renewal never wait.
-- Note diagnostics (plan task 9.3), off by default (`noteDiagnostics` / `note_diagnostics`). Before
-  every provider call the kernel lists, under the notes, dead links, notes whose cited call was
-  repeated with the same arguments, near-duplicate notes and long-open questions (at most 4
-  lines); the model fixes them with `note` on its own turn or leaves them. No model call is added.
-  `context_lifecycle_reported` gains `note_diagnostics`.
 - Consolidation as an ordinary run (plan task 9.4). A host tool `transcript_search` (keyword search
   over session logs, each hit labeled with its session, turn and source) and a helper
   `consolidateMemory` / `consolidate_memory` that runs an agent with the host's memory options plus

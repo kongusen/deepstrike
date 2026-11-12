@@ -866,7 +866,7 @@ are scheduled once long-horizon can measure them.
       from in `evidence`". No prohibitions. `update_plan` is unchanged.
     - Reporting: `context_lifecycle_reported` gains `notes_written` (rewrites count again) and
       `notes_active`; the four SDKs' `ContextPolicy` gains `notesBudgetTokens` /
-      `notes_budget_tokens`; Rust `RuntimeOptions.notes: Option<NotesOptions>` (holding the 9.2 switches too).
+      `notes_budget_tokens`; Rust `RuntimeOptions.notes_budget_tokens`.
     - Tests: kernel `context/notes.rs` (budget refusal, evidence resolution, links and retirement,
       notes survive compaction of their history); three driver tests (the tool appears only with a
       budget; a write renders and checkpoints; an over-budget write is refused); two to three
@@ -874,61 +874,31 @@ are scheduled once long-horizon can measure them.
     - Acceptance (final round): on long-horizon `undercount` and `count_error` fall, success is not
       below `0.2.82-9.0` (paired) and `weighted_cost` is not higher; ledger does not regress.
       Variables: budget (600 / 1500) and instruction text.
-- [x] Task 9.2 (implemented 2026-11-11; measured in the final round): compaction reads the graph
-  (evidence leaves, notes stay).
-    - Notes keep the call ids their evidence resolved to (`Note.cites`). With
-      `ContextPolicy.compaction_reads_notes`, collapse and auto compaction score units with an extra
-      `cited_by_note` term (−12000: enough to send a cited result out ahead of an uncited one of
-      similar size, not enough to override an unfinished call). Cited call ids a compaction
-      archives go into `Note.archived`, and the note line ends with
-      `(archived evidence: c12, c15 → read_result)`. That compaction's summary becomes an archive
-      locator (`archive_locator`: how many turns, which call ids, which paths); `RuleSummarizer`
-      carries no memory.
-    - With `ContextPolicy.page_out_notice`, a collapse first plans with the same scoring; if the
-      archive would take results no note cites, it skips this turn and lists them in the state turn
-      (`call id tool(first 60 characters of the arguments)`, at most 8 lines); the next turn it
-      runs and the notice clears. It defers once only; auto compaction and renewal sit closer to
-      the hard limit and never defer. Renewal clears the notice.
-    - Both are checkpointed (`LogicalNote.cites` / `archived`, `LogicalTaskState.page_out_notice`,
-      omitted when empty). Off by default; goldens unchanged. SDKs: `compactionReadsNotes` /
-      `pageOutNotice` (Node/WASM), `compaction_reads_notes` / `page_out_notice` (Python), the same
-      fields of Rust `NotesOptions`.
-    - Tests: four kernel tests (with the switch off the oldest result c0 leaves, with it on the
-      cited c2 does; the notice defers once and lists only uncited results; no deferral without the
-      switch; notes survive renewal); one Node end-to-end test (in a small window: notice → the
-      compaction next turn → a read-back handle for c1 on the note → a locator summary); Python
-      switch serialization.
-    - Acceptance (final round): with 9.1 on, success does not drop, `weighted_cost` falls, and
-      `read_back` and `brief_rereads` do not rise; the `cache_loss_tokens` change caused by the
-      deferral is reported.
-    - Files: `context/utility.rs`, `context/compression.rs`, `context/notes.rs`,
-      `context/summarizer.rs`, `context/task_state.rs`, `scheduler/state_machine/eviction.rs`
-- [x] Task 9.3 (implemented 2026-11-12; measured in the final round): the model repairs its own
-  notes (the kernel computes the diagnostics).
-    - With `ContextPolicy.note_diagnostics`, before every provider call (`emit_call_llm`) the kernel
-      recomputes the notes' structural diagnostics deterministically, reading the notes, their
-      citations and the tool calls in history, never what anything means:
-        - dead link: a title in `links` with no note;
-        - superseded evidence: after a cited call, the same tool was called again with exactly the
-          same arguments (the note may be stale);
-        - near duplicate: two notes whose bodies share distinctive terms (the 4.2 term sets) for at
-          least 80% of the smaller one, with 3 terms at least;
-        - long-open question: a `question` note not rewritten or retired for 10 turns or more.
-    - Rendering: `notes to check:` under the notes block (at most 4 lines, then `(+N more)`),
-      worded "fix with `note` if they matter; nothing happens otherwise". The model decides on its
-      own turn; the kernel does not nag, emits no effect and adds no call. Once fixed, the
-      diagnostic is gone the next turn.
-    - Diagnostics are checkpointed (`LogicalTaskState.note_checks`), and
-      `context_lifecycle_reported` gains `note_diagnostics` (the current count). Notes cross renewal
-      verbatim with the working partition (covered by 9.2's tests).
-    - SDKs: `noteDiagnostics` (Node/WASM), `note_diagnostics` (Python, Rust `NotesOptions`). Off
-      by default; goldens unchanged.
-    - Tests: two kernel tests (all four diagnostics flagged and cleared once the model adds,
-      retires and rewrites notes; none without the switch); one Node end-to-end test (a link to a
-      missing note → a diagnostic in the next state turn → gone once the model writes it).
-    - Acceptance (final round): with 9.1 + 9.2 on, success does not drop and `weighted_cost` does
-      not rise; `note_diagnostics` falls after it appears during a run (the model does repair).
-    - Files: `context/notes.rs`, `context/task_state.rs`, `scheduler/state_machine/mod.rs`
+    - Measured (2026-11-12, DeepSeek, long-horizon tasks 0–9, `0.2.82-9.1`, budget 600, paired with
+      `0.2.82-9.0`): success 6/10 → 7/10, `count_error` 1.6 → 0.4, brief re-reads 1.4 → 0.2,
+      `read_back` 1.7 → 0.1, compactions 6.8 → 3.7, calls 47.6 → 43.6, `weighted_cost` −21%,
+      cache loss −35%, no run at the turn limit. The model writes or rewrites a note about 23
+      times per task while holding 1–2, i.e. it keeps one running tally up to date. Every direction
+      is favorable, but with 10 pairs every 95% interval crosses 0. Tasks 10–29 are still to run
+      to reach 30 pairs: pass the gate and it becomes the default; fail and it is deleted.
+- [ ] Task 9.2 (deleted after measurement, 2026-11-12): compaction reads the graph — results a note
+  cites leave first, archived citations render as read-back handles, the compaction summary
+  becomes an archive locator, and a compaction about to archive uncited results waits a turn with a
+  notice.
+- [ ] Task 9.3 (deleted after measurement, 2026-11-12): the kernel computes structural diagnostics of
+  the notes each turn (dead links, superseded evidence, near duplicates, long-open questions) and
+  renders them for the model to fix.
+    - Measured (the same tasks 0–9; `0.2.82-9.3` is 9.1 + 9.2 + 9.3, against 9.1 and `0.2.82-9.0`):
+      7/10 correct, the same as notes alone; `count_error` 0.3 (9.1: 0.4); but 54.3 calls (9.1:
+      43.6), 5.8 compactions (3.7), 19.7 archived items (2.8), and `weighted_cost` about 31% above
+      9.1 and 4% above the baseline. At most 0.4 diagnostics at once on average: they barely fired.
+    - Reading: on top of notes they bought nothing and cost more; 9.2 made archiving more frequent
+      and larger, 9.3 hardly fired. Under "a mechanism that fails the gate is deleted"
+      (2026-11-12) and Occam's razor, both are deleted: the kernel's citation scoring, read-back
+      handles, archive-locator summary, page-out notice and diagnostics; the SDK switches
+      (`compactionReadsNotes`, `pageOutNotice`, `noteDiagnostics`); the `note_diagnostics` field and
+      its contract; their tests. Implementation in `a939e21e` and `4affbfd0`, reverted by
+      `3185848b` and `5ccc5bae`. The Rust option is back to the single field `notes_budget_tokens`.
 - [x] Task 9.4 (implemented 2026-11-12; to be measured): across sessions, through the existing
   memory channel only.
     - Promotion is the model's (decided 2026-11-12, replacing "the kernel submits `rule` / `index`
@@ -969,13 +939,15 @@ are scheduled once long-horizon can measure them.
     - Files: `context/notes.rs`; `memory/consolidate` in the four SDKs (Rust `consolidate.rs`);
       `benchmark/context-lifecycle/multi-session.mjs`
 
-**Measurement plan (one round at the end of the stage).** Once 9.1–9.3 are implemented, one round
-on DeepSeek: long-horizon, 30 tasks per group, groups `0.2.82-9.0` (done) / `0.2.82-9.1` (budget
-600) / `0.2.82-9.1b` (budget 1500) / `0.2.82-9.2` (9.1 + 9.2) / `0.2.82-9.3` (9.1 + 9.2 + 9.3); the
-final group also runs ledger (30 tasks) to confirm no regression. About 20–25 CNY per group; check
-the balance first (31.51 CNY on 2026-11-11, so a top-up comes first). 9.4 is measured separately on
-multi-session. Local Ollama stress runs (`qwen3.8-27b-ctx8k`, 8k window) are the user's own and
-report through the same lab.
+**Measurement plan.** The original plan of five long-horizon groups of 30 tasks each at the end of
+the stage became, for cost, the two ends first (2026-11-12): `0.2.82-9.1` (notes only) and
+`0.2.82-9.3` (all on), tasks 0–9 each, paired with `0.2.82-9.0`, for 8.6 CNY. Results are under
+9.1 and 9.2/9.3. Still to do: 9.1 on tasks 10–29 (about 13 CNY) to reach 30 pairs; 9.4 on
+multi-session as `none / notes / consolidate`; ledger (30 tasks) on the final configuration to
+confirm no regression. The two local Ollama rounds (`qwen3.8-27b-ctx8k`) support no conclusion: in
+the first, 11 of 14 runs were ended by the kernel because Ollama tool-call ids repeated every turn
+(fixed in `01aea145`); in the second, 55 generations were cut at the 8192-token context, as Qwen's
+thinking did not fit an 8k window and both groups barely finished a task.
 
 **Abandoned directions.** Deciding what to compact from the cache account (8.3, `exp/8.3c`);
 writing summaries synchronously on the compaction path (8.4, code deleted); any kernel-initiated model call, including the earlier draft's `consolidate_notes`
@@ -1047,7 +1019,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
 | 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate, not merged, direction abandoned (`exp/8.3c`); 8.4 failed the gate when measured; its code is deleted |
-| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented); 9.2 compaction reads the graph (implemented); 9.3 the model repairs its notes (the kernel only diagnoses; implemented); 9.4 across sessions: the model promotes with `propose_memory`, consolidation is an ordinary run (implemented). Measured in one round at the end of the stage | In progress |
+| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph; ships with stage 8 once 9.0–9.4 are all done. 9.0 clears measurement confounders (leaked tool-call markup, a new baseline, a paired gate by default); 9.1 in-session notes (implemented; favorable over 10 tasks, 30 still to reach); 9.2 compaction reading the graph and 9.3 note diagnostics (deleted after measurement); 9.4 across sessions: the model promotes with `propose_memory`, consolidation is an ordinary run (implemented; to be measured on multi-session) | In progress |
 
 0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
 rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that

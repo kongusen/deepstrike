@@ -367,28 +367,14 @@ ContextItem {
     - 预算：`notes_budget_tokens` 是 notes 块的 token 上限。超出时 kernel **拒绝这次写入**并在工具结果里给出用量（"notes are full (N of M tokens with this one)：合并、缩短或退役"），不替模型删任何一条；原有笔记原样保留。
     - 证据：`evidence` 里的每一项按 call id、handle 的 source、或工具调用参数里的文本（路径、查询）解析成 item；不带 `evidence` 时，笔记链接到上一条笔记之后到达的工具结果（最多 16 条，`notes_watermark` 记录水位）。每条解析成功的证据一条 `derived_from` 边；`links` 解析成 `links_to` 边，解析不到的在工具结果里告知"尚无此笔记"；`retire` 带 `replaced_by` 时记一条 `supersedes` 边。笔记的 item id 来自同一个分配器，属于 resident 集合，图裁剪不会丢掉它的边。
     - 指令（方向性）：工具说明写"记下你推导出来、之后无法从文件重新读到的东西：累计计数、已完成和未完成的清单、结论、学到的规则；变化时用同一标题重写；`evidence` 写来源"。不写禁令。`update_plan` 不改。
-    - 上报：`context_lifecycle_reported` 增加 `notes_written`（重写也计数）、`notes_active`；四端 SDK 的 `ContextPolicy` 增加 `notesBudgetTokens` / `notes_budget_tokens`；Rust `RuntimeOptions.notes: Option<NotesOptions>`（9.2 起与两个开关合在一起）。
+    - 上报：`context_lifecycle_reported` 增加 `notes_written`（重写也计数）、`notes_active`；四端 SDK 的 `ContextPolicy` 增加 `notesBudgetTokens` / `notes_budget_tokens`；Rust `RuntimeOptions.notes_budget_tokens`。
     - 测试：kernel `context/notes.rs`（预算拒绝、证据解析、链接与退役、压缩后笔记仍在）、driver 三个（工具只在有预算时出现、写入后状态块与 checkpoint、超预算的拒绝）；Node / Python / Rust 各两到三个端到端；WASM 真实 kernel 脚本。
     - 验收（最后一轮实测）：long-horizon 上 `undercount` 与 `count_error` 下降，正确率不低于 `0.2.82-9.0`（配对），`weighted_cost` 不升；ledger 不回退。实验变量：预算（600 / 1500）、指令文本。
-- [x] 任务 9.2（2026-11-11 实现，待最后一轮实测）：压缩读图（证据换出，笔记留下）。
-    - 笔记记下证据解析出的调用 id（`Note.cites`）。`ContextPolicy.compaction_reads_notes` 打开时，collapse / auto 选择归档单元的打分多一项 `cited_by_note`（−12000：足以让被引用的结果先于同等大小的未引用结果换出，不足以压过未完成的调用）；归档后，被引用的调用 id 记进 `Note.archived`，笔记行末尾渲染 `(archived evidence: c12, c15 → read_result)`；这次压缩的摘要换成归档定位（`archive_locator`：归档了几轮、哪些调用 id、哪些路径），`RuleSummarizer` 不再承担记忆。
-    - `ContextPolicy.page_out_notice` 打开时，collapse 在执行前先按同样的打分做一次计划；若要归档的结果里有未被任何笔记引用的，这一轮不压缩，而是在 state turn 里列出它们（`调用 id 工具名(参数前 60 字)`，最多 8 行），下一轮照常压缩并清掉预告。只推迟一次；auto 压缩和 renewal 离硬上限更近，从不推迟。renewal 时预告清空。
-    - 两者都进 checkpoint（`LogicalNote.cites` / `archived`、`LogicalTaskState.page_out_notice`，为空不序列化）。默认关闭，golden 不变。四端 SDK：`compactionReadsNotes` / `pageOutNotice`（Node/WASM），`compaction_reads_notes` / `page_out_notice`（Python），Rust `NotesOptions` 的同名字段。
-    - 测试：kernel 4 个（开关前后被换出的是最旧的 c0 还是被引用的 c2；预告推迟一次并只列未引用的结果；不开预告不推迟；笔记跨 renewal 保留）；Node 端到端一个（小窗口里预告 → 下一轮压缩 → 笔记上出现 c1 的读回句柄 → 摘要是归档定位）；Python 开关序列化。
-    - 验收（最后一轮实测）：在 9.1 开启的前提下，正确率不降，`weighted_cost` 下降，`read_back` 与 `brief_rereads` 不升；推迟压缩带来的 `cache_loss_tokens` 变化记进报告。
-    - 文件：`context/utility.rs`、`context/compression.rs`、`context/notes.rs`、`context/summarizer.rs`、`context/task_state.rs`、`scheduler/state_machine/eviction.rs`
-- [x] 任务 9.3（2026-11-12 实现，待最后一轮实测）：模型自己修（诊断由 kernel 算）。
-    - `ContextPolicy.note_diagnostics` 打开时，kernel 在每次 provider 调用前（`emit_call_llm`）确定地重算笔记的结构诊断，只读笔记、引用和 history 里的工具调用，不读内容的意义：
-        - 死链：`links` 指向的标题没有笔记；
-        - 依据已更新：笔记引用的调用之后，同一工具以完全相同的参数又被调用过（笔记可能过期）；
-        - 近似重复：两条笔记正文的特征词（4.2 的词集）重叠达到较小一方的 80%，且至少 3 个词；
-        - 久悬的问题：`question` 笔记 10 轮以上没有重写或退役。
-    - 渲染：notes 块下的 `notes to check:`（最多 4 行，多出的记 `(+N more)`），提示语是"重要就用 `note` 修，不修也不会怎样"。模型在自己的下一轮决定修不修；kernel 不催，不发 effect，不加调用。修完后下一轮的诊断自然消失。
-    - 诊断进 checkpoint（`LogicalTaskState.note_checks`），`context_lifecycle_reported` 增加 `note_diagnostics`（当前条数）。笔记随 working 分区原样跨 renewal（9.2 的测试已覆盖）。
-    - 四端 SDK：`noteDiagnostics`（Node/WASM），`note_diagnostics`（Python、Rust `NotesOptions`）。默认关闭，golden 不变。
-    - 测试：kernel 两个（四类诊断都能标出，模型补笔记、退役、重写后清空；不开开关没有诊断）；Node 端到端一个（链接到不存在的笔记 → 下一轮状态块里出现诊断 → 模型补上后消失）。
-    - 验收（最后一轮实测）：在 9.1 + 9.2 开启的前提下，正确率不降、`weighted_cost` 不升；`note_diagnostics` 在运行中出现后会下降（模型确实在修）。
-    - 文件：`context/notes.rs`、`context/task_state.rs`、`scheduler/state_machine/mod.rs`
+    - 实测（2026-11-12，DeepSeek，long-horizon 第 0–9 题，`0.2.82-9.1`，预算 600，与 `0.2.82-9.0` 配对）：正确 6/10 → 7/10，`count_error` 1.6 → 0.4，brief 重读 1.4 → 0.2，`read_back` 1.7 → 0.1，压缩 6.8 → 3.7 次，调用 47.6 → 43.6 次，`weighted_cost` −21%，缓存损失 −35%，无一题跑到轮数上限。模型每题写或重写笔记约 23 次，同时只持有 1–2 条，即一直在更新一条累计计数。方向全部有利，但 10 对的 95% 区间都跨 0，不显著。待补第 10–29 题凑满 30 对：过 gate 则默认开启，不过则删除。
+- [ ] 任务 9.2（2026-11-12 实测后删除）：压缩读图——被笔记引用的结果优先换出、归档后渲染读回句柄、压缩摘要改为归档定位、要换出未被引用的结果时推迟一轮并预告。
+- [ ] 任务 9.3（2026-11-12 实测后删除）：kernel 每轮算出笔记的结构诊断（死链、依据已更新、近似重复、久悬的问题），渲染给模型自己修。
+    - 实测（同一批题 0–9，`0.2.82-9.3` 为 9.1 + 9.2 + 9.3 全开，与 9.1 和 `0.2.82-9.0` 对照）：正确 7/10，与只开笔记相同；`count_error` 0.3（9.1 为 0.4）；但调用 54.3 次（9.1 为 43.6）、压缩 5.8 次（3.7）、被归档条目 19.7（2.8），`weighted_cost` 比 9.1 高约 31%，比基线高 4%。诊断最多同时出现 0.4 条，几乎没有触发。
+    - 判断：在笔记之上没有带来任何收益，只增加成本。9.2 让归档更频繁、更大；9.3 基本没有触发。按"没过 gate 的机制直接删除"（2026-11-12）和奥卡姆剃刀，两者都删除：kernel 的引用打分、读回句柄、归档定位摘要、换出预告、诊断计算，四端 SDK 的开关（`compactionReadsNotes`、`pageOutNotice`、`noteDiagnostics`），`note_diagnostics` 上报字段与 contract，相关测试。实现见提交 `a939e21e`、`4affbfd0`，撤回为 `3185848b`、`5ccc5bae`。Rust 的选项回到单一字段 `notes_budget_tokens`。
 - [x] 任务 9.4（2026-11-12 实现，待实测）：跨会话，只用已有的记忆通道。
     - 提升由模型自己做（2026-11-12 决定，替代"run 结束时 kernel 自动提交 `rule` / `index` 笔记"）：自动提交本身是一条"标成 rule 就进长期记忆"的规则，又是 kernel 替模型判断；机制上 kernel 一次只允许一个待处理的 `PersistMemory`（DEC-3），终止阶段排队多条会牵动 `run_terminal` 的时序。改为：模型可用 `propose_memory`（宿主开启时）时，`note` 工具说明里多一句"笔记随任务结束；值得留给以后任务的规则或索引，可以用 `propose_memory` 提交"。准入、配额、审核照旧由 kernel 和宿主的候选通道负责。
     - 注入沿用现有 recall：新会话按目标召回，命中以索引行进入 knowledge，正文用 `memory(record_id)` 读。
@@ -398,7 +384,7 @@ ContextItem {
     - 验收（实测）：第 N 个会话的正确率高于 `none`（配对），注入的 token 不随会话数线性增长；整理 run 的成本计入 `consolidate` 的 `weighted_cost`。
     - 文件：`context/notes.rs`；四端 SDK 的 `memory/consolidate`（Rust `consolidate.rs`）；`benchmark/context-lifecycle/multi-session.mjs`
 
-**实测计划（阶段末一次做完）。** 9.1–9.3 全部实现后，在 DeepSeek 上跑一轮：long-horizon 每组 30 题，分组 `0.2.82-9.0`（已有）/ `0.2.82-9.1`（预算 600）/ `0.2.82-9.1b`（预算 1500）/ `0.2.82-9.2`（9.1 + 9.2）/ `0.2.82-9.3`（9.1 + 9.2 + 9.3）；最终组另跑 ledger 30 题确认不回退。每组约 20–25 元，开跑前确认余额（2026-11-11 为 31.51 元，需先充值）。9.4 在 multi-session 上单独测。本地 Ollama（`qwen3.8-27b-ctx8k`，8k 窗口）的极限测试由使用者自行跑，结果用同一个 lab 报告。
+**实测计划。** 原计划阶段末一次跑五组 long-horizon（每组 30 题），因成本改为先跑两头（2026-11-12）：`0.2.82-9.1`（只开笔记）与 `0.2.82-9.3`（全开），各取第 0–9 题与 `0.2.82-9.0` 配对，共花 8.6 元。结果见 9.1 与 9.2/9.3。剩下的：9.1 补第 10–29 题（约 13 元）凑满 30 对；9.4 在 multi-session 上按 `none / notes / consolidate` 测；最终配置跑 ledger 30 题确认不回退。本地 Ollama（`qwen3.8-27b-ctx8k`）的两轮测试不作结论：第一轮 14 次运行里 11 次因 Ollama 工具调用 id 每轮重复而被 kernel 终止（已修复，`01aea145`）；第二轮 55 次生成在 8192 上下文处被截断，Qwen 的思考塞不进 8k 窗口，两组都几乎做不完任务。
 
 **放弃的方向。** 按缓存账决定压缩什么（8.3，`exp/8.3c`）；在压缩路径上同步生成摘要（8.4，代码已删除）；任何由 kernel 发起的模型调用，包括之前草稿里的 `consolidate_notes` effect；`RuleSummarizer` 作为记忆的载体。保留阶段 8 的测量：缓存账本、按价格加权的配对 gate、long-horizon 基准。
 
@@ -437,7 +423,7 @@ ContextItem {
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
 | 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入，方向放弃（`exp/8.3c`）；8.4 实测未通过 gate，代码已删除 |
-| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记（已实现）；9.2 压缩读图（已实现）；9.3 模型自己修笔记（kernel 只算诊断，已实现）；9.4 跨会话：模型用 `propose_memory` 提升，整理是普通 run（已实现）。实测在阶段末一次做完 | 进行中 |
+| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记（已实现，10 题方向有利，待补满 30 题）；9.2 压缩读图、9.3 笔记诊断（实测后删除）；9.4 跨会话：模型用 `propose_memory` 提升，整理是普通 run（已实现，待在 multi-session 上实测） | 进行中 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 
