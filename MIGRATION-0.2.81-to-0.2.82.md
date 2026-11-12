@@ -38,8 +38,6 @@ written by 0.2.82 carry the new optional field `cache_ledger`; 0.2.81 cannot rea
   `compactionReadsNotes`, `compressed.summary` is an archive locator (`archived N turn(s), …`), not
   the rule digest; with `pageOutNotice`, a collapse can run one turn later than the pressure
   threshold alone would put it.
-- With `noteDiagnostics` / `note_diagnostics` (plan task 9.3), the state turn may carry a
-  `notes to check:` block and `context_lifecycle_reported` may carry `note_diagnostics`.
 - Rendering, compaction and provider requests are unchanged. Cache-aware compaction (plan task
   8.3) was measured and is not part of this release; see the plan.
 

@@ -113,8 +113,6 @@ pub struct ContextConfig {
     /// Plan task 9.2 · a range compaction that would archive results no note cites is deferred
     /// once, with the items about to leave listed in the state turn.
     pub page_out_notice: bool,
-    /// Plan task 9.3 · structural diagnostics of the notes, rendered for the model to act on.
-    pub note_diagnostics: bool,
 }
 
 impl Default for ContextConfig {
@@ -142,7 +140,6 @@ impl Default for ContextConfig {
             notes_budget_tokens: 0,
             compaction_reads_notes: false,
             page_out_notice: false,
-            note_diagnostics: false,
         }
     }
 }

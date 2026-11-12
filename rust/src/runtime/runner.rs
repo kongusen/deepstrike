@@ -128,8 +128,6 @@ pub struct NotesOptions {
     pub compaction_reads_notes: bool,
     /// A range compaction about to archive results no note cites waits one turn, listing them.
     pub page_out_notice: bool,
-    /// Plan task 9.3 · structural diagnostics of the notes in the task state.
-    pub note_diagnostics: bool,
 }
 
 pub struct RuntimeOptions {
@@ -1200,7 +1198,6 @@ impl RuntimeRunner {
                     || notes.budget_tokens > 0
                     || notes.compaction_reads_notes
                     || notes.page_out_notice
-                    || notes.note_diagnostics
                 {
                     let mut config = serde_json::Map::new();
                     let mut context_policy = serde_json::Map::new();
@@ -1218,9 +1215,6 @@ impl RuntimeRunner {
                     }
                     if notes.page_out_notice {
                         context_policy.insert("page_out_notice".into(), true.into());
-                    }
-                    if notes.note_diagnostics {
-                        context_policy.insert("note_diagnostics".into(), true.into());
                     }
                     if !context_policy.is_empty() {
                         config.insert("context_policy".into(), serde_json::Value::Object(context_policy));

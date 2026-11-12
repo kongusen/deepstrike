@@ -188,8 +188,6 @@ export type SessionEvent =
       /** Plan task 9.1 · notes the model wrote (rewrites count again) and notes it holds now. */
       notes_written?: number
       notes_active?: number
-      /** Plan task 9.3 · diagnostics the notes carry at the report. */
-      note_diagnostics?: number
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

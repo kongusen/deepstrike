@@ -23,17 +23,6 @@ pub const NOTE_TITLE_MAX_CHARS: usize = 120;
 /// Tool results a note written without explicit evidence derives from, at most.
 pub const NOTE_DEFAULT_EVIDENCE_CAP: usize = 16;
 
-/// Plan task 9.3 · diagnostics rendered at most.
-pub const NOTE_CHECK_LINES: usize = 4;
-
-/// Plan task 9.3 · turns a `question` note may stay open before it is flagged.
-pub const QUESTION_STALE_TURNS: u32 = 10;
-
-/// Plan task 9.3 · share of the smaller note's distinctive terms two notes must share to be
-/// flagged as near duplicates, in percent, and the fewest terms a note needs to be compared.
-pub const DUPLICATE_OVERLAP_PERCENT: usize = 80;
-pub const DUPLICATE_MIN_TERMS: usize = 3;
-
 /// Plan task 9.2 · results a page-out notice lists before `(+N more)`.
 pub const PAGE_OUT_NOTICE_LINES: usize = 8;
 
@@ -317,82 +306,6 @@ proposed for long-term memory with `propose_memory`.",
         }
         self.partitions.task_state.page_out_notice = lines;
         true
-    }
-
-    /// Plan task 9.3 · recompute the notes' structural diagnostics. Deterministic: it reads the
-    /// notes, their citations and the tool calls in history, never what anything means. The model
-    /// sees them in the state turn and decides on its own turn whether to fix them.
-    pub fn refresh_note_checks(&mut self, turn: u32) {
-        let checks = if self.config.note_diagnostics { self.note_checks(turn) } else { Vec::new() };
-        self.partitions.task_state.note_checks = checks;
-    }
-
-    pub(crate) fn note_checks(&self, turn: u32) -> Vec<String> {
-        let notes = &self.partitions.task_state.notes;
-        let mut checks = Vec::new();
-        // Dead links: a title the model linked to that has no note.
-        for note in notes {
-            for link in &note.links {
-                if self.partitions.task_state.note_index(link).is_none() {
-                    checks.push(format!("{:?} links to {link:?}, which has no note", note.title));
-                }
-            }
-        }
-        // Superseded evidence: a cited call was made again, with the same arguments, later on.
-        let calls: Vec<&crate::types::message::ToolCall> = self
-            .partitions
-            .history
-            .messages()
-            .iter()
-            .flat_map(|message| message.tool_calls.iter())
-            .collect();
-        for note in notes {
-            for cited in &note.cites {
-                let Some(at) = calls.iter().position(|call| call.id == cited.as_str()) else {
-                    continue;
-                };
-                let original = calls[at];
-                if let Some(again) = calls[at + 1..]
-                    .iter()
-                    .find(|call| call.name == original.name && call.arguments == original.arguments)
-                {
-                    checks.push(format!(
-                        "{:?} cites {cited}, but {} was called again with the same arguments ({}) since",
-                        note.title, original.name, again.id
-                    ));
-                }
-            }
-        }
-        // Near duplicates: two notes sharing most of their distinctive terms.
-        let term_sets: Vec<_> = notes.iter().map(|note| crate::lexical::terms(&note.body)).collect();
-        for (i, left) in term_sets.iter().enumerate() {
-            for (j, right) in term_sets.iter().enumerate().skip(i + 1) {
-                let smaller = left.len().min(right.len());
-                if smaller < DUPLICATE_MIN_TERMS {
-                    continue;
-                }
-                let shared = crate::lexical::overlap_count(left, right) as usize;
-                if shared * 100 >= smaller * DUPLICATE_OVERLAP_PERCENT {
-                    checks.push(format!("{:?} and {:?} say much the same", notes[i].title, notes[j].title));
-                }
-            }
-        }
-        // Long-open questions.
-        for note in notes {
-            if note.kind == NoteKind::Question && turn.saturating_sub(note.turn) >= QUESTION_STALE_TURNS {
-                checks.push(format!(
-                    "question {:?} has been open for {} turns",
-                    note.title,
-                    turn.saturating_sub(note.turn)
-                ));
-            }
-        }
-        if checks.len() > NOTE_CHECK_LINES {
-            let more = checks.len() - NOTE_CHECK_LINES;
-            checks.truncate(NOTE_CHECK_LINES);
-            checks.push(format!("(+{more} more)"));
-        }
-        checks
     }
 
     fn add_note_edge(&mut self, from: ItemId, to: ItemId, relation: Relation) {
@@ -688,50 +601,6 @@ mod tests {
         let mut mgr = reading_manager(true, false);
         assert!(!mgr.defer_for_page_out_notice(10));
         assert!(mgr.partitions.task_state.page_out_notice.is_empty());
-    }
-
-    fn diagnosing_manager() -> ContextManager {
-        let mut mgr = ContextManager::with_config(
-            100_000,
-            ContextConfig { notes_budget_tokens: 2_000, note_diagnostics: true, ..ContextConfig::default() },
-            ContextTokenEngine::char_approx(),
-        );
-        mgr.init_task("count the errors".into(), vec![]);
-        mgr
-    }
-
-    #[test]
-    fn diagnostics_flag_dead_links_reread_evidence_duplicates_and_stale_questions() {
-        let mut mgr = diagnosing_manager();
-        read(&mut mgr, "c1", "logs/a.log", "ERROR x");
-        mgr.write_note(&NoteRequest { links: vec!["Rules".into()], ..write("Tally", "svc-a has two qualifying errors") }, 1).unwrap();
-        mgr.write_note(&write("Copy", "svc-a has two qualifying errors so far"), 1).unwrap();
-        mgr.write_note(&NoteRequest { kind: Some(NoteKind::Question), ..write("Badge?", "where is the badge number") }, 1).unwrap();
-        read(&mut mgr, "c2", "logs/a.log", "ERROR x");
-        mgr.refresh_note_checks(12);
-        let checks = mgr.partitions.task_state.note_checks.clone();
-        assert!(checks.iter().any(|c| c.contains("links to \"Rules\", which has no note")), "{checks:?}");
-        assert!(checks.iter().any(|c| c.contains("cites c1, but read_file was called again") && c.contains("(c2)")), "{checks:?}");
-        assert!(checks.iter().any(|c| c.contains("\"Tally\" and \"Copy\" say much the same")), "{checks:?}");
-        assert!(checks.iter().any(|c| c.contains("question \"Badge?\" has been open for 11 turns")), "{checks:?}");
-        assert!(mgr.partitions.task_state.format_compact().contains("notes to check"));
-
-        // Fixing them clears them: the model writes the missing note, merges, answers.
-        mgr.write_note(&write("Rules", "skip ids ending in 0"), 12).unwrap();
-        let retire = |title: &str| NoteRequest { action: NoteAction::Retire, title: title.into(), ..NoteRequest::default() };
-        mgr.write_note(&retire("Copy"), 12).unwrap();
-        mgr.write_note(&retire("Badge?"), 12).unwrap();
-        mgr.write_note(&NoteRequest { evidence: vec!["c2".into()], links: vec!["Rules".into()], ..write("Tally", "svc-a has two qualifying errors") }, 12).unwrap();
-        mgr.refresh_note_checks(13);
-        assert!(mgr.partitions.task_state.note_checks.is_empty(), "{:?}", mgr.partitions.task_state.note_checks);
-    }
-
-    #[test]
-    fn without_the_switch_there_are_no_diagnostics() {
-        let mut mgr = manager(500);
-        mgr.write_note(&NoteRequest { links: vec!["Missing".into()], ..write("A", "b") }, 1).unwrap();
-        mgr.refresh_note_checks(2);
-        assert!(mgr.partitions.task_state.note_checks.is_empty());
     }
 
     #[test]

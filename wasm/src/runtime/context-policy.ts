@@ -24,9 +24,6 @@ export interface ContextPolicy {
   /** Plan task 9.2 · a range compaction about to archive results no note cites waits one turn,
    *  listing them in the task state. Off by default. */
   pageOutNotice?: boolean
-  /** Plan task 9.3 · structural diagnostics of the notes (dead links, re-read evidence, near
-   *  duplicates, long-open questions) in the task state, for the model to act on. Off by default. */
-  noteDiagnostics?: boolean
 }
 
 export interface ContextPolicyWire {
@@ -39,7 +36,6 @@ export interface ContextPolicyWire {
   notes_budget_tokens?: number
   compaction_reads_notes?: boolean
   page_out_notice?: boolean
-  note_diagnostics?: boolean
 }
 
 export interface ContextPolicyOverrides extends Partial<Omit<ContextPolicy, "pressureThresholds">> {
@@ -93,7 +89,7 @@ export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire
   }
   const notes = policy.notesBudgetTokens ?? 0
   assertIntegerAtLeast(notes, 0, "notesBudgetTokens")
-  for (const field of ["compactionReadsNotes", "pageOutNotice", "noteDiagnostics"] as const) {
+  for (const field of ["compactionReadsNotes", "pageOutNotice"] as const) {
     if (policy[field] !== undefined && typeof policy[field] !== "boolean") throw new TypeError(`${field} must be boolean`)
   }
 
@@ -107,7 +103,6 @@ export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire
     ...(notes > 0 ? { notes_budget_tokens: notes } : {}),
     ...(policy.compactionReadsNotes ? { compaction_reads_notes: true } : {}),
     ...(policy.pageOutNotice ? { page_out_notice: true } : {}),
-    ...(policy.noteDiagnostics ? { note_diagnostics: true } : {}),
   }
 }
 

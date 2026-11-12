@@ -349,9 +349,6 @@ pub struct ContextPolicy {
     /// Plan task 9.2 · one deferred compaction with a page-out notice; off by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_out_notice: Option<bool>,
-    /// Plan task 9.3 · structural diagnostics of the notes; off by default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note_diagnostics: Option<bool>,
 }
 
 /// The compaction tiers a provider performs natively. The host declares them only when the
@@ -743,8 +740,6 @@ pub struct ResolvedContextPolicy {
     pub compaction_reads_notes: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub page_out_notice: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub note_diagnostics: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1031,7 +1026,6 @@ impl ConfigDefaults {
                     notes_budget_tokens: 0,
                     compaction_reads_notes: false,
                     page_out_notice: false,
-                    note_diagnostics: false,
                 },
                 recovery_policy: ResolvedRecoveryPolicy {
                     provider_recovery_attempts: 1,
@@ -1846,9 +1840,6 @@ fn resolve_context(
         if let Some(value) = policy.page_out_notice {
             resolved.page_out_notice = value;
         }
-        if let Some(value) = policy.note_diagnostics {
-            resolved.note_diagnostics = value;
-        }
     }
 
     let t = &resolved.pressure_thresholds_ppm;
@@ -2326,7 +2317,6 @@ mod tests {
                 notes_budget_tokens: None,
                 compaction_reads_notes: None,
                 page_out_notice: None,
-                note_diagnostics: None,
             }),
             recovery_policy: Some(RecoveryPolicy {
                 provider_recovery_attempts: Some(2),

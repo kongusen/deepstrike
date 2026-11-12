@@ -37,8 +37,6 @@ class ContextPolicy(TypedDict, total=False):
     compaction_reads_notes: bool
     #: Plan task 9.2 · a range compaction about to archive uncited results waits one turn.
     page_out_notice: bool
-    #: Plan task 9.3 · structural diagnostics of the notes in the task state.
-    note_diagnostics: bool
 
 
 class ContextPolicyWire(TypedDict, total=False):
@@ -52,7 +50,6 @@ class ContextPolicyWire(TypedDict, total=False):
     notes_budget_tokens: int
     compaction_reads_notes: bool
     page_out_notice: bool
-    note_diagnostics: bool
 
 
 DEFAULT_CONTEXT_POLICY: ContextPolicy = {
@@ -114,7 +111,7 @@ def normalize_context_policy(policy: ContextPolicy) -> ContextPolicyWire:
     _integer_at_least(notes, 0, "notes_budget_tokens")
     if notes > 0:
         wire["notes_budget_tokens"] = notes
-    for field in ("compaction_reads_notes", "page_out_notice", "note_diagnostics"):
+    for field in ("compaction_reads_notes", "page_out_notice"):
         value = policy.get(field, False)
         if not isinstance(value, bool):
             raise TypeError(f"{field} must be boolean")

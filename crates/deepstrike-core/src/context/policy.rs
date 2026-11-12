@@ -26,9 +26,6 @@ pub struct ContextPolicy {
     /// Plan task 9.2 · one deferred compaction with a page-out notice.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub page_out_notice: bool,
-    /// Plan task 9.3 · structural diagnostics of the notes in the state turn.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub note_diagnostics: bool,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -90,7 +87,6 @@ impl ContextPolicy {
         config.notes_budget_tokens = self.notes_budget_tokens;
         config.compaction_reads_notes = self.compaction_reads_notes;
         config.page_out_notice = self.page_out_notice;
-        config.note_diagnostics = self.note_diagnostics;
     }
 }
 
@@ -121,7 +117,6 @@ mod tests {
             notes_budget_tokens: 0,
             compaction_reads_notes: false,
             page_out_notice: false,
-            note_diagnostics: false,
         }
     }
 

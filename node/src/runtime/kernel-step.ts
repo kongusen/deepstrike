@@ -259,7 +259,6 @@ export interface KernelObservation {
   cache_tail_tokens?: number
   notes_written?: number
   notes_active?: number
-  note_diagnostics?: number
   // `reason` is a RollbackReason for rollback observations, but a plain string
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string

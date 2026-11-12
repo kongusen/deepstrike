@@ -141,7 +141,6 @@ export interface KernelObservation {
   cache_tail_tokens?: number
   notes_written?: number
   notes_active?: number
-  note_diagnostics?: number
   archived_count?: number
   turn?: number
   checkpoint_history_len?: number

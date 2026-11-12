@@ -140,7 +140,7 @@ def _project_kernel_observation(
             if rows:
                 event[field] = list(rows)
         for field in ("history_items_omitted", "edges_omitted", "prefix_breaks_omitted",
-                      "cache_tail_tokens", "notes_written", "notes_active", "note_diagnostics"):
+                      "cache_tail_tokens", "notes_written", "notes_active"):
             if _get(obs, field, 0):
                 event[field] = obs[field]
         return event

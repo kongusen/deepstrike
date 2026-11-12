@@ -890,9 +890,6 @@ pub struct LogicalTaskState {
     /// Plan task 9.2 · a deferred compaction's page-out notice.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub page_out_notice: Vec<String>,
-    /// Plan task 9.3 · the notes' diagnostics.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub note_checks: Vec<String>,
 }
 
 /// Plan task 9.1 · one note, projected.
