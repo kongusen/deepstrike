@@ -468,6 +468,10 @@ pub struct Gate {
     pub paired: Vec<PairedCheck>,
     /// Fewer pairs than this and a paired check fails as "insufficient samples".
     pub min_pairs: usize,
+    /// DEC-13 · in every scenario, at least one of these metrics must be significantly better
+    /// (its whole 95% interval on the better side of zero). A mechanism earns its place by making
+    /// something better; "not shown to be worse" is not enough. Empty: no such requirement.
+    pub improve: Vec<String>,
 }
 
 /// Plan task 8.1 · a paired check: the candidate is "no worse" on `metric` only if the 95%
@@ -480,6 +484,9 @@ pub struct Gate {
 pub struct PairedCheck {
     pub metric: String,
     pub tolerance: f64,
+    /// `metric:ns` · DEC-13 · fail only when the candidate is significantly worse: the whole 95%
+    /// interval lies on the worse side of zero. The tolerance is unused.
+    pub not_significantly_worse: bool,
 }
 
 impl PairedCheck {
@@ -487,18 +494,36 @@ impl PairedCheck {
     pub fn parse(text: &str) -> Result<Self, String> {
         let (metric, tolerance) = text
             .split_once(':')
-            .ok_or_else(|| format!("{text:?}: expected <metric>:<tolerance>"))?;
+            .ok_or_else(|| format!("{text:?}: expected <metric>:<tolerance> or <metric>:ns"))?;
+        let metric = metric.trim().to_string();
+        if tolerance.trim() == "ns" {
+            return Ok(Self { metric, tolerance: 0.0, not_significantly_worse: true });
+        }
         let tolerance = tolerance.trim().parse::<f64>().map_err(|e| format!("{text:?}: {e}"))?;
-        Ok(Self { metric: metric.trim().to_string(), tolerance })
+        Ok(Self { metric, tolerance, not_significantly_worse: false })
     }
 }
 
 /// Default for [`Gate::min_pairs`].
 pub const MIN_PAIRS: usize = 30;
 
-/// Plan task 9.0 · the paired checks `gate` runs when `--paired` is not given: success may not
-/// drop by more than five points, and price-weighted cost may not rise.
-pub const DEFAULT_PAIRED: &str = "success_rate:0.05,weighted_cost:0";
+/// DEC-13 · the paired checks `gate` runs when `--paired` is not given: the candidate may be
+/// neither significantly less successful nor significantly more expensive per correct answer.
+/// Together with [`DEFAULT_IMPROVE`], a change passes only if it makes one of the two significantly
+/// better and neither significantly worse.
+///
+/// Changed after the 0.2.82 measurements, and said so. The earlier default
+/// (`success_rate:0.05,weighted_cost:0`, plan task 8.1) was written for changes meant to save cost:
+/// it asked cost to be significantly *lower*. Notes (plan task 9.1) raised success by 17–50 points
+/// and cut cost per correct answer by 43–68% where it was significant, yet failed that default in
+/// every scenario on one side or the other. What a change is for is getting answers right at a
+/// price; `cost_per_success` measures exactly that.
+pub const DEFAULT_PAIRED: &str = "success_rate:ns,cost_per_success:ns";
+
+/// DEC-13 · the metrics of which `gate` requires at least one to be significantly better when
+/// `--improve` is not given. Without it, "not significantly worse" passes any small sample: 8.3b
+/// (long-horizon 12/30 → 8/30) would have passed.
+pub const DEFAULT_IMPROVE: &str = "success_rate,cost_per_success";
 
 /// One task's value of a metric, for pairing. `None` when the trial does not measure it.
 pub fn trial_metric(trial: &Trial, metric: &str, prices: &PriceTable) -> Option<f64> {
@@ -566,6 +591,58 @@ pub fn bootstrap_interval(diffs: &[f64]) -> (f64, f64) {
     (at(0.025), at(0.975))
 }
 
+/// DEC-13 · price-weighted cost per correct answer, a scenario-level ratio.
+pub const COST_PER_SUCCESS: &str = "cost_per_success";
+
+/// `cost_per_success` compared over pairs: the relative change of Σcost / Σsuccesses, with a
+/// fixed-seed bootstrap over the pairs. A resample in which either side answered nothing is
+/// skipped (its ratio is undefined); with no successes at all the interval is unbounded upward.
+pub fn cost_per_success_result(pairs: &[(&Trial, &Trial)], prices: &PriceTable) -> PairedResult {
+    const RESAMPLES: usize = 2000;
+    let rows: Vec<(f64, f64, f64, f64)> = pairs
+        .iter()
+        .map(|(b, c)| {
+            (
+                weighted_cost(b, prices),
+                f64::from(u8::from(b.success)),
+                weighted_cost(c, prices),
+                f64::from(u8::from(c.success)),
+            )
+        })
+        .collect();
+    let ratio = |index: &mut dyn Iterator<Item = usize>| -> Option<f64> {
+        let (mut bc, mut bs, mut cc, mut cs) = (0.0, 0.0, 0.0, 0.0);
+        for i in index {
+            let (a, b, c, d) = rows[i];
+            bc += a;
+            bs += b;
+            cc += c;
+            cs += d;
+        }
+        (bs > 0.0 && cs > 0.0 && bc > 0.0).then(|| (cc / cs) / (bc / bs) - 1.0)
+    };
+    let n = rows.len();
+    let Some(mean) = ratio(&mut (0..n)) else {
+        return PairedResult { pairs: n, mean: f64::INFINITY, low: f64::INFINITY, high: f64::INFINITY };
+    };
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut samples: Vec<f64> = (0..RESAMPLES)
+        .filter_map(|_| ratio(&mut (0..n).map(|_| (next() % n as u64) as usize).collect::<Vec<_>>().into_iter()))
+        .collect();
+    if samples.is_empty() {
+        return PairedResult { pairs: n, mean, low: mean, high: mean };
+    }
+    samples.sort_by(f64::total_cmp);
+    let at = |q: f64| samples[((samples.len() as f64 - 1.0) * q).round() as usize];
+    PairedResult { pairs: n, mean, low: at(0.025), high: at(0.975) }
+}
+
 /// The result of one paired check in one scenario.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairedResult {
@@ -579,6 +656,9 @@ pub struct PairedResult {
 /// Compare `metric` task by task. Differences are `candidate − baseline`; for a lower-is-better
 /// metric they are divided by the baseline mean, so the interval reads as a relative change.
 pub fn paired_result(pairs: &[(&Trial, &Trial)], metric: &str, prices: &PriceTable) -> PairedResult {
+    if metric == COST_PER_SUCCESS {
+        return cost_per_success_result(pairs, prices);
+    }
     let values: Vec<(f64, f64)> = pairs
         .iter()
         .filter_map(|(b, c)| Some((trial_metric(b, metric, prices)?, trial_metric(c, metric, prices)?)))
@@ -606,7 +686,7 @@ impl Gate {
     ) -> Vec<GateFailure> {
         let summaries = summarize_with(trials, prices);
         let mut failures = self.check(&summaries, baseline, candidate);
-        if self.paired.is_empty() {
+        if self.paired.is_empty() && self.improve.is_empty() {
             return failures;
         }
         let mut scenarios: Vec<&str> = summaries
@@ -618,6 +698,19 @@ impl Gate {
         let min_pairs = if self.min_pairs == 0 { MIN_PAIRS } else { self.min_pairs };
         for scenario in scenarios {
             let pairs = pair_trials(trials, scenario, baseline, candidate);
+            if !self.improve.is_empty() {
+                let improved = self.improve.iter().any(|metric| {
+                    let result = paired_result(&pairs, metric, prices);
+                    if HIGHER_IS_BETTER.contains(&metric.as_str()) { result.low > 0.0 } else { result.high < 0.0 }
+                });
+                if pairs.len() >= min_pairs && !improved {
+                    failures.push(GateFailure {
+                        scenario: scenario.to_string(),
+                        metric: format!("improve {}", self.improve.join("|")),
+                        detail: "none of these is significantly better".to_string(),
+                    });
+                }
+            }
             for check in &self.paired {
                 let result = paired_result(&pairs, &check.metric, prices);
                 let fail = |detail: String| GateFailure {
@@ -637,7 +730,13 @@ impl Gate {
                     "mean {:+.4}, 95% CI [{:+.4}, {:+.4}] over {} pairs",
                     result.mean, result.low, result.high, result.pairs
                 );
-                if higher_better && result.low < -check.tolerance {
+                if check.not_significantly_worse {
+                    if higher_better && result.high < 0.0 {
+                        failures.push(fail(format!("{interval}: significantly lower")));
+                    } else if !higher_better && result.low > 0.0 {
+                        failures.push(fail(format!("{interval}: significantly higher")));
+                    }
+                } else if higher_better && result.low < -check.tolerance {
                     failures.push(fail(format!("{interval}: lower bound below -{}", check.tolerance)));
                 } else if !higher_better && result.high > check.tolerance {
                     failures.push(fail(format!("{interval}: upper bound above +{}", check.tolerance)));
@@ -1028,7 +1127,8 @@ mod tests {
         let checks: Vec<PairedCheck> =
             DEFAULT_PAIRED.split(',').map(|c| PairedCheck::parse(c).unwrap()).collect();
         let metrics: Vec<&str> = checks.iter().map(|c| c.metric.as_str()).collect();
-        assert_eq!(metrics, ["success_rate", "weighted_cost"]);
+        assert_eq!(metrics, ["success_rate", "cost_per_success"]);
+        assert!(checks.iter().all(|c| c.not_significantly_worse));
     }
 
     #[test]
@@ -1074,6 +1174,54 @@ mod tests {
         let failures = few.check_trials(&trials, &prices, "base", "cand");
         assert!(failures.iter().all(|f| f.detail.starts_with("insufficient samples: 40 pairs")), "{failures:?}");
         assert!(PairedCheck::parse("success_rate").is_err());
+    }
+
+    #[test]
+    fn cost_per_success_judges_what_an_answer_costs() {
+        let run = |variant: &str, task: usize, success: bool, input: u64| Trial {
+            cost: Cost { input_tokens: input, ..Cost::default() },
+            ..trial(variant, &format!("t{task}"), success, 0, 0)
+        };
+        let prices = PriceTable::default();
+        let default_gate = || Gate {
+            paired: DEFAULT_PAIRED.split(',').map(|c| PairedCheck::parse(c).unwrap()).collect(),
+            improve: DEFAULT_IMPROVE.split(',').map(str::to_string).collect(),
+            ..Gate::default()
+        };
+        // The candidate costs 20% more per task but answers 36 of 40 instead of 20: each correct
+        // answer is cheaper. The old default (`weighted_cost:0`) fails it; DEC-13's passes it.
+        let mut trials = Vec::new();
+        for task in 0..40 {
+            trials.push(run("base", task, task % 2 == 0, 1000));
+            trials.push(run("cand", task, task % 10 != 0, 1200));
+        }
+        assert_eq!(default_gate().check_trials(&trials, &prices, "base", "cand"), vec![]);
+        let old = Gate {
+            paired: vec![PairedCheck::parse("weighted_cost:0").unwrap()],
+            ..Gate::default()
+        };
+        assert_eq!(old.check_trials(&trials, &prices, "base", "cand").len(), 1);
+        // Same answers at four times the price per task: significantly dearer per answer.
+        let mut dear = Vec::new();
+        for task in 0..40 {
+            dear.push(run("base", task, task % 2 == 0, 1000));
+            dear.push(run("cand", task, task % 2 == 0, 4000));
+        }
+        let failures = default_gate().check_trials(&dear, &prices, "base", "cand");
+        let metrics: Vec<&str> = failures.iter().map(|f| f.metric.as_str()).collect();
+        assert_eq!(metrics, ["improve success_rate|cost_per_success", "paired cost_per_success"], "{failures:?}");
+        assert!(failures[1].detail.ends_with("significantly higher"), "{failures:?}");
+        // The same price and the same answers: not worse, but not better either — it fails.
+        let mut same = Vec::new();
+        for task in 0..40 {
+            same.push(run("base", task, task % 2 == 0, 1000));
+            same.push(run("cand", task, task % 2 == 0, 1000));
+        }
+        let failures = default_gate().check_trials(&same, &prices, "base", "cand");
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert_eq!(failures[0].detail, "none of these is significantly better");
+        let result = cost_per_success_result(&pair_trials(&dear, "long-task", "base", "cand"), &prices);
+        assert!((result.mean - 3.0).abs() < 1e-9, "{result:?}");
     }
 
     #[test]
