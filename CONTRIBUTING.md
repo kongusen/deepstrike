@@ -60,6 +60,25 @@ npm test
 - Keep generated files and dependency updates scoped to the change.
 - Include a clear PR description with motivation, approach, and verification commands.
 
+## Changes to Context Management (DEC-13)
+
+A change that alters what the model sees — compaction, rendering, memory, notes — is judged by
+whether the model does better, measured on a real model, not by whether the mechanism works.
+See [DEC-13](docs/en/decisions/013-model-led-context.md).
+
+- The kernel never initiates a model call to manage context. The model decides what matters
+  through its own tools; the kernel keeps what it wrote, enforces budgets and records provenance.
+- A new mechanism enters behind a switch that is off by default.
+- Before it becomes the default it passes the paired gate on 30 or more tasks, against the
+  configuration without it, on the same tasks:
+  `cargo run -p deepstrike-lab -- gate <trials.jsonl> --baseline <v> --candidate <v>`
+  (success or price-weighted cost per correct answer significantly better, neither significantly
+  worse, in every scenario it targets).
+- A mechanism that fails the gate is deleted — code, switches, contracts, tests and docs — and only
+  its measurement stays in the plan. There are no dormant switches.
+- Rule out provider-protocol confounders before measuring a context change: in 0.2.82, leaked
+  tool-call markup and repeated tool-call ids ended more runs than any context policy did.
+
 ## Commit Style
 
 Use concise conventional-style subjects:

@@ -344,7 +344,7 @@ ContextItem {
 - **证据层只增不改。** 原始 item 与归档是唯一的底账。模型写的节点引用证据（`derived_from` 边），修复时以证据为准。
 - **诊断由 kernel 算，修复由模型做。** 死链、依据已有更新、近似重复、久悬的问题，由 kernel 确定地算出，渲染在状态块里；模型在自己的下一轮决定修不修。
 - **指令给方向，不给禁令。** 工具说明和系统提示只说"记什么有用"，不写"禁止记什么"；指令文本是实验变量，在 lab 中比较。
-- **每项改动先带开关、默认关闭，实测后只有两种结局：过 gate 的默认开启，没过的直接删除。** 9.1–9.3 各自是 `ContextPolicy` 里的一个字段，最后一轮实测按"基线 / +9.1 / +9.1+9.2 / +9.1+9.2+9.3"分组，9.4 在 multi-session 上按 `none / notes / consolidate` 分组，都用 8.1 的配对 gate（`--paired success_rate:0.05,weighted_cost:0`），long-horizon 对照 `0.2.82-9.0`。没过 gate 的项不留"默认关闭"的代码：kernel、四端 SDK、contract、测试和文档里的实现一并删除，计划里只留实测记录（2026-11-12 决定）。原则是模型主导：一项机制如果没有让模型做得更好，它就不该留在框架里等着被误用。
+- **每项改动先带开关、默认关闭，实测后只有两种结局：过 gate 的默认开启，没过的直接删除。** gate 是 [DEC-13](../decisions/013-model-led-context.md) 的默认规则：在每个目标场景、30 对以上，正确率或每答对一题的加权成本至少一项显著变好，且都不显著变差（`deepstrike-lab gate` 不带参数即是）。这条规则是看到 0.2.82 的数据之后定的，替代 8.1 的 `--paired success_rate:0.05,weighted_cost:0`（那条要求成本显著更低，是为省钱类改动写的，会把笔记判为不通过）；用它回测此前所有决定，结论一致。没过 gate 的项不留"默认关闭"的代码：kernel、四端 SDK、contract、测试和文档里的实现一并删除，计划里只留实测记录（2026-11-12 决定）。原则是模型主导：一项机制如果没有让模型做得更好，它就不该留在框架里等着被误用。
 - **解冻"范围外"里的记忆写入冻结。** 跨会话写入沿用已有的 candidate ABI（`propose_memory`、attestation、lease），不另建写入通道。
 
 **新增的节点与边。** 阶段 9 新增一种 origin、三种 relation，不新增 lease、effect 或 fidelity。
@@ -361,7 +361,7 @@ ContextItem {
     - 顺带修的三个旧 bug：WASM 的 OpenAI provider 在 `[DONE]` 处丢掉全部 tool call；Rust 的 OpenAI provider 一轮只发出一个 tool call（从 HashMap 里随机取），且按网络分块解码导致多字节字符被切坏。
     - lab：`gate` 不带 `--paired` 时默认按 `success_rate:0.05,weighted_cost:0` 配对比较，`--paired none` 关闭。8.4 曾在无配对的默认 gate 下报 PASS。
     - 新基线 `0.2.82-9.0`（long-horizon 30 题，DeepSeek `deepseek-flash`）：正确 15/30（`0.2.82-baseline` 12/30），`weighted_cost` +21%（配对 95% 区间 [−16%, +60%]，不显著），调用 40.3 → 45.4 次，压缩 5.6 → 7.3 次；标记泄漏 1 → 0；跑到轮数上限 1 → 2 题，这两题（INC#11、INC#24）结尾都在反复重新核对已读过的文件，`count_error` 11 和 12。之后的 gate 都对照这条基线。
-- [x] 任务 9.1（2026-11-11 实现，待最后一轮实测）：会话内笔记（模型构建）。
+- [x] 任务 9.1（2026-11-11 实现，2026-11-13 实测通过、默认开启）：会话内笔记（模型构建）。
     - kernel 工具 `note`，参数 `action`（`write` 默认 / `retire`）、`title`、`kind`、`body`、`evidence[]`、`links[]`、`replaced_by`。由 kernel 解码执行（`SyscallRequest::WriteNote`），宿主永远不执行它；feature-gated（在 `FEATURE_GATED_SYSCALL_TOOL_NAMES` 里），只在 `ContextPolicy.notes_budget_tokens > 0` 时进入工具表，默认 0 即关闭。
     - 笔记存在 `TaskState.notes`（working 分区），不参与任何压缩层；渲染进 state turn 的 `notes:` 块（每轮重建，不进缓存前缀）。进 checkpoint（`LogicalTaskState.notes`，为空时不序列化，老 checkpoint 照常恢复）。
     - 预算：`notes_budget_tokens` 是 notes 块的 token 上限。超出时 kernel **拒绝这次写入**并在工具结果里给出用量（"notes are full (N of M tokens with this one)：合并、缩短或退役"），不替模型删任何一条；原有笔记原样保留。
@@ -370,23 +370,50 @@ ContextItem {
     - 上报：`context_lifecycle_reported` 增加 `notes_written`（重写也计数）、`notes_active`；四端 SDK 的 `ContextPolicy` 增加 `notesBudgetTokens` / `notes_budget_tokens`；Rust `RuntimeOptions.notes_budget_tokens`。
     - 测试：kernel `context/notes.rs`（预算拒绝、证据解析、链接与退役、压缩后笔记仍在）、driver 三个（工具只在有预算时出现、写入后状态块与 checkpoint、超预算的拒绝）；Node / Python / Rust 各两到三个端到端；WASM 真实 kernel 脚本。
     - 验收（最后一轮实测）：long-horizon 上 `undercount` 与 `count_error` 下降，正确率不低于 `0.2.82-9.0`（配对），`weighted_cost` 不升；ledger 不回退。实验变量：预算（600 / 1500）、指令文本。
-    - 实测（2026-11-12，DeepSeek，long-horizon 第 0–9 题，`0.2.82-9.1`，预算 600，与 `0.2.82-9.0` 配对）：正确 6/10 → 7/10，`count_error` 1.6 → 0.4，brief 重读 1.4 → 0.2，`read_back` 1.7 → 0.1，压缩 6.8 → 3.7 次，调用 47.6 → 43.6 次，`weighted_cost` −21%，缓存损失 −35%，无一题跑到轮数上限。模型每题写或重写笔记约 23 次，同时只持有 1–2 条，即一直在更新一条累计计数。方向全部有利，但 10 对的 95% 区间都跨 0，不显著。待补第 10–29 题凑满 30 对：过 gate 则默认开启，不过则删除。
+    - 实测（2026-11-12，DeepSeek，预算 600，与同一批题配对）：
+        - long-horizon 30 对（对 `0.2.82-9.0`）：正确 15/30 → 20/30（+16.7 个百分点，95% 区间 [−6.7, +40]），每答对一题的加权成本 −43%（[−62%, −19%]，显著），brief 重读 1.77 → 0.33 次，`read_back` 1.87 → 0.33，缓存损失 −43%。模型每题写或重写笔记约 23 次，同时只持有 1–2 条：一直在更新一条累计计数。
+        - ledger 30 对（对 `0.2.82-9.0`，笔记关闭跑出的新基线）：正确 25/30 → 30/30（显著），每答对一题的成本 −3%（不显著）。
+        - multi-session 48 对（见 9.4）：9/48 → 33/48。
+        - DEC-13 gate 在三个场景都通过。**2026-11-13 起默认开启**：kernel 默认 `notes_budget_tokens` = 600（`DEFAULT_NOTES_BUDGET_TOKENS`），SDK 显式传 0 才关闭（此前 0 不会上 wire）。每个请求多出 `note` 工具，约 320 token 的说明；kernel golden 因此重新生成。复现 0.2.82 之前行为的基线须传 `notesBudgetTokens: 0`。
 - [ ] 任务 9.2（2026-11-12 实测后删除）：压缩读图——被笔记引用的结果优先换出、归档后渲染读回句柄、压缩摘要改为归档定位、要换出未被引用的结果时推迟一轮并预告。
 - [ ] 任务 9.3（2026-11-12 实测后删除）：kernel 每轮算出笔记的结构诊断（死链、依据已更新、近似重复、久悬的问题），渲染给模型自己修。
     - 实测（同一批题 0–9，`0.2.82-9.3` 为 9.1 + 9.2 + 9.3 全开，与 9.1 和 `0.2.82-9.0` 对照）：正确 7/10，与只开笔记相同；`count_error` 0.3（9.1 为 0.4）；但调用 54.3 次（9.1 为 43.6）、压缩 5.8 次（3.7）、被归档条目 19.7（2.8），`weighted_cost` 比 9.1 高约 31%，比基线高 4%。诊断最多同时出现 0.4 条，几乎没有触发。
     - 判断：在笔记之上没有带来任何收益，只增加成本。9.2 让归档更频繁、更大；9.3 基本没有触发。按"没过 gate 的机制直接删除"（2026-11-12）和奥卡姆剃刀，两者都删除：kernel 的引用打分、读回句柄、归档定位摘要、换出预告、诊断计算，四端 SDK 的开关（`compactionReadsNotes`、`pageOutNotice`、`noteDiagnostics`），`note_diagnostics` 上报字段与 contract，相关测试。实现见提交 `a939e21e`、`4affbfd0`，撤回为 `3185848b`、`5ccc5bae`。Rust 的选项回到单一字段 `notes_budget_tokens`。
-- [x] 任务 9.4（2026-11-12 实现，待实测）：跨会话，只用已有的记忆通道。
-    - 提升由模型自己做（2026-11-12 决定，替代"run 结束时 kernel 自动提交 `rule` / `index` 笔记"）：自动提交本身是一条"标成 rule 就进长期记忆"的规则，又是 kernel 替模型判断；机制上 kernel 一次只允许一个待处理的 `PersistMemory`（DEC-3），终止阶段排队多条会牵动 `run_terminal` 的时序。改为：模型可用 `propose_memory`（宿主开启时）时，`note` 工具说明里多一句"笔记随任务结束；值得留给以后任务的规则或索引，可以用 `propose_memory` 提交"。准入、配额、审核照旧由 kernel 和宿主的候选通道负责。
-    - 注入沿用现有 recall：新会话按目标召回，命中以索引行进入 knowledge，正文用 `memory(record_id)` 读。
-    - 离线整理是一个普通 run：四端 SDK 新增宿主侧工具 `transcript_search`（在会话日志上按关键词检索，每条结果标明会话、轮次和来源：目标、模型的话、或 `调用 id 工具 参数` 的结果）和 helper `consolidateMemory` / `consolidate_memory`（宿主自己的记忆选项原样传入，加上这个工具和一个方向性的默认目标："对照记录核对记忆；被推翻的提交更正，缺的规则补上，最后提交一条索引；注明依据的会话和轮次"）。kernel 不知道它存在；何时跑、花多少由宿主决定。
-    - 新基准 `benchmark/context-lifecycle/multi-session.mjs`：每个序列 8 个会话（`--sessions`），每个会话数 6 份日志里某个代码的 ERROR 行，用 `submit` 交一次答案。每个序列有两条从不写明的规则（重试请求、canary 主机、回放行、合成探针四选二），答错时 `submit` 告诉期望值并给出几行"不该计入"的例子，足够推出规则。变体 `--memory none | notes | consolidate`：后两者开笔记（预算 600），宿主接受所有提议直接写入记忆库；`consolidate` 每个会话后再跑一次整理，成本计入该会话。每个会话一条 trial（`SEQ#<序列>@<会话>`），可跨变体配对；oracle `memory_records`、`proposals`、`memory_reads`。`--dry` 打印题目，`--provider mock` 用脚本化模型验证流程（不调真实模型）。
-    - 测试：kernel 一个（只有能提议时工具说明才提 `propose_memory`）；Node / Python / Rust 各有 transcript 检索与一次整理 run（提议到达宿主的候选队列）；WASM 检索。
-    - 验收（实测）：第 N 个会话的正确率高于 `none`（配对），注入的 token 不随会话数线性增长；整理 run 的成本计入 `consolidate` 的 `weighted_cost`。
-    - 文件：`context/notes.rs`；四端 SDK 的 `memory/consolidate`（Rust `consolidate.rs`）；`benchmark/context-lifecycle/multi-session.mjs`
+- [x] 任务 9.4（2026-11-12 实现，2026-11-13 实测）：跨会话，只用已有的记忆通道。
+    - 提升由模型自己做（2026-11-12 决定，替代"run 结束时 kernel 自动提交 `rule` / `index` 笔记"）：自动提交本身是一条"标成 rule 就进长期记忆"的规则，又是 kernel 替模型判断；机制上 kernel 一次只允许一个待处理的 `PersistMemory`（DEC-3）。改为：模型能用 `propose_memory` 时，`note` 工具说明里多一句"笔记随任务结束；值得留给以后任务的规则或索引，可以用 `propose_memory` 提交"。注入沿用现有 recall。
+    - 新基准 `benchmark/context-lifecycle/multi-session.mjs`：每个序列 8 个会话，数 6 份日志里某个代码的 ERROR 行，用 `submit` 交一次答案；每个序列有两条从不写明的规则，答错时 `submit` 给出期望值和几行"不该计入"的例子。`--memory none | notes`（`none` 显式关闭笔记）。`--dry`、`--provider mock`。
+    - 实测（2026-11-13，DeepSeek，6 个序列 × 8 个会话 = 48 对）：
+        - `none` → `notes`（笔记 + 模型提交记忆，宿主接受全部提议）：正确 9/48 → 33/48（+50 个百分点，[+35, +65]），每答对一题的成本 −68%（[−86%, −45%]），两项都显著，DEC-13 gate 通过。模型平均每个会话提交 0.8 条记忆；第 8 个会话开始时记忆库平均 5.7 条；正确率从第 1 个会话的 2/6 升到第 5、7 个会话的 6/6。
+        - `notes` → `consolidate`（每个会话后再跑一次整理 run，宿主侧 `transcript_search` + `consolidateMemory`）：正确 33/48 → 33/48，每答对一题的成本 +272%（[+196%, +383%]），没有一项变好。**删除**：四端 SDK 的 `consolidateMemory` / `consolidate_memory` 与 `transcript_search`、它们的测试，以及基准里的 `consolidate` 模式（2026-11-13）。对"无记忆"它也能通过 gate，但附加机制要和"没有它的配置"比（DEC-13）。
 
-**实测计划。** 原计划阶段末一次跑五组 long-horizon（每组 30 题），因成本改为先跑两头（2026-11-12）：`0.2.82-9.1`（只开笔记）与 `0.2.82-9.3`（全开），各取第 0–9 题与 `0.2.82-9.0` 配对，共花 8.6 元。结果见 9.1 与 9.2/9.3。剩下的：9.1 补第 10–29 题（约 13 元）凑满 30 对；9.4 在 multi-session 上按 `none / notes / consolidate` 测；最终配置跑 ledger 30 题确认不回退。本地 Ollama（`qwen3.8-27b-ctx8k`）的两轮测试不作结论：第一轮 14 次运行里 11 次因 Ollama 工具调用 id 每轮重复而被 kernel 终止（已修复，`01aea145`）；第二轮 55 次生成在 8192 上下文处被截断，Qwen 的思考塞不进 8k 窗口，两组都几乎做不完任务。
+**实测记录。** 原计划阶段末一次跑五组 long-horizon（每组 30 题），因成本改为先跑两头再补满（2026-11-12 至 13）。DeepSeek 上共花约 39 元：两头各 10 题（8.6 元），9.1 补第 10–29 题、ledger 笔记关/开各 30 题、multi-session 三组各 48 个会话（约 30 元）。本地 Ollama（`qwen3.8-27b-ctx8k`）的两轮测试不作结论：第一轮 14 次运行里 11 次因 Ollama 工具调用 id 每轮重复而被 kernel 终止（已修复，`01aea145`）；第二轮 55 次生成在 8192 上下文处被截断，Qwen 的思考塞不进 8k 窗口。
 
-**放弃的方向。** 按缓存账决定压缩什么（8.3，`exp/8.3c`）；在压缩路径上同步生成摘要（8.4，代码已删除）；任何由 kernel 发起的模型调用，包括之前草稿里的 `consolidate_notes` effect；`RuleSummarizer` 作为记忆的载体。保留阶段 8 的测量：缓存账本、按价格加权的配对 gate、long-horizon 基准。
+**放弃的方向。** 按缓存账决定压缩什么（8.3，`exp/8.3c`）；在压缩路径上同步生成摘要（8.4，代码已删除）；任何由 kernel 发起的模型调用，包括之前草稿里的 `consolidate_notes` effect；压缩读图与笔记诊断（9.2、9.3，实测后删除）；宿主侧整理 run（9.4，实测后删除）；`RuleSummarizer` 作为记忆的载体。保留阶段 8 的测量：缓存账本、按价格加权的配对 gate、long-horizon 基准。
+
+### 0.2.82 回看（2026-11-13，对照已发布的 v0.2.81）
+
+**留下了什么。** 相对 `v0.2.81`（`ebbe669b`），0.2.82 最终带进主线的是：
+
+| 项 | 内容 | 依据 |
+|---|---|---|
+| 测量 | 缓存账本（8.0）、按价格加权的配对 gate（8.1）、long-horizon（8.2）与 multi-session（9.4）基准、ledger 新基线 | 让下面每一个去留都有数可依；8.0 证明 kernel 原来自报的缓存损失是 0，而实测命中率在下降 |
+| 协议修复 | DeepSeek 以文本输出工具调用标记（四端共用 fixture）；Ollama 工具调用 id 每轮重复；WASM 在 `[DONE]` 丢 tool call；Rust 只发一个并行调用、多字节字符跨块损坏 | 这些 bug 终止的运行比任何上下文策略都多 |
+| 笔记（9.1） | `note` 工具，默认开启 | long-horizon 每答对一题的成本 −43%，ledger 25 → 30，multi-session 9 → 33（共 48） |
+| 记忆提升（9.4） | 笔记工具说明提示 `propose_memory`；注入走现有 recall | 同上 multi-session |
+| gate | 默认要求"至少一项显著变好、没有一项显著变差"，指标是正确率与每答对一题的成本 | DEC-13 |
+| 原则 | DEC-13；`EffectKind` 文档与封闭集合测试；CONTRIBUTING 的上下文改动规则 | 本节 |
+
+**删掉了什么。** 8.3 系列（按缓存账压缩）、8.4（压缩时的模型摘要，含 `summarize_context` effect）、9.2（压缩读图、换出预告）、9.3（笔记诊断）、9.4 的整理 run（`consolidateMemory`、`transcript_search`）。每一项都实现过、实测过，计划里留着数据，代码不留。
+
+**花了多少。** DeepSeek 实测约 270 次运行、2.3 亿输入 token 用在阶段 8，阶段 9 又约 39 元；本地 Qwen 约 30 小时算力，两轮都因为协议 bug 或上下文不足而不能作数。
+
+**学到了什么（写进了 DEC-13）。**
+1. kernel 每一次替模型判断"什么重要"——按规则、按缓存账、或发起一次自己的模型调用——实测都没有变好，多数变差；唯一显著变好的，是给模型一个工具、让它自己决定记什么，kernel 只负责留住。
+2. 上下文实验最大的干扰来自 provider 协议，不是上下文策略；先排除它们，再读结果。
+3. gate 量的东西决定结论：不比正确率的 gate 放过了 8.4；只要求省钱的 gate 会删掉笔记；只要求"不显著变差"的 gate 会放过 8.3b。现在的标准是"显著变好、哪里都不显著变差"，看每答对一题的价钱。
+4. 没过的机制直接删。休眠开关不是谨慎，是负债。
+
+**下一步。** 按 DEC-13 审计 0.2.82 之前就存在、从未用这个标准测过的机制：`RuleSummarizer` 的语义槽、叙述折叠、按效用打分的归档、压缩分层本身。每一项要么显著有用，要么删除。
 
 ## 交接（2026-11-02）
 
@@ -423,7 +450,7 @@ ContextItem {
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
 | 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
 | 0.2.82 | 阶段 8：测量先行，缓存进入决策。8.0 真实缓存损失与 `prefix_breaks` 归因；8.1 按价格加权的 gate 与配对统计；8.2 `long-horizon` 基准与 0.2.81 基线；8.3 缓存感知的压缩；8.4 模型摘要作为 effect（取决于 8.2 的数据）。`MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 完成；8.3 未通过 gate、未合入，方向放弃（`exp/8.3c`）；8.4 实测未通过 gate，代码已删除 |
-| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图，9.0 → 9.4 全部完成后与阶段 8 一起发布。9.0 清除测量混杂（工具调用标记泄漏、新基线、gate 默认配对）；9.1 会话内笔记（已实现，10 题方向有利，待补满 30 题）；9.2 压缩读图、9.3 笔记诊断（实测后删除）；9.4 跨会话：模型用 `propose_memory` 提升，整理是普通 run（已实现，待在 multi-session 上实测） | 进行中 |
+| 0.2.82（续） | 阶段 9：模型构建、修复、索引上下文图。留下：9.0 修复协议层混杂、gate 默认配对；9.1 笔记（实测通过，默认开启）；9.4 模型用 `propose_memory` 提升记忆。删除：9.2 压缩读图、9.3 笔记诊断、9.4 整理 run（实测后）。原则见 [DEC-13](../decisions/013-model-led-context.md) | 实测完成，待发布 |
 
 0.2.82 内部顺序：8.0 → 8.1 → 8.2 → 8.3 → 8.4。8.0–8.2 只改测量，不改渲染，先在 0.2.81 上跑出新基线；8.3 是本版本唯一默认改变渲染的项，必须先过新的 gate；8.4 只有在 8.2 的数据满足前置条件时才做。
 

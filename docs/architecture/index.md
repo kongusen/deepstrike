@@ -69,3 +69,4 @@ sequenceDiagram
 - 运行时数据宪法：[数据模型总纲](./runtime-data-model) · [Authority 矩阵与身份](./runtime-authority) · [持久契约](./runtime-persistence) · [因果链与链验证器](./runtime-causality)
 - Framework Verifiable Runtime Foundation（0.2.69 foundation carried into 0.2.70）：[Verifiable Runtime](./verifiable-runtime) · [ADR-009](../decisions/009-framework-verifiable-runtime)
 - 0.2.70 Evolution Runtime：[Evolution Runtime](./evolution-runtime) · [Evaluation Context](./evaluation-context) · [Context System spec](../specs/context-system-0.2.70) · [ADR-010](../decisions/010-evolution-runtime-hard-cut) · [ADR-011](../decisions/011-evaluation-context-contract) · [ADR-012](../decisions/012-verifiable-context-system)
+- 0.2.82 模型主导上下文：[DEC-13](../decisions/013-model-led-context)——内核不为管理上下文发起模型调用；模型通过笔记决定什么重要；机制要在配对实测里显著变好才能留下，否则删除

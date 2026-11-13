@@ -1,7 +1,9 @@
 # Migration from 0.2.81 to 0.2.82
 
-0.2.82 is stage 8 of the [context-lifecycle-first plan](./docs/plans/context-lifecycle-first.md):
-measure first, then put the cache into decisions. This note grows with each task of the stage.
+0.2.82 is stages 8 and 9 of the [context-lifecycle-first plan](./docs/plans/context-lifecycle-first.md):
+measurement first, then context the model leads — notes on by default — under the principles of
+[DEC-13](./docs/en/decisions/013-model-led-context.md). Mechanisms that were measured and failed
+are not part of the release.
 
 ## Stored state
 
@@ -26,9 +28,11 @@ written by 0.2.82 carry the new optional field `cache_ledger`; 0.2.81 cannot rea
   `textual_tool_call`. A host that scraped tool calls out of DeepSeek's text should stop doing so.
 - Rust `OpenAIProvider` now emits every tool call of a turn, in index order, and the usage event
   after them; WASM `OpenAIProvider` no longer drops tool calls when the stream ends with `[DONE]`.
-- Notes (plan task 9.1) are off unless a host sets `notesBudgetTokens` / `notes_budget_tokens`, so
-  nothing changes by default. With notes on, the toolset gains the kernel tool `note` (never
-  executed by the host; a host that filters tools by name should let it through like `update_plan`),
+- **Notes (plan task 9.1) are on by default.** Every provider request carries the kernel tool
+  `note` (about 320 tokens of schema; never executed by the host — a host that filters tools by name
+  should let it through like `update_plan`). To keep 0.2.81's behavior, set `notesBudgetTokens: 0`
+  (Node/WASM) or `notes_budget_tokens: 0` (Python; Rust `RuntimeOptions.notes_budget_tokens:
+  Some(0)`); a test that asserts the exact toolset sees `note` unless it does. With notes on,
   the state turn gains a `notes:` block, item reports may carry origin `note` and relations
   `derived_from`, `links_to` and `supersedes`, and `context_lifecycle_reported` may carry
   `notes_written` and `notes_active`. Checkpoints carry `task_state.notes` only when notes exist;
@@ -46,6 +50,9 @@ Trials also gain `model` and `cost.cache_write_tokens`, which `weighted_cost` pr
 without them is priced at the default prices with no cache writes. `gate --paired` needs at least
 `--min-pairs` (30) runs of the same tasks under both variants.
 
-`deepstrike-lab gate` runs the paired checks `success_rate:0.05,weighted_cost:0` when `--paired`
-is not given, so a gate that used to pass on summary checks alone can now fail, or fail with
-"insufficient samples" below 30 pairs. Pass `--paired none` for the old behavior.
+`deepstrike-lab gate` decides by DEC-13 by default: success or cost per correct answer
+(`cost_per_success`) significantly better, neither significantly worse, over at least 30 pairs. A
+gate that used to pass on summary checks alone can now fail, including with "none of these is
+significantly better" or "insufficient samples". Pass `--paired none --improve none` for the old
+behavior. Baselines that should reproduce pre-0.2.82 runs must turn notes off
+(`--policy '{"notesBudgetTokens":0}'` for the context-lifecycle benchmarks).

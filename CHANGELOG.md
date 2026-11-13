@@ -40,33 +40,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   adapter's guard. Node, Python, WASM and Rust, with a shared fixture.
 - Benchmarks: `--provider ollama` (model from `OLLAMA_MODEL`) for local runs; long-horizon trials
   keep the runner's error message instead of only `termination: error`.
-- Notes the model writes (plan task 9.1), off by default. With `ContextPolicy.notesBudgetTokens`
-  (Node/WASM) or `notes_budget_tokens` (Python; Rust `RuntimeOptions.notes_budget_tokens`) above
-  0, the kernel offers a `note` tool: the model writes, rewrites (by title) or retires notes of kind
+- Notes the model writes (plan task 9.1), **on by default** (DEC-13). The kernel offers a `note`
+  tool unless `ContextPolicy.notesBudgetTokens` (Node/WASM) or `notes_budget_tokens` (Python; Rust
+  `RuntimeOptions.notes_budget_tokens`) is set to 0; the default budget is 600 tokens. Measured on
+  DeepSeek against the same tasks without notes: long-horizon 15/30 → 20/30 with cost per correct
+  answer −43%, ledger 25/30 → 30/30, multi-session 9/48 → 33/48 with cost per correct answer
+  −68%. The model the model writes, rewrites (by title) or retires notes of kind
   `state`, `rule`, `question` or `index`. The kernel executes it itself; notes live in the working
   partition, no compaction tier touches them, they render in the state turn and are checkpointed.
   Over the budget a write is refused with the usage in the tool result; the kernel never deletes a
   note for the model. Each note is an item of the graph, with new relations `derived_from` (to the
   results it cites, or by default the results since the last note), `links_to` and `supersedes`.
-  `context_lifecycle_reported` gains `notes_written` and `notes_active`.
-- Consolidation as an ordinary run (plan task 9.4). A host tool `transcript_search` (keyword search
-  over session logs, each hit labeled with its session, turn and source) and a helper
-  `consolidateMemory` / `consolidate_memory` that runs an agent with the host's memory options plus
-  that tool, so the model can check long-term memory against what happened and propose
-  corrections with `propose_memory`. Node, Python, WASM (`memory`) and Rust (`consolidate`). When
-  the model can propose memories, the `note` tool says that notes end with the task and points at
-  `propose_memory`.
+  `context_lifecycle_reported` gains `notes_written` and `notes_active`. When the model can propose
+  memories, the `note` tool says that notes end with the task and points at `propose_memory`, the
+  existing path for what should outlive it (plan task 9.4).
+- DEC-13, *Model-Led Context* (`docs/en/decisions/013-model-led-context.md`): the kernel never
+  initiates a model call to manage context; the model decides what matters through its tools and
+  the kernel keeps it; a mechanism stays only if paired live measurement shows it significantly
+  better somewhere and significantly worse nowhere, otherwise it is deleted. CONTRIBUTING gains
+  the corresponding rules for context changes.
 - Benchmarks: `multi-session` (sequences of sessions with unwritten rules learned from failures;
-  `--memory none | notes | consolidate`, `--dry`, `--provider mock`).
+  `--memory none | notes`, `--dry`, `--provider mock`).
 
 ### Changed
 
 - `cache_loss_tokens` now sums every prefix break of the run. It used to count only history behind
   a mid-run knowledge promotion and reported 0 for compaction, narration collapse, tool-result
   collapse, budget drops, renewal and toolset changes.
-- `deepstrike-lab gate` without `--paired` now runs the paired checks
-  `success_rate:0.05,weighted_cost:0`; `--paired none` turns them off. Without them a gate compared
-  neither success nor cost.
+- `deepstrike-lab gate` now decides by DEC-13 by default: in every scenario, at least one of
+  `success_rate` and the new `cost_per_success` (price-weighted cost per correct answer) must be
+  significantly better (`--improve`, default `success_rate,cost_per_success`), and neither
+  significantly worse (`--paired`, default `success_rate:ns,cost_per_success:ns`; `metric:ns` means
+  "not significantly worse"). `--paired none` / `--improve none` turn them off. Before 0.2.82 the
+  default gate compared neither success nor cost.
 
 ### Fixed
 
