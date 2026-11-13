@@ -55,6 +55,99 @@ pub struct TaskState {
     /// about how much history is no longer visible.
     #[serde(default, skip_serializing_if = "u64_is_zero")]
     pub compression_log_dropped: u64,
+    /// Plan task 9.1 · notes the model wrote with the `note` tool. Part of the working partition,
+    /// so compaction never touches them; rendered in the state turn. Oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
+    /// Notes written or rewritten so far (a rewrite of one title counts again).
+    #[serde(default, skip_serializing_if = "u32_is_zero")]
+    pub notes_written: u32,
+    /// Notes the model retired.
+    #[serde(default, skip_serializing_if = "u32_is_zero")]
+    pub notes_retired: u32,
+    /// The last item id when a note was last written: a note written without explicit evidence
+    /// derives from the tool results that arrived after it.
+    #[serde(default, skip_serializing_if = "u64_is_zero")]
+    pub notes_watermark: u64,
+}
+
+fn u32_is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+/// Plan task 9.1 · what a note holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteKind {
+    /// Working state of this session the model derived and could not read again: running counts,
+    /// lists of what is done, intermediate conclusions.
+    #[default]
+    State,
+    /// A rule or lesson learned: how something works, what to avoid.
+    Rule,
+    /// An open question, retired once answered.
+    Question,
+    /// An index: where things are, which notes cover what.
+    Index,
+}
+
+impl NoteKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::State => "state",
+            Self::Rule => "rule",
+            Self::Question => "question",
+            Self::Index => "index",
+        }
+    }
+}
+
+/// Plan task 9.1 · a note the model wrote. Its title is its identity: writing the same title
+/// again rewrites it in place.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Note {
+    pub title: String,
+    pub kind: NoteKind,
+    pub body: String,
+    /// Where it came from, as the model cited it (call ids, paths, arguments).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
+    /// Titles of related notes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<String>,
+    /// The note's id in the item graph (its `derived_from` / `links_to` edges start here).
+    pub item: u64,
+    /// The turn it was last written.
+    pub turn: u32,
+}
+
+impl Note {
+    /// The note's line in the state turn.
+    pub fn render(&self) -> String {
+        format!("  - [{}] {}: {}", self.kind.label(), self.title, self.body)
+    }
+}
+
+/// The heading of the notes block in the state turn.
+pub const NOTES_HEADING: &str =
+    "notes (yours, kept verbatim through compaction; rewrite a note by its title as it changes):";
+
+impl TaskState {
+    /// The notes block as rendered in the state turn, or empty without notes.
+    pub fn render_notes(&self) -> String {
+        if self.notes.is_empty() {
+            return String::new();
+        }
+        let mut lines = vec![NOTES_HEADING.to_string()];
+        lines.extend(self.notes.iter().map(Note::render));
+        lines.join("\n")
+    }
+
+    /// The index of the note titled `title` (case and surrounding space ignored).
+    pub fn note_index(&self, title: &str) -> Option<usize> {
+        let wanted = title.trim().to_lowercase();
+        self.notes.iter().position(|note| note.title.trim().to_lowercase() == wanted)
+    }
 }
 
 fn u64_is_zero(value: &u64) -> bool {
@@ -142,6 +235,11 @@ impl TaskState {
 
         if !self.blocked_on.is_empty() {
             lines.push(format!("blocked_on: {}", self.blocked_on.join(", ")));
+        }
+
+        let notes = self.render_notes();
+        if !notes.is_empty() {
+            lines.push(notes);
         }
 
         if !self.scratchpad.is_empty() {

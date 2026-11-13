@@ -40,6 +40,8 @@ class WireDialect:
     replay_strategy: str = "generic_stream"
     capture_reasoning_details: bool = False
     supports_context_cache: bool = False
+    #: Plan task 9.0 · tool-call markup this model may write as text instead of ``tool_calls``.
+    text_tool_call_markup: str | None = None
 
 
 # OpenAI-chat dialects for official OpenAI and the five CN-compatible vendors.
@@ -77,6 +79,7 @@ OPENAI_CHAT_DIALECTS: dict[str, WireDialect] = {
         expose_reasoning=lambda ext: (ext or {}).get("exposeReasoning") is True or (ext or {}).get("expose_reasoning") is True,
         require_reasoning_replay=lambda ext: (ext or {}).get("thinking") is not False,
         replay_strategy="deepseek",
+        text_tool_call_markup="dsml",
     ),
     "kimi": WireDialect(
         provider_id="kimi",

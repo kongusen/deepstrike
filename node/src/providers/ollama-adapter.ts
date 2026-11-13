@@ -38,10 +38,18 @@ export interface OllamaRequest {
   [key: string]: unknown
 }
 
+/** Ollama's native API gives tool calls no id. The kernel requires a call id to be unique within the
+ *  run (one id causes at most one syscall), so a per-turn counter (`call_1` every turn) ended runs
+ *  with `invalid_authority` on the second turn that called a kernel tool. */
+function ollamaCallId(given: string | undefined): string {
+  return given && given.trim() ? given : `call_${Math.random().toString(36).slice(2, 12)}`
+}
+
 export interface OllamaChunk {
   message?: {
     content?: string
     tool_calls?: Array<{
+      id?: string
       function: { name: string; arguments: unknown }
     }>
   }
@@ -196,6 +204,9 @@ export class OllamaAdapter implements ProtocolAdapter<
       message: {
         role: "assistant",
         content: raw.message?.content ?? "",
+        toolCalls: (raw.message?.tool_calls ?? [])
+          .map(call => normalizeToolCall(ollamaCallId(call.id), call.function.name, call.function.arguments))
+          .filter((call): call is NonNullable<typeof call> => call !== null),
       },
     }
   }
@@ -219,7 +230,7 @@ export class OllamaAdapter implements ProtocolAdapter<
       const key = `${normalized.name}:${normalized.arguments}`
       if (!state.pendingToolCalls.has(key)) {
         state.pendingToolCalls.set(key, {
-          id: `call_${state.pendingToolCalls.size + 1}`,
+          id: ollamaCallId(call.id),
           name: normalized.name,
           arguments: JSON.parse(normalized.arguments) as Record<string, unknown>,
         })

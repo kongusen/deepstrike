@@ -40,6 +40,12 @@ pub enum Relation {
     InheritedFrom,
     /// Plan task 7.4 · the item that read a dependency output back → the run that produced it.
     DependsOn,
+    /// Plan task 9.1 · a note the model wrote → the evidence it came from.
+    DerivedFrom,
+    /// Plan task 9.1 · a note → another note it names.
+    LinksTo,
+    /// Plan task 9.1 · a note → the note it replaced.
+    Supersedes,
 }
 
 impl Relation {
@@ -53,6 +59,9 @@ impl Relation {
             Self::Expands => "expands",
             Self::InheritedFrom => "inherited_from",
             Self::DependsOn => "depends_on",
+            Self::DerivedFrom => "derived_from",
+            Self::LinksTo => "links_to",
+            Self::Supersedes => "supersedes",
         }
     }
 }
@@ -138,7 +147,7 @@ pub(crate) fn is_zero_u32(value: &u32) -> bool {
     *value == 0
 }
 
-fn is_zero_u64(value: &u64) -> bool {
+pub fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
@@ -163,6 +172,8 @@ pub enum ItemOrigin {
     TaskState,
     Signal,
     ProviderSummary,
+    /// Plan task 9.1 · a note the model wrote with the `note` tool.
+    Note,
 }
 
 impl ItemOrigin {
@@ -200,6 +211,7 @@ impl ItemOrigin {
             Self::TaskState => "task_state",
             Self::Signal => "signal",
             Self::ProviderSummary => "provider_summary",
+            Self::Note => "note",
         }
     }
 
@@ -224,6 +236,7 @@ impl ItemOrigin {
             Self::TaskState => (S::Task, F::Structured, L::Permanent, A::Kernel),
             Self::Signal => (S::Operation, F::Full, L::SingleUse, A::Host),
             Self::ProviderSummary => (S::Operation, F::Full, L::Permanent, A::Provider),
+            Self::Note => (S::Task, F::Full, L::Permanent, A::Model),
         };
         ItemDefaults { scope, fidelity, lease, authority }
     }

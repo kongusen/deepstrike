@@ -103,6 +103,10 @@ pub struct ContextConfig {
     /// The provider compacts natively, so the kernel runs neither context collapse nor auto-compact.
     /// Renewal is never delegated: it is decided on the full local history and stays the safety net.
     pub delegate_compaction: bool,
+
+    // ── Notes (plan task 9.1) ───────────────────────────────────────────────
+    /// Tokens the model's notes may hold in the state turn. `0` turns the `note` tool off.
+    pub notes_budget_tokens: u32,
 }
 
 impl Default for ContextConfig {
@@ -127,6 +131,7 @@ impl Default for ContextConfig {
             knowledge_budget_ratio: 0.25,
             delegate_tool_result_clearing: false,
             delegate_compaction: false,
+            notes_budget_tokens: 0,
         }
     }
 }

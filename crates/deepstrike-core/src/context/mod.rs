@@ -1,3 +1,4 @@
+pub mod cache_ledger;
 pub mod compression;
 pub mod config;
 pub mod fault;
@@ -5,6 +6,7 @@ pub mod graph;
 pub mod item;
 pub mod manager;
 pub mod measurement;
+pub mod notes;
 pub mod partitions;
 pub mod policy;
 pub mod pressure;

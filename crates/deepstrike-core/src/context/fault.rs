@@ -11,8 +11,8 @@ pub enum ContextFault {
     InvalidReplay { turn: u32, reason: String },
 }
 
-/// FNV-1a 64-bit — the render layer's cache-stability test fingerprint dialect.
-#[cfg(test)]
+/// FNV-1a 64-bit — the render layer's cache-stability fingerprint dialect (the render tests and
+/// the plan task 8.0 cache ledger).
 pub(crate) fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {

@@ -22,7 +22,7 @@ export const SESSION_EVENT_REGISTRY = {
   rollbacked: { required: ["checkpoint_history_len", "turn"], optional: ["reason"] },
   capability_changed: { required: ["added", "removed", "turn"], optional: ["capability_id", "change_kind", "mount_reason", "mounted_by", "version"] },
   context_renewed: { required: ["handoff_ref", "sprint", "turn"], optional: [] },
-  context_lifecycle_reported: { required: ["cache_loss_tokens", "knowledge_entries", "knowledge_referenced", "recall_expanded", "recalled", "regret", "turn", "waste_tokens"], optional: ["edges", "edges_omitted", "external_edges", "history", "history_items", "history_items_omitted", "items", "parent_items_used", "waste_items"] },
+  context_lifecycle_reported: { required: ["cache_loss_tokens", "knowledge_entries", "knowledge_referenced", "recall_expanded", "recalled", "regret", "turn", "waste_tokens"], optional: ["cache_tail_tokens", "edges", "edges_omitted", "external_edges", "history", "history_items", "history_items_omitted", "items", "notes_active", "notes_written", "parent_items_used", "prefix_breaks", "prefix_breaks_omitted", "waste_items"] },
   suspended: { required: ["reason", "turn"], optional: ["pending_calls"] },
   resumed: { required: ["turn"], optional: ["approved", "denied"] },
   tool_gated: { required: ["call_id", "reason", "tool", "turn"], optional: [] },

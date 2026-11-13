@@ -14,7 +14,7 @@ import { GeminiProvider } from "../../src/providers/gemini.js"
 import { OllamaProvider } from "../../src/providers/ollama.js"
 import type { LLMProvider, StreamEvent } from "../../src/types.js"
 import { CHARACTERIZATION_CONTEXT as CTX, CHARACTERIZATION_TOOLS as TOOLS, USAGE } from "./fixtures.js"
-import { expectGolden } from "./golden.js"
+import { expectGolden, maskMintedCallIds } from "./golden.js"
 
 async function collectStream(provider: LLMProvider, state?: unknown): Promise<StreamEvent[]> {
   const events: StreamEvent[] = []
@@ -218,7 +218,7 @@ describe("spc_013-A-00 characterization: stream chunk → event sequences", () =
     try {
       const captured: { req?: unknown } = {}
       stubOllamaStream(captured, OLLAMA_TOOL_STREAM)
-      expectGolden("stream-ollama-tool", { request: captured.req ?? null, events: await collectStream(provider) })
+      expectGolden("stream-ollama-tool", maskMintedCallIds({ request: captured.req ?? null, events: await collectStream(provider) }))
     } finally {
       globalThis.fetch = original
     }

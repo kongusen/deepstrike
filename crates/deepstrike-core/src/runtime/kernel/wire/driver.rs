@@ -51,7 +51,7 @@ use super::checkpoint::{
     AuthoredMemoryQueryState, AuthoredMemoryWriteState, ChildProcessState, ContextVmState,
     EntropyState, EntropyTurnState, HandleState, InlineMessageBody, KnowledgeSlotState,
     LocalChannelState, LogicalCompressionEntry, LogicalKernelState, LogicalPlanStep,
-    LogicalStateProjection, LogicalTaskState, LogicalToolCall, MessagePartition, MilestoneState,
+    LogicalNote, LogicalStateProjection, LogicalTaskState, LogicalToolCall, MessagePartition, MilestoneState,
     PartitionTokenState, PendingPayloadLoadState, PendingProviderCallState, QueuedSignalState,
     ReferencedMessageBody, SchedulerState, SkillLeaseState, StoredMessageBody, StoredMessageState,
     StructuredMessageBody, SyscallState, TaskAttemptState, TaskControlState,
@@ -1263,6 +1263,7 @@ fn restore_context_vm(
         state.knowledge_budget_warned,
     );
     ctx.restore_cache_checkpoint_state(state.prefix_sent, state.cache_invalidated_tokens);
+    ctx.cache_ledger = state.cache_ledger.clone();
     ctx.partitions.knowledge.evicted_keys = state.evicted_knowledge_keys.iter().cloned().collect();
     ctx.partitions.knowledge.regret = state.knowledge_regret;
     ctx.partitions.knowledge.wasted_tokens = state.knowledge_wasted_tokens;
@@ -1488,6 +1489,22 @@ fn project_task_state(state: &TaskState) -> LogicalTaskState {
             })
             .collect(),
         compression_log_dropped: WireU64::new(state.compression_log_dropped),
+        notes: state
+            .notes
+            .iter()
+            .map(|note| LogicalNote {
+                title: note.title.clone(),
+                kind: note.kind.label().to_string(),
+                body: note.body.clone(),
+                evidence: note.evidence.clone(),
+                links: note.links.clone(),
+                item: note.item,
+                turn: note.turn,
+            })
+            .collect(),
+        notes_written: state.notes_written,
+        notes_retired: state.notes_retired,
+        notes_watermark: state.notes_watermark,
     }
 }
 
@@ -1519,6 +1536,23 @@ fn restore_task_state(state: &LogicalTaskState) -> TaskState {
             })
             .collect(),
         compression_log_dropped: state.compression_log_dropped.get(),
+        notes: state
+            .notes
+            .iter()
+            .map(|note| crate::context::task_state::Note {
+                title: note.title.clone(),
+                kind: serde_json::from_value(serde_json::Value::String(note.kind.clone()))
+                    .unwrap_or_default(),
+                body: note.body.clone(),
+                evidence: note.evidence.clone(),
+                links: note.links.clone(),
+                item: note.item,
+                turn: note.turn,
+            })
+            .collect(),
+        notes_written: state.notes_written,
+        notes_retired: state.notes_retired,
+        notes_watermark: state.notes_watermark,
     }
 }
 
@@ -1765,6 +1799,7 @@ pub const SYSCALL_TOOL_NAMES: &[&str] = &[
     "submit_workflow_nodes",
     "skill",
     "update_plan",
+    crate::context::notes::NOTE_TOOL_NAME,
     crate::context::manager::MEMORY_TOOL_NAME,
     crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
     crate::context::manager::READ_RESULT_TOOL_NAME,
@@ -1777,10 +1812,13 @@ pub const SYSCALL_TOOL_NAMES: &[&str] = &[
 
 /// Syscall tools that are not part of an operation's standing surface. Each one reaches the model
 /// only through its own feature switch (`propose_memory` through
-/// `feature_policy.propose_memory_enabled`), never through a host catalog or exposure baseline,
-/// so a host listing the full meta-tool surface leaves these out.
-pub const FEATURE_GATED_SYSCALL_TOOL_NAMES: &[&str] =
-    &[crate::context::manager::PROPOSE_MEMORY_TOOL_NAME];
+/// `feature_policy.propose_memory_enabled`, `note` through `context_policy.notes_budget_tokens`),
+/// never through a host catalog or exposure baseline, so a host listing the full meta-tool surface
+/// leaves these out.
+pub const FEATURE_GATED_SYSCALL_TOOL_NAMES: &[&str] = &[
+    crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
+    crate::context::notes::NOTE_TOOL_NAME,
+];
 
 fn is_syscall_tool(name: &str) -> bool {
     SYSCALL_TOOL_NAMES.contains(&name)
@@ -1842,6 +1880,7 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
                 update: decode(name, arguments)?,
             },
         )),
+        crate::context::notes::NOTE_TOOL_NAME => Ok(SyscallRequest::WriteNote(decode(name, arguments)?)),
         crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
             #[derive(serde::Deserialize)]
             #[serde(deny_unknown_fields)]
@@ -1955,6 +1994,7 @@ fn privileged_family(request: &SyscallRequest) -> Option<&'static str> {
         SyscallRequest::ActivateSkill(_) => Some("capability"),
         SyscallRequest::SendMessage(_) | SyscallRequest::PublishChannel(_) => Some("ipc"),
         SyscallRequest::UpdateTask(_)
+        | SyscallRequest::WriteNote(_)
         | SyscallRequest::PageIn(_)
         | SyscallRequest::ReceiveMailbox(_)
         | SyscallRequest::ReceiveChannel(_)
@@ -2775,6 +2815,7 @@ fn syscall_ack(name: &str) -> &'static str {
         }
         "skill" => "skill activated: its guidance and tools are in this turn's context",
         "update_plan" => "plan updated: the new state renders in [TASK STATE] from here on",
+        crate::context::notes::NOTE_TOOL_NAME => "note saved: it renders in [TASK STATE] from here on",
         crate::context::manager::MEMORY_TOOL_NAME => {
             "memory search issued: matching records are added to this conversation before your \
              next turn"
@@ -3212,6 +3253,7 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
             idle_micro_compact_minutes: context.idle_micro_compact_minutes,
             delegate_tool_result_clearing: context.delegated_tiers.tool_result_clearing,
             delegate_compaction: context.delegated_tiers.compaction,
+            notes_budget_tokens: context.notes_budget_tokens,
         });
     engine
         .ctx

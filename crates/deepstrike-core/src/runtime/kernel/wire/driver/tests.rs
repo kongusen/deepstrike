@@ -12182,3 +12182,81 @@ fn a_dependency_output_is_read_in_full_through_read_result() {
     assert_eq!(kinds(&missing), vec![EffectKindTag::CallProvider]);
     assert!(history_text(&runtime).iter().any(|line| line.contains("no dependency output from wf-node9")));
 }
+
+// ----- plan task 9.1: notes the model writes and the kernel keeps -----
+
+fn agent_awaiting_provider_with_notes(budget: u32) -> (Runtime, EffectId, Vec<String>) {
+    use crate::runtime::kernel::wire::config::ContextPolicy as WireContextPolicy;
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.context_policy = Some(WireContextPolicy {
+            notes_budget_tokens: Some(budget),
+            ..WireContextPolicy::default()
+        });
+    }));
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let effect = sole_effect(&started);
+    let EffectKind::CallProvider(call) = &effect.effect else {
+        panic!("expected a provider call");
+    };
+    let tools = call.tools.iter().map(|tool| tool.name.clone()).collect();
+    (runtime, effect.effect_id.clone(), tools)
+}
+
+#[test]
+fn the_note_tool_is_offered_by_default_and_off_with_a_zero_budget() {
+    // DEC-13 · notes passed the gate in 0.2.82 and are on unless a policy turns them off.
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let EffectKind::CallProvider(call) = &sole_effect(&started).effect else {
+        panic!("expected a provider call");
+    };
+    assert!(call.tools.iter().any(|tool| tool.name == crate::context::notes::NOTE_TOOL_NAME));
+    let (_, _, tools) = agent_awaiting_provider_with_notes(0);
+    assert!(!tools.iter().any(|name| name == crate::context::notes::NOTE_TOOL_NAME), "{tools:?}");
+}
+
+#[test]
+fn a_note_the_model_writes_is_acknowledged_rendered_and_checkpointed() {
+    let (mut runtime, provider, _) = agent_awaiting_provider_with_notes(400);
+    let next = runtime.submit(&provider_result(
+        "in-note",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            crate::context::notes::NOTE_TOOL_NAME,
+            json!({ "title": "Tally", "kind": "state", "body": "7 qualifying lines in svc-01..svc-12" }),
+        )],
+    ));
+    let (output, is_error) = tool_result_for(&runtime, "call-1").expect("the call is answered");
+    assert!(!is_error, "{output}");
+    assert!(output.contains("\"Tally\" saved"), "{output}");
+    let rendered = serde_json::to_string(&sole_effect(&next).effect).unwrap();
+    assert!(rendered.contains("[state] Tally: 7 qualifying lines in svc-01..svc-12"), "{rendered}");
+
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+    let notes = &restored.driver.engine().unwrap().ctx.partitions.task_state.notes;
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].body, "7 qualifying lines in svc-01..svc-12");
+}
+
+#[test]
+fn a_note_over_the_budget_is_answered_with_the_refusal() {
+    let (mut runtime, provider, _) = agent_awaiting_provider_with_notes(20);
+    runtime.submit(&provider_result(
+        "in-note",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            crate::context::notes::NOTE_TOOL_NAME,
+            json!({ "title": "Everything", "body": "word ".repeat(80) }),
+        )],
+    ));
+    let (output, is_error) = tool_result_for(&runtime, "call-1").expect("the call is answered");
+    assert!(is_error);
+    assert!(output.contains("notes are full"), "{output}");
+}

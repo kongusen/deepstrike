@@ -27,6 +27,8 @@ export interface OpenAIChatWireDialect {
   readonly exposeReasoning: (extensions: Readonly<Record<string, unknown>>) => boolean
   readonly requireReasoningReplay: (extensions: Readonly<Record<string, unknown>>) => boolean
   readonly replay: OpenAIChatReplayStrategy
+  /** Plan task 9.0 · tool-call markup this model may write as text instead of `tool_calls`. */
+  readonly textToolCallMarkup?: "dsml"
 }
 
 function omit(
@@ -105,6 +107,7 @@ export const openAIChatDialects = {
     requireReasoningReplay: extensions =>
       extensions.__deepstrikeThinkingEnabled !== false && extensions.thinking !== false,
     replay: "deepseek",
+    textToolCallMarkup: "dsml",
   },
   kimi: {
     id: "kimi",

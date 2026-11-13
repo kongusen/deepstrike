@@ -32,9 +32,21 @@ export const redact = text => String(text)
   .replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-[REDACTED]")
   .slice(0, 240)
 
-/** The real provider named by `--provider` (deepseek or openai), configured from `.env`. */
+/** The real provider named by `--provider` (deepseek, openai or ollama), configured from `.env`. */
 export async function realProvider(dist, name) {
   const retry = { maxRetries: 2, baseDelay: 1000 }
+  if (name === "ollama") {
+    // A local model (e.g. a small-window stress run). Its window is the server's `num_ctx`, so
+    // pick a model whose Modelfile sets it at least as large as `--max-tokens` plus the reply.
+    const model = process.env.OLLAMA_MODEL ?? "qwen3.8-27b"
+    return {
+      model,
+      provider: (await dist("providers/public.js")).ollama({
+        model,
+        ...(process.env.OLLAMA_BASE_URL ? { baseURL: process.env.OLLAMA_BASE_URL } : {}),
+      }),
+    }
+  }
   if (name === "deepseek") {
     const model = process.env.DEEPSEEK_MODEL ?? "deepseek-chat"
     return {
@@ -152,6 +164,9 @@ export function recordingSessionLog(inner) {
       get(target, property) {
         if (property === "append") {
           return async (sessionId, event) => {
+            // The run a provider attempt belongs to, so the lab compares each request with the
+            // previous request of the same run (plan task 8.0). Not enumerable: never serialized.
+            Object.defineProperty(event, "__session", { value: sessionId, enumerable: false })
             events.push(event)
             return target.append(sessionId, event)
           }
@@ -164,7 +179,7 @@ export function recordingSessionLog(inner) {
 }
 
 /** One trial line from a task run's recorded session events. */
-export function trialFrom({ scenario, variant, task, success, error, provider, events }) {
+export function trialFrom({ scenario, variant, task, success, error, provider, events, model }) {
   const attempts = events.filter(event => event.kind === "provider_attempt")
   const usage = attempts.map(attempt => attempt.usage).filter(Boolean)
   const sum = key => usage.reduce((total, entry) => total + (Number(entry[key]) || 0), 0)
@@ -182,6 +197,8 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
     scenario,
     variant,
     task,
+    // The lab prices a trial by its model (plan task 8.1).
+    ...(model ? { model } : {}),
     success,
     ...(error ? { error } : {}),
     cost: {
@@ -190,11 +207,28 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
       input_tokens: sum("inputTokens"),
       output_tokens: sum("outputTokens"),
       cache_read_tokens: sum("cacheReadInputTokens"),
+      cache_write_tokens: sum("cacheCreationInputTokens"),
+      requests: requestCosts(attempts),
     },
     token_estimates: tokenEstimates,
     ...(provider.trace?.length ? { trace: provider.trace } : {}),
     lifecycle: events.filter(event => event.kind === "context_lifecycle_reported"),
   }
+}
+
+/** Plan task 8.0 · each provider request's usage in the order sent, with the run (session) that
+ *  sent it, for the lab's measured cache loss. */
+function requestCosts(attempts) {
+  const sessions = new Set(attempts.map(attempt => attempt.__session))
+  return attempts
+    .filter(attempt => attempt.usage)
+    .map(attempt => ({
+      ...(sessions.size > 1 && attempt.__session ? { run: String(attempt.__session) } : {}),
+      input_tokens: Number(attempt.usage.inputTokens) || 0,
+      cache_read_tokens: Number(attempt.usage.cacheReadInputTokens) || 0,
+      cache_write_tokens: Number(attempt.usage.cacheCreationInputTokens) || 0,
+      output_tokens: Number(attempt.usage.outputTokens) || 0,
+    }))
 }
 
 /** The pre-call measurement of each provider effect. The SDK records a second, post-call

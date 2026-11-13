@@ -229,6 +229,7 @@ impl CanonicalOperationDriver {
             knowledge_budget_warned: ctx.knowledge_checkpoint_state().1,
             prefix_sent: ctx.cache_checkpoint_state().0,
             cache_invalidated_tokens: ctx.cache_checkpoint_state().1,
+            cache_ledger: ctx.cache_ledger.clone(),
             evicted_knowledge_keys: ctx.partitions.knowledge.evicted_keys.iter().cloned().collect(),
             knowledge_regret: ctx.partitions.knowledge.regret,
             knowledge_wasted_tokens: ctx.partitions.knowledge.wasted_tokens,

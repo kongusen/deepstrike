@@ -27,6 +27,13 @@ function sortKeys(value: unknown): unknown {
   return value
 }
 
+/** Ollama's native API gives tool calls no id, so the adapter mints a run-unique random one. The
+ *  characterization pins that an id is minted, not its random value. */
+export function maskMintedCallIds(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value), (key, item) =>
+    key === "id" && typeof item === "string" && /^call_[a-z0-9]{6,}$/.test(item) ? "call_<minted>" : item)
+}
+
 export function stableStringify(value: unknown): string {
   return JSON.stringify(sortKeys(value), null, 2) + "\n"
 }

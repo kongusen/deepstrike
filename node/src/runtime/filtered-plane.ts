@@ -7,7 +7,7 @@ import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 // Mirrors the kernel's EXPOSURE_EXEMPT_META_TOOLS invariant: kernel-owned meta surfaces are
 // never narrowed away by a tool allow-list. `read_result` is runner-resolved before reaching any
 // plane today, but the lists must not drift.
-const DEFAULT_META_TOOLS = new Set(["skill", "memory", "knowledge", "update_plan", "read_result"])
+const DEFAULT_META_TOOLS = new Set(["skill", "memory", "knowledge", "update_plan", "note", "read_result"])
 
 /** Wraps an execution plane, allowing only manifest-permitted tool IDs (+ meta-tools). */
 export class FilteredExecutionPlane implements ExecutionPlane {

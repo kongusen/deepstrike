@@ -234,7 +234,8 @@
         "safety_margin_tokens": 500
       },
       "renewal_carryover_ppm": 50000,
-      "target_after_compress_ppm": 650000
+      "target_after_compress_ppm": 650000,
+      "notes_budget_tokens": 600
     },
     "execution_policy": {
       "criteria_gate_enabled": true,

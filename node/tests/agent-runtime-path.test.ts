@@ -28,7 +28,7 @@ describe("public Agent runtime path", () => {
 
     const result = await agent.run("look up a fact")
 
-    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["lookup"], ["lookup"]])
+    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["lookup", "note"], ["lookup", "note"]])
     expect(calls).toBe(1)
     expect(result).toMatchObject({ status: "completed", output: "found" })
   })
@@ -43,7 +43,7 @@ describe("public Agent runtime path", () => {
 
     await agent.run("go")
 
-    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["visible"]])
+    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["visible", "note"]])
   })
 
   it.each(["run", "stream", "session", "workflow"] as const)("forwards provider namespaces through %s", async mode => {
@@ -94,7 +94,7 @@ describe("public Agent runtime path", () => {
 
     await expect(agent.run("go")).resolves.toMatchObject({ status: "completed" })
 
-    expect(provider.requests[0][1].map(schema => schema.name)).toEqual(["visible"])
+    expect(provider.requests[0][1].map(schema => schema.name)).toEqual(["visible", "note"])
     expect(hiddenCalls).toBe(0)
   })
 
@@ -108,7 +108,7 @@ describe("public Agent runtime path", () => {
 
     await agent.run("go")
 
-    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["allowed"]])
+    expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["allowed", "note"]])
   })
 
   it("preserves host approval requirements while applying Agent guardrails", async () => {
@@ -126,7 +126,7 @@ describe("public Agent runtime path", () => {
 
     await agent.run("write", { onPermissionRequest: event => { approvals.push(event.toolName); return false } })
 
-    expect(provider.requests[0][1].map(schema => schema.name)).toEqual(["write"])
+    expect(provider.requests[0][1].map(schema => schema.name)).toEqual(["write", "note"])
     expect(approvals).toEqual(["write"])
     expect(calls).toBe(0)
   })
@@ -153,7 +153,7 @@ describe("public Agent runtime path", () => {
         expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", name: "mcp_echo", content: "mcp-result", isError: false }))
       }
       expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name).sort())).toEqual(
-        Array.from({ length: 4 }, () => ["local", "mcp_echo"]),
+        Array.from({ length: 4 }, () => ["local", "mcp_echo", "note"]),
       )
     } finally {
       await agent.close()

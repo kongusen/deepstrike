@@ -25,6 +25,8 @@ pub struct OpenAIProvider {
     api_key: String,
     model: String,
     base_url: String,
+    /// Plan task 9.0 · DeepSeek models may write tool calls as DSML markup in the text.
+    text_tool_call_markup: bool,
 }
 
 impl OpenAIProvider {
@@ -37,10 +39,12 @@ impl OpenAIProvider {
         model: impl Into<String>,
         base_url: impl Into<String>,
     ) -> Self {
+        let model = model.into();
         Self {
             client: Client::new(),
             api_key: api_key.into(),
-            model: model.into(),
+            text_tool_call_markup: model.starts_with("deepseek"),
+            model,
             base_url: base_url.into(),
         }
     }
@@ -412,7 +416,7 @@ impl LLMProvider for OpenAIProvider {
         }
 
         let byte_stream = resp.bytes_stream();
-        let stream = parse_openai_sse(byte_stream, expose_reasoning);
+        let stream = parse_openai_sse(byte_stream, expose_reasoning, self.text_tool_call_markup);
         Ok(Box::new(Box::pin(stream)))
     }
 }
@@ -420,134 +424,226 @@ impl LLMProvider for OpenAIProvider {
 fn parse_openai_sse(
     byte_stream: impl Stream<Item = reqwest::Result<bytes::Bytes>> + Send + 'static,
     expose_reasoning: bool,
+    text_tool_call_markup: bool,
 ) -> impl Stream<Item = Result<StreamEvent>> + Send {
-    let tool_accum: std::collections::HashMap<usize, (String, String, String)> =
-        std::collections::HashMap::new();
-
-    futures::stream::unfold(
-        // 5th element: the last finish_reason seen — "length" flags an output-cap truncation, which
-        // arrives on a choices frame before the trailing usage frame, so it's carried in state and
-        // attached to the Usage event the runner reads.
-        (
-            Box::pin(byte_stream),
-            String::new(),
-            tool_accum,
-            false,
-            None::<String>,
-        ),
-        move |(mut stream, mut buf, mut tool_accum, mut flushed, mut finish_reason)| async move {
-            if flushed {
-                return None;
-            }
-            loop {
-                if let Some(pos) = buf.find('\n') {
-                    let line = buf[..pos].trim().to_string();
-                    buf = buf[pos + 1..].to_string();
-
-                    if !line.starts_with("data: ") {
-                        continue;
-                    }
-                    let data = &line[6..];
-                    if data == "[DONE]" {
-                        // flush accumulated tool calls
-                        if let Some((_, (id, name, args_buf))) = tool_accum.iter().next() {
-                            let arguments =
-                                crate::runtime::tool_arguments::from_model_text(args_buf);
-                            let evt = StreamEvent::ToolCall {
-                                id: id.clone(),
-                                name: name.clone(),
-                                arguments,
-                            };
-                            flushed = true;
-                            return Some((
-                                Ok(evt),
-                                (stream, buf, tool_accum, flushed, finish_reason),
-                            ));
-                        }
-                        return None;
-                    }
-
-                    let Ok(chunk) = serde_json::from_str::<Value>(data) else {
-                        continue;
-                    };
-                    // Capture finish_reason from choices frames; the usage frame (empty choices)
-                    // leaves it untouched, preserving a "length" seen earlier this turn.
-                    if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
-                        finish_reason = Some(fr.to_string());
-                    }
-                    if let Some(total) = chunk["usage"]["total_tokens"].as_u64() {
-                        let usage = &chunk["usage"];
-                        return Some((
-                            Ok(StreamEvent::Usage {
-                                total_tokens: total as u32,
-                                input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-                                output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0)
-                                    as u32,
-                                cache_read_input_tokens: openai_cached_prompt_tokens(usage),
-                                cache_creation_input_tokens: 0,
-                                // I1: OpenAI-family providers auto-cache; no per-slot attribution.
-                                cache_read_input_tokens_by_slot: None,
-                                // finish_reason="length" (captured from an earlier choices frame)
-                                // flags an output-cap truncation and drives the kernel's recovery.
-                                stop_reason: finish_reason.clone(),
-                            }),
-                            (stream, buf, tool_accum, flushed, finish_reason),
-                        ));
-                    }
-                    let delta = &chunk["choices"][0]["delta"];
-                    if expose_reasoning {
-                        if let Some(reasoning) = delta["reasoning_content"].as_str() {
-                            if !reasoning.is_empty() {
-                                return Some((
-                                    Ok(StreamEvent::ThinkingDelta {
-                                        delta: reasoning.to_string(),
-                                    }),
-                                    (stream, buf, tool_accum, flushed, finish_reason),
-                                ));
-                            }
-                        }
-                    }
-                    if let Some(content) = delta["content"].as_str() {
-                        if !content.is_empty() {
-                            return Some((
-                                Ok(StreamEvent::TextDelta {
-                                    delta: content.to_string(),
-                                }),
-                                (stream, buf, tool_accum, flushed, finish_reason),
-                            ));
-                        }
-                    }
-                    if let Some(tcs) = delta["tool_calls"].as_array() {
-                        for tc in tcs {
-                            let idx = tc["index"].as_u64().unwrap_or(0) as usize;
-                            let entry = tool_accum.entry(idx).or_insert_with(|| {
-                                (
-                                    tc["id"].as_str().unwrap_or("").to_string(),
-                                    tc["function"]["name"].as_str().unwrap_or("").to_string(),
-                                    String::new(),
-                                )
-                            });
-                            entry
-                                .2
-                                .push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
-                        }
-                    }
+    async_stream::stream! {
+        let mut byte_stream = Box::pin(byte_stream);
+        // Raw bytes until a full line arrives: a multi-byte character (`｜`, CJK text) split across
+        // network chunks must not be decoded half at a time.
+        let mut pending: Vec<u8> = Vec::new();
+        // Ordered by index so parallel calls come out in the order the model made them.
+        let mut tool_accum: std::collections::BTreeMap<usize, (String, String, String)> =
+            std::collections::BTreeMap::new();
+        // The last finish_reason seen — "length" flags an output-cap truncation; it arrives on a
+        // choices frame before the trailing usage frame and is attached to the Usage event.
+        let mut finish_reason: Option<String> = None;
+        let mut usage: Option<Value> = None;
+        let mut text = super::text_tool_calls::TextToolCallFilter::new(text_tool_call_markup);
+        'read: loop {
+            while let Some(pos) = pending.iter().position(|b| *b == b'\n') {
+                let line_bytes: Vec<u8> = pending.drain(..=pos).collect();
+                let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+                let Some(data) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    break 'read;
+                }
+                let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
+                if let Some(fr) = chunk["choices"][0]["finish_reason"].as_str() {
+                    finish_reason = Some(fr.to_string());
+                }
+                if chunk["usage"]["total_tokens"].as_u64().is_some() {
+                    usage = Some(chunk["usage"].clone());
                     continue;
                 }
-
-                match stream.next().await {
-                    Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                    Some(Err(e)) => {
-                        return Some((
-                            Err(super::ProviderError::transport("openai", e.to_string()).into()),
-                            (stream, buf, tool_accum, flushed, finish_reason),
-                        ));
+                let delta = &chunk["choices"][0]["delta"];
+                if expose_reasoning {
+                    if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                        if !reasoning.is_empty() {
+                            yield Ok(StreamEvent::ThinkingDelta { delta: reasoning.to_string() });
+                        }
                     }
-                    None => return None,
+                }
+                if let Some(content) = delta["content"].as_str() {
+                    let visible = text.feed(content);
+                    if !visible.is_empty() {
+                        yield Ok(StreamEvent::TextDelta { delta: visible });
+                    }
+                }
+                if let Some(tcs) = delta["tool_calls"].as_array() {
+                    for tc in tcs {
+                        let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                        let entry = tool_accum.entry(idx).or_insert_with(|| {
+                            (
+                                tc["id"].as_str().unwrap_or("").to_string(),
+                                tc["function"]["name"].as_str().unwrap_or("").to_string(),
+                                String::new(),
+                            )
+                        });
+                        entry.2.push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
+                    }
                 }
             }
-        },
-    )
+            match byte_stream.next().await {
+                Some(Ok(chunk)) => pending.extend_from_slice(&chunk),
+                Some(Err(e)) => {
+                    yield Err(super::ProviderError::transport("openai", e.to_string()).into());
+                    return;
+                }
+                None => break 'read,
+            }
+        }
+        // Plan task 9.0 · markup written as text becomes tool calls, or the call fails.
+        match text.finish() {
+            Ok((held, calls)) => {
+                if !held.is_empty() {
+                    yield Ok(StreamEvent::TextDelta { delta: held });
+                }
+                if !calls.is_empty() {
+                    let mut index = tool_accum.keys().next_back().map_or(0, |last| last + 1);
+                    for call in calls {
+                        let args = Value::Object(call.arguments).to_string();
+                        tool_accum.insert(index, (super::text_tool_calls::text_tool_call_id(), call.name, args));
+                        index += 1;
+                    }
+                    finish_reason = Some("tool_calls".to_string());
+                }
+            }
+            Err(()) => {
+                yield Err(super::text_tool_calls::textual_tool_call_error("openai").into());
+                return;
+            }
+        }
+        for (_, (id, name, args_buf)) in tool_accum {
+            let arguments = crate::runtime::tool_arguments::from_model_text(&args_buf);
+            yield Ok(StreamEvent::ToolCall { id, name, arguments });
+        }
+        if let Some(usage) = usage {
+            yield Ok(StreamEvent::Usage {
+                total_tokens: usage["total_tokens"].as_u64().unwrap_or(0) as u32,
+                input_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+                output_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
+                cache_read_input_tokens: openai_cached_prompt_tokens(&usage),
+                cache_creation_input_tokens: 0,
+                // I1: OpenAI-family providers auto-cache; no per-slot attribution.
+                cache_read_input_tokens_by_slot: None,
+                // finish_reason="length" flags an output-cap truncation and drives the kernel's
+                // recovery.
+                stop_reason: finish_reason.clone(),
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_tool_call_tests {
+    //! Plan task 9.0 · DeepSeek tool-call markup written as text, against the fixture every SDK
+    //! shares. Mirrors node/tests/text-tool-calls.test.ts.
+    use super::*;
+
+    fn fixture() -> Value {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../tests/fixtures/provider-textual-tool-call/openai-chat.json");
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn sse(chunks: &[Value]) -> Vec<u8> {
+        let mut out = String::new();
+        for content in chunks {
+            out.push_str(&format!("data: {}\n\n", json!({ "choices": [{ "index": 0, "delta": { "content": content } }] })));
+        }
+        out.push_str(&format!("data: {}\n\n", json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }] })));
+        out.push_str(&format!("data: {}\n\n", json!({ "choices": [], "usage": { "prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8 } })));
+        out.push_str("data: [DONE]\n\n");
+        out.into_bytes()
+    }
+
+    /// Feeds `bytes` in 7-byte pieces, so multi-byte characters are split across network chunks.
+    async fn run(bytes: Vec<u8>, markup: bool) -> Vec<Result<StreamEvent>> {
+        let pieces: Vec<reqwest::Result<bytes::Bytes>> =
+            bytes.chunks(7).map(|piece| Ok(bytes::Bytes::copy_from_slice(piece))).collect();
+        parse_openai_sse(futures::stream::iter(pieces), false, markup).collect().await
+    }
+
+    fn text(events: &[Result<StreamEvent>]) -> String {
+        events.iter().filter_map(|event| match event {
+            Ok(StreamEvent::TextDelta { delta }) => Some(delta.as_str()),
+            _ => None,
+        }).collect()
+    }
+
+    fn calls(events: &[Result<StreamEvent>]) -> Vec<(String, String, Value)> {
+        events.iter().filter_map(|event| match event {
+            Ok(StreamEvent::ToolCall { id, name, arguments }) => Some((id.clone(), name.clone(), serde_json::to_value(arguments).unwrap())),
+            _ => None,
+        }).collect()
+    }
+
+    #[tokio::test]
+    async fn markup_becomes_tool_calls_and_never_reaches_the_text() {
+        for case in fixture()["cases"].as_array().unwrap().iter().filter(|c| c.get("error").is_none()) {
+            let events = run(sse(case["chunks"].as_array().unwrap()), true).await;
+            assert_eq!(text(&events), case["text"].as_str().unwrap(), "{}", case["name"]);
+            let got = calls(&events);
+            let expected: Vec<(String, Value)> = case["calls"].as_array().unwrap().iter()
+                .map(|c| (c["name"].as_str().unwrap().to_string(), c["arguments"].clone())).collect();
+            assert_eq!(got.iter().map(|(_, n, a)| (n.clone(), a.clone())).collect::<Vec<_>>(), expected, "{}", case["name"]);
+            assert!(got.iter().all(|(id, _, _)| id.starts_with("call_text_")));
+            let stop = events.iter().find_map(|event| match event {
+                Ok(StreamEvent::Usage { stop_reason, .. }) => Some(stop_reason.clone()),
+                _ => None,
+            }).flatten();
+            let want = if expected.is_empty() { "stop" } else { "tool_calls" };
+            assert_eq!(stop.as_deref(), Some(want), "{}", case["name"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn unparsed_markup_fails_as_a_retryable_protocol_error() {
+        for case in fixture()["cases"].as_array().unwrap().iter().filter(|c| c.get("error").is_some()) {
+            let events = run(sse(case["chunks"].as_array().unwrap()), true).await;
+            let error = events.iter().find_map(|event| event.as_ref().err()).expect("an error");
+            let Error::ProviderFailure(error) = error else { panic!("not a provider failure: {error}") };
+            assert_eq!(error.kind, super::super::provider_error::ProviderErrorKind::Protocol);
+            assert!(error.retryable);
+            assert_eq!(error.provider_code.as_deref(), case["error"].as_str());
+            assert!(!error.message.contains("logs/a.log"));
+        }
+    }
+
+    #[tokio::test]
+    async fn other_models_pass_the_text_through_unchanged() {
+        let case = &fixture()["cases"][0];
+        let chunks = case["chunks"].as_array().unwrap();
+        let events = run(sse(chunks), false).await;
+        let all: String = chunks.iter().map(|c| c.as_str().unwrap()).collect();
+        assert_eq!(text(&events), all);
+        assert!(calls(&events).is_empty());
+    }
+
+    #[tokio::test]
+    async fn parallel_native_tool_calls_all_survive_done_in_order() {
+        let frames = [
+            json!({ "choices": [{ "index": 0, "delta": { "tool_calls": [
+                { "index": 0, "id": "call_a", "function": { "name": "list_files", "arguments": "{}" } },
+                { "index": 1, "id": "call_b", "function": { "name": "read_file", "arguments": "{\"path\":\"a\"}" } },
+            ] } }] }),
+            json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": "tool_calls" }] }),
+        ];
+        let mut body: String = frames.iter().map(|frame| format!("data: {frame}\n\n")).collect();
+        body.push_str("data: [DONE]\n\n");
+        let events = run(body.into_bytes(), true).await;
+        let ids: Vec<String> = calls(&events).into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(ids, vec!["call_a", "call_b"]);
+    }
+
+    #[test]
+    fn deepseek_models_watch_for_markup() {
+        assert!(deepseek("k").text_tool_call_markup);
+        assert!(!OpenAIProvider::new("k").text_tool_call_markup);
+    }
 }
 
 #[cfg(test)]

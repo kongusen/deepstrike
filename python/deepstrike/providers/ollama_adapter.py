@@ -30,6 +30,17 @@ def _number(raw: dict, field: str) -> int | None:
     return int(value)
 
 
+
+def _ollama_call_id(given: object) -> str:
+    """Ollama's native API gives tool calls no id. The kernel requires a call id to be unique within
+    the run (one id causes at most one syscall), so a per-turn counter (``call_1`` every turn) ended
+    runs with ``invalid_authority`` on the second turn that called a kernel tool."""
+    if isinstance(given, str) and given.strip():
+        return given
+    import secrets
+
+    return f"call_{secrets.token_hex(5)}"
+
 class OllamaNdjsonDecoder:
     def __init__(self) -> None:
         self._buffer = ""
@@ -118,7 +129,7 @@ class OllamaAdapter:
         tool_calls = []
         for call in message.get("tool_calls") or []:
             function = call.get("function") or {}
-            normalized = normalize_tool_call(call.get("id", ""), function.get("name", ""), function.get("arguments", {}))
+            normalized = normalize_tool_call(_ollama_call_id(call.get("id")), function.get("name", ""), function.get("arguments", {}))
             if normalized:
                 tool_calls.append(normalized)
         return ModelMessage(role="assistant", content=message.get("content") or "", tool_calls=tool_calls or None)
@@ -139,7 +150,7 @@ class OllamaAdapter:
             key = f"{normalized.name}:{normalized.arguments}"
             if key not in state.pending_tool_calls:
                 state.pending_tool_calls[key] = {
-                    "id": f"call_{len(state.pending_tool_calls) + 1}",
+                    "id": _ollama_call_id(call.get("id")),
                     "name": normalized.name,
                     "arguments": json.loads(normalized.arguments),
                 }

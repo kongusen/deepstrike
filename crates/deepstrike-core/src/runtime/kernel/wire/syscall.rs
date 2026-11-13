@@ -36,6 +36,8 @@ pub enum SyscallRequest {
     ReadObject(ReadObjectRequest),
     /// P3 handle page-in. Opposite in meaning to the host's `SeedKnowledge` command (DEC-9).
     PageIn(PageInRequest),
+    /// Plan task 9.1 · the model writes or retires one of its notes.
+    WriteNote(crate::context::notes::NoteRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

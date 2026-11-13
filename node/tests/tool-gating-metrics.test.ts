@@ -42,7 +42,7 @@ describe("P0-C tool-gating telemetry (onTurnMetrics)", () => {
 
     expect(metrics.length).toBeGreaterThanOrEqual(1)
     const m = metrics[0]
-    expect(m.toolsExposed).toBe(2) // read + write, no meta-tools registered
+    expect(m.toolsExposed).toBe(3) // read + write, and `note` (on by default since 0.2.82)
     expect(m.toolsCalled).toBe(0)
     expect(m.inputTokens).toBe(1000)
     expect(m.cacheReadTokens).toBe(900)

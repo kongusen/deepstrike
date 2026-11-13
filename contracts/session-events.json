@@ -657,6 +657,7 @@
         "waste_tokens"
       ],
       "optional": [
+        "cache_tail_tokens",
         "edges",
         "edges_omitted",
         "external_edges",
@@ -664,7 +665,11 @@
         "history_items",
         "history_items_omitted",
         "items",
+        "notes_active",
+        "notes_written",
         "parent_items_used",
+        "prefix_breaks",
+        "prefix_breaks_omitted",
         "waste_items"
       ],
       "sample": {
@@ -674,7 +679,7 @@
         "knowledge_referenced": 3,
         "regret": 1,
         "waste_tokens": 120,
-        "cache_loss_tokens": 0,
+        "cache_loss_tokens": 3420,
         "recalled": 2,
         "recall_expanded": 1,
         "items": [
@@ -715,7 +720,15 @@
           { "from": 1, "to": { "operation": "op-parent", "item": 4 }, "relation": "inherited_from", "turn": 0 },
           { "from": 8, "to": { "agent": "wf-node0" }, "relation": "depends_on", "turn": 4 }
         ],
-        "parent_items_used": [{ "operation": "op-parent", "item": 4 }]
+        "parent_items_used": [{ "operation": "op-parent", "item": 4 }],
+        "prefix_breaks": [
+          { "turn": 3, "cause": "narration", "kept_tokens": 1800, "lost_tokens": 260 },
+          { "turn": 5, "cause": "auto", "kept_tokens": 900, "lost_tokens": 3100 }
+        ],
+        "prefix_breaks_omitted": 1,
+        "cache_tail_tokens": 840,
+        "notes_written": 3,
+        "notes_active": 2
       }
     },
     {

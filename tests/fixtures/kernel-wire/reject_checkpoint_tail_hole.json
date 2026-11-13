@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:4ac27770a81458235550b68bd3912e15c0fcc5910fd5b384a119f56545520a52",
+    "checkpoint_digest": "sha256:90a5970eb22027f54d523d2f679c21146dda714c19cc13eb75728b0282b5d78a",
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -97,6 +97,7 @@
             "collapse_old_assistant_narration": true,
             "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
+            "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
@@ -212,8 +213,8 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:ad041c63ee0e6664f37ca5e5053400a1ed61546c475d8215802a0396c90dcea2",
-    "tail_digest": "sha256:3eb63ddfab0b7fcf55057e5bb2f1977d793aa39fd5a28a5861fb553719a2b049",
+    "state_digest": "sha256:71bdefac5444d915aa6f6650cdc2503b38dd43d1babfceca2a0c2c2e4b3b4ef2",
+    "tail_digest": "sha256:97e11119f9d0c5cdb1e693175fac49ae8e784c1a7dce5babc4c9805a4d4ec5d8",
     "tail_inputs": [
       {
         "input": {
@@ -224,6 +225,7 @@
                 "collapse_old_assistant_narration": true,
                 "idle_micro_compact_minutes": 60,
                 "knowledge_budget_ppm": 250000,
+                "notes_budget_tokens": 600,
                 "preserve_recent_turns": 2,
                 "pressure_thresholds_ppm": {
                   "auto": 950000,

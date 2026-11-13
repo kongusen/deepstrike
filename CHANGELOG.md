@@ -4,7 +4,88 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.82] - 2026-11-11
+
+### Added
+
+- The cache ledger (plan task 8.0). Every provider request is fingerprinted segment by segment
+  (tool schemas, system[0], system[1], each history turn) and compared with the previous request;
+  the first segment that differs is a prefix break. `context_lifecycle_reported` gains
+  `prefix_breaks` (the latest 128: turn, cause, `kept_tokens`, `lost_tokens`), `prefix_breaks_omitted`
+  and `cache_tail_tokens` (the state turns of earlier requests, which are rebuilt every request and
+  so never reusable). Causes are announced by the rewrite that made them (`snip`, `micro`,
+  `collapse`, `auto`, `renewal`, `provider`, `promotion`) or read from the render (`toolset`,
+  `system`, `narration`, `budget_drop`, `reprojection`, `other`). The ledger is checkpointed.
+- `deepstrike-lab` reads per-request usage (`cost.requests[]`, recorded by the benchmark harness)
+  and reports `observed_cache_loss_tokens` (for each request after the first of its run, the
+  previous request's input not read from cache, less `cache_tail_tokens`), `cache_loss_error`
+  (the kernel's account against it, size-weighted) and the kernel's loss by cause as
+  `cache_loss.<cause>`. `gate --max-cache-loss-error <fraction>` bounds the error.
+- `deepstrike-lab` prices trials (plan task 8.1): `weighted_cost` charges uncached input, cache
+  reads, cache writes and output by the trial's model (`--prices <json>`; relative units by
+  default) and heads the report. `gate --paired metric:tolerance` compares the two variants task by
+  task with a fixed-seed bootstrap 95% interval (absolute tolerance for success, relative to the
+  baseline mean for costs) and fails with "insufficient samples" below `--min-pairs` (30). Trials
+  carry `model` and `cache_write_tokens`.
+- `long-horizon` live benchmark (plan task 8.2): an incident investigation whose scoring rules
+  live only in a brief read first, followed by 40 logs of about 3.5k tokens each against a 100k
+  window. Oracles `formula_broken`, `count_error`, `undercount`, `early_fact_lost`,
+  `brief_rereads`, `compactions`, `renewals`; `--dry`, `--rescore` and `--concurrency`.
+- Tool calls written as text (plan task 9.0). DeepSeek sometimes writes its tool calls as DSML
+  markup in the message text instead of `tool_calls`, and a run that keeps that text in history
+  imitates it until its turn limit. On the OpenAI-chat protocol the DeepSeek dialect now holds the
+  markup out of the visible text, also when it is split across stream chunks, and turns it into
+  tool calls (ids `call_text_…`, in the provider replay too). Markup that does not parse fails the
+  call as a retryable protocol error with provider code `textual_tool_call`, like the Anthropic
+  adapter's guard. Node, Python, WASM and Rust, with a shared fixture.
+- Benchmarks: `--provider ollama` (model from `OLLAMA_MODEL`) for local runs; long-horizon trials
+  keep the runner's error message instead of only `termination: error`.
+- Notes the model writes (plan task 9.1), **on by default** (DEC-13). The kernel offers a `note`
+  tool unless `ContextPolicy.notesBudgetTokens` (Node/WASM) or `notes_budget_tokens` (Python; Rust
+  `RuntimeOptions.notes_budget_tokens`) is set to 0; the default budget is 600 tokens. Measured on
+  DeepSeek against the same tasks without notes: long-horizon 15/30 → 20/30 with cost per correct
+  answer −43%, ledger 25/30 → 30/30, multi-session 9/48 → 33/48 with cost per correct answer
+  −68%. The model the model writes, rewrites (by title) or retires notes of kind
+  `state`, `rule`, `question` or `index`. The kernel executes it itself; notes live in the working
+  partition, no compaction tier touches them, they render in the state turn and are checkpointed.
+  Over the budget a write is refused with the usage in the tool result; the kernel never deletes a
+  note for the model. Each note is an item of the graph, with new relations `derived_from` (to the
+  results it cites, or by default the results since the last note), `links_to` and `supersedes`.
+  `context_lifecycle_reported` gains `notes_written` and `notes_active`. When the model can propose
+  memories, the `note` tool says that notes end with the task and points at `propose_memory`, the
+  existing path for what should outlive it (plan task 9.4).
+- DEC-13, *Model-Led Context* (`docs/en/decisions/013-model-led-context.md`): the kernel never
+  initiates a model call to manage context; the model decides what matters through its tools and
+  the kernel keeps it; a mechanism stays only if paired live measurement shows it significantly
+  better somewhere and significantly worse nowhere, otherwise it is deleted. CONTRIBUTING gains
+  the corresponding rules for context changes.
+- Benchmarks: `multi-session` (sequences of sessions with unwritten rules learned from failures;
+  `--memory none | notes`, `--dry`, `--provider mock`).
+
+### Changed
+
+- `cache_loss_tokens` now sums every prefix break of the run. It used to count only history behind
+  a mid-run knowledge promotion and reported 0 for compaction, narration collapse, tool-result
+  collapse, budget drops, renewal and toolset changes.
+- `deepstrike-lab gate` now decides by DEC-13 by default: in every scenario, at least one of
+  `success_rate` and the new `cost_per_success` (price-weighted cost per correct answer) must be
+  significantly better (`--improve`, default `success_rate,cost_per_success`), and neither
+  significantly worse (`--paired`, default `success_rate:ns,cost_per_success:ns`; `metric:ns` means
+  "not significantly worse"). `--paired none` / `--improve none` turn them off. Before 0.2.82 the
+  default gate compared neither success nor cost.
+
+### Fixed
+
+- Ollama (native API, Node and Python): every tool call got a per-turn id (`call_1` each turn), so a
+  run ended with `invalid_authority` the second time the model called a kernel tool such as
+  `update_plan` or `note`. Tool calls now keep the server's id when there is one and otherwise get
+  a run-unique one; Node's non-streaming decode also stops dropping tool calls.
+- WASM `OpenAIProvider` dropped every tool call of a stream that ended with `data: [DONE]` (it
+  returned before emitting them).
+- Rust `OpenAIProvider` emitted only one tool call of a turn (picked from a hash map, so parallel
+  calls were lost and the survivor was arbitrary), and decoded each network chunk on its own, so a
+  multi-byte character split across chunks turned into replacement characters. Calls now come out
+  in index order, lines are decoded whole, and the usage event comes last.
 
 ## [0.2.81] - 2026-11-03
 

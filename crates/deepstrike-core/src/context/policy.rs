@@ -17,6 +17,13 @@ pub struct ContextPolicy {
     pub delegate_tool_result_clearing: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub delegate_compaction: bool,
+    /// Plan task 9.1 · tokens the model's notes may hold; `0` turns the `note` tool off.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub notes_budget_tokens: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -71,6 +78,7 @@ impl ContextPolicy {
         config.micro_compact_idle_minutes = self.idle_micro_compact_minutes;
         config.delegate_tool_result_clearing = self.delegate_tool_result_clearing;
         config.delegate_compaction = self.delegate_compaction;
+        config.notes_budget_tokens = self.notes_budget_tokens;
     }
 }
 
@@ -98,6 +106,7 @@ mod tests {
             idle_micro_compact_minutes: 60,
             delegate_tool_result_clearing: false,
             delegate_compaction: false,
+            notes_budget_tokens: 0,
         }
     }
 

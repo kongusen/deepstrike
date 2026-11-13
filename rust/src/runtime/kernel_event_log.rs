@@ -145,12 +145,12 @@ fn project(obs: &Value, turn: u32, opts: &ProjectionOptions) -> Option<Value> {
                 "recalled": or(obs, "recalled", 0.into()),
                 "recall_expanded": or(obs, "recall_expanded", 0.into()),
             });
-            for field in ["items", "history", "history_items", "edges", "waste_items", "external_edges", "parent_items_used"] {
+            for field in ["items", "history", "history_items", "edges", "waste_items", "external_edges", "parent_items_used", "prefix_breaks"] {
                 if let Some(rows) = obs.get(field).filter(|rows| rows.as_array().is_some_and(|a| !a.is_empty())) {
                     event[field] = rows.clone();
                 }
             }
-            for field in ["history_items_omitted", "edges_omitted"] {
+            for field in ["history_items_omitted", "edges_omitted", "prefix_breaks_omitted", "cache_tail_tokens", "notes_written", "notes_active"] {
                 if let Some(omitted) = obs.get(field).filter(|n| n.as_u64().is_some_and(|n| n > 0)) {
                     event[field] = omitted.clone();
                 }

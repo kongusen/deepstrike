@@ -190,7 +190,7 @@ async function runTask(index) {
     await writeFile(process.env.KNOWLEDGE_DEBUG, JSON.stringify({ events: recorder.events, lastContext: provider.lastContext }, null, 1))
   }
   const success = answer.replace(/,/g, "").includes(expected)
-  const trial = trialFrom({ scenario: "knowledge-pressure", variant, task: `${account}#${index}`, success, error, provider, events: recorder.events })
+  const trial = trialFrom({ scenario: "knowledge-pressure", variant, task: `${account}#${index}`, success, error, provider, events: recorder.events, model })
   return { ...trial, oracle: oracle(trial.lifecycle), expected, answer: answer.slice(-80) }
 }
 

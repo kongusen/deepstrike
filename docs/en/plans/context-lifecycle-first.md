@@ -544,6 +544,451 @@ graph store. Constraints:
   - Files: `orchestration/workflow`, `runtime/kernel/wire/driver/continuation.rs`, the four SDKs'
     `inherited_knowledge`
 
+### Stage 8: measure first, put the cache into decisions (0.2.82)
+
+**Why.** Stages 0–7 finished the ledger, but measurements on 0.2.79–0.2.81 show that the
+bottleneck is no longer missing mechanism: the books are wrong, and decisions ignore cache cost
+(`results/ledger.jsonl`, DeepSeek `deepseek-flash`; uncached input = input − 0.9 × cache reads):
+
+| Release | Correct | Input tokens / task | Cache hit rate | Uncached input / task | Kernel-reported `cache_loss_tokens` |
+|---------|---------|---------------------|----------------|-----------------------|-------------------------------------|
+| 0.2.79 | 11/12 | 52.4k | 63% | 22.7k | 0 |
+| 0.2.80 | 20/24 | 57.1k | 53% | 29.6k | 0 |
+| 0.2.81 | 22/24 | 54.4k | 56% | 27.1k | 0 |
+
+| # | Problem | Evidence |
+|---|---------|----------|
+| Q12 | `cache_loss` counts only knowledge promotion (`cache_invalidated_tokens` in `manager.rs`); prefix rewrites from compaction, narration collapse, over-budget drops and renewal are not counted. The kernel reports 0 while the measured hit rate fell from 63% to 56% — the same kind of gap as the under-reported waste found in 7.0 | table above |
+| Q13 | Rendering rewrites the middle of the prefix every turn: `collapse_assistant_narration` is on by default and `preserve_recent_turns` = 2, so the narration unit that just left the protected window is replaced by `NARRATION_STUB` on that turn; over budget, the oldest unit is dropped one turn at a time. Both make everything after the break point bill as uncached again, every turn | `project_assistant_narration` and the render loop in `renderer.rs` |
+| Q14 | The benchmarks are too small for a gate to tell improvement from noise: 7–8k windows, peak context under 10k, 12 tasks per variant; 9/12 vs 10/12 is noise. Long tasks with 100k+ windows and dozens of turns are not covered, so the data that would show whether `RuleSummarizer` is the bottleneck (see "Out of scope") can never appear | `long-task.mjs` defaults to `--max-tokens 8000`; `knowledge-pressure.mjs` uses a 7000 window |
+| Q15 | The gate is driven by token and character counts, not price; a change that saves tokens but loses cache hits passes as an improvement | `Summary` in `crates/deepstrike-lab` |
+| Q16 | The success metrics "input −25%, cache_loss −50%" are not met, and the current gate cannot see it | ledger input 52.4k → 54.4k |
+
+**Principles.**
+- As in 0.2.80 and 0.2.81, the lab comes before the change it measures: 8.0–8.2 change only
+  measurement, not rendering; 8.3 and 8.4 change decisions and must pass the new gate first.
+- Cache loss, like waste, is grounded in provider measurements; the kernel's self-reported number
+  must agree with them.
+- Freeze the graph: this stage adds no relation, lease or origin. Existing edges take part in
+  decisions only after the lab shows a gain.
+
+- [x] Task 8.0 (2026-11-11): new `context/cache_ledger.rs`.
+  Each request's prefix is fingerprinted segment by segment (tool schemas, system[0], system[1],
+  each history turn) and compared with the previous request; the first segment that differs is the
+  break. The cause is announced by the rewrite that made it (`snip` / `micro` / `collapse` /
+  `auto` / `renewal` / `provider` / `promotion`) or, when none was, read from the render
+  (`toolset` / `system` / `narration` / `budget_drop` / `reprojection` / `other`). The lifecycle
+  report gains `prefix_breaks` (the latest 128), `prefix_breaks_omitted` and `cache_tail_tokens`;
+  `cache_loss_tokens` becomes the sum over all breaks; the ledger is checkpointed. The lab reads
+  trials' `cost.requests[]` and reports `observed_cache_loss_tokens`, `cache_loss_error` and
+  `cache_loss.<cause>`, with `gate --max-cache-loss-error`. The four SDKs' projections and the
+  contract are in sync; the Rust workspace, Node, Python, WASM and four-SDK conformance all pass.
+  A scripted long task (`run.mjs`, 25 calls) records two `micro` breaks totalling 17.6k tokens
+  where the old field reported 0. Differences from the acceptance:
+    - The field is `requests[]`, not `calls[]` (`cost.calls` is already the call count); a break
+      is `cause` plus `kept_tokens` / `lost_tokens` (the break position in tokens).
+    - Causes add `toolset`, `system`, `reprojection` and `other`: a skill narrowing the toolset
+      invalidates the whole cache, a kind of break the plan did not list.
+    - New `cache_tail_tokens`: the previous request's state turn is rebuilt every request and was
+      never reusable, but a provider's uncached input count includes it; the lab subtracts it from
+      the measured value before comparing it with the kernel's.
+    - Fingerprints cover only what reaches the provider: a tool result's `durable_content` is left
+      out (a restored message carries it and a live one may not, which would otherwise show a
+      false break after a restore).
+    - A newly found per-turn break source (for 8.3): above the collapse threshold,
+      `recompute_handle_residency` collapses one more old tool result every turn.
+    - Measured (DeepSeek `deepseek-flash`, 12 tasks each, `0.2.82-8.0`): the kernel's cache loss is
+      within 11.6% (ledger) and 7.3% (knowledge-pressure) of the provider-measured loss, so the
+      acceptance passes. Ledger loss per task by cause: collapse 7.3k, toolset 5.9k, narration
+      5.6k. Success was 10/12 and 8/12; 8.0 does not change rendering, so this is noise, which is
+      exactly why 8.1's paired rule is needed.
+  - Acceptance: a trial's `cost` gains per-call detail `calls[]` (`input_tokens`,
+    `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, and the kernel's prefix break
+    point). The lab computes measured cache loss per call as `max(0, reusable prefix − cache_read)`,
+    where the reusable prefix is the previous call's input minus this turn's new tail. The kernel's
+    lifecycle report gains `prefix_breaks` (turn, action
+    `promotion | snip | micro | collapse | auto | narration | budget_drop | renewal | provider`,
+    break position, tokens after the break), and `cache_loss_tokens` becomes the sum over all
+    breaks instead of knowledge promotion only.
+  - Verification: on ledger and knowledge-pressure, the kernel's `cache_loss_tokens` is within 15%
+    of measured cache loss (the tolerance covers provider cache granularity, e.g. DeepSeek's
+    64-token blocks).
+  - Files: `context/manager.rs`, `context/renderer.rs` (render returns the break point),
+    `crates/deepstrike-lab`, the metering wrappers in `benchmark/context-lifecycle/*.mjs`; the four
+    SDKs' projections and contracts
+
+- [x] Task 8.1 (2026-11-11): the lab gains a price table (`--prices`; the default is relative units:
+  uncached input 1, cache read 0.1, cache write 1, output 4; `benchmark/context-lifecycle/prices.json`
+  holds only the default, and users fill in real prices) and `weighted_cost` (the report's first
+  row); `gate --paired metric:tolerance` pairs runs by (scenario, task) and gives a fixed-seed
+  bootstrap 95% interval, failing as "insufficient samples" below `--min-pairs` (30). Trials gain
+  `model` and `cache_write_tokens`. Recomputed from existing results: ledger 0.2.79 → 0.2.81 is +11.6%
+  on `weighted_cost` where `input_tokens` shows only +3.8%, so the verification passes.
+  Differences from the acceptance:
+    - A 5-point success tolerance is unusable at 30–40 pairs: with one failure on each side and a
+      net difference of 0, the interval is already ±7.5 points. Use `success_rate:0.10`; it
+      absorbs noise that cancels out and still fails at three net losses (tested).
+  - Acceptance: the lab gains a price table (per provider / model: uncached input, cache read,
+    cache write and output prices) and a `weighted_cost` metric, which becomes the primary cost
+    gate; `input_tokens` / `sent_chars` become diagnostics. The gate compares the same task across
+    two variants as pairs and reports a bootstrap 95% confidence interval on the difference:
+    success "does not drop" only if the interval's lower bound is above −5 percentage points; with
+    fewer than 30 pairs the gate reports "insufficient samples" instead of passing.
+  - Verification: recomputed from the three existing result files, ledger 0.2.79 → 0.2.81 shows a
+    regression on `weighted_cost` (uncached input +19% in the table above).
+  - Files: `crates/deepstrike-lab/src/lib.rs`, `main.rs`
+
+- [x] Task 8.2 (2026-11-11): `long-horizon.mjs`, an incident investigation. The scoring rules live
+  only in `brief.md`, read first (the error code to count, request ids to skip, and a multiplier
+  and on-call badge number needed only at the end); then 40 logs of about 3.5k tokens each against a
+  100k window. `--dry` prints the task facts without a model, `--rescore` recomputes oracles from
+  recorded answers, `--concurrency` runs tasks in parallel. Baseline (DeepSeek, 30 tasks, code before
+  8.3): 12/30 correct, 40 calls, 1.7M input tokens and 5.6 compactions per task on average; kernel
+  cache loss within 4.6% of measured; by cause micro 164k, collapse 133k, narration 78k, toolset
+  9k. Differences from the acceptance:
+    - `early_fact_lost` is 0 in all 30 runs: when compaction takes the brief, the model reads it
+      again (1.47 times a task). A fact that can be re-read is always recovered, so lengthening the
+      task cannot make it non-zero. What runs lose is their own tallies: every wrong answer keeps
+      the brief's formula (answer minus badge divides by the multiplier), and 11 of 30 undercount.
+      New oracles: `formula_broken` (the answer does not have the brief's form), `count_error`,
+      `undercount`.
+    - The model often reads several files in one call, so a task takes 15–40 calls rather than 40+
+      turns; compaction still happens (2–17 times a task).
+    - The renderer's over-budget drop (`budget_drop`) appeared in no measured run in any scenario,
+      so 8.3 leaves it alone.
+  - Acceptance: new `benchmark/context-lifecycle/long-horizon.mjs`: a window of at least 100k and
+    at least 40 turns per task, with a scripted tool environment that returns large outputs (a
+    multi-account ledger or a repository investigation). The answer depends on facts that appear in
+    the first 10 turns and are never repeated, so they must pass through compaction or renewal.
+    Oracles: `early_fact_lost` (a required fact is neither visible nor read back when answering),
+    `compactions`, `renewals`. Baseline on 0.2.81 with at least 30 tasks per variant. The three
+    existing scenarios stay as regressions.
+  - Verification: the baseline triggers at least one auto compaction or renewal;
+    `early_fact_lost` has a non-zero baseline — otherwise lengthen the task until it does.
+  - Files: `benchmark/context-lifecycle/`
+
+- [ ] Task 8.3 (2026-11-11; none of three variants passed the gate; not merged, candidate kept on
+  branch `exp/8.3c`). Measured against the same baselines (`0.2.82-8.0` / `0.2.82-baseline`, 30
+  tasks per scenario):
+    - The plan's formula was wrong: it multiplied both sides by (1 − discount), which cancels. The
+      right account: the saving is freed tokens × amortized calls × the read discount (freed tokens
+      were only ever billed at the cached price), and the cost is tokens after the break ×
+      (1 − discount). At the defaults a mid-history rewrite almost never pays.
+    - 8.3 (light-tier cost gate + narration collapse only at boundaries + batched tool-result
+      collapse + sticky `read_result`): ledger passes (cost −39%, success 23/30 → 27/30);
+      knowledge-pressure lacks power (favorable means, intervals across 0); long-horizon cost
+      +20%, and 6 of 30 runs hit the turn limit. Deferring the light tiers lets the run climb to
+      the hard tier, which archives whole turns instead of excerpting old tool results in place, so
+      the model loses its own tallies and re-reads files and the brief (1.47 → 3.23 times). The
+      cost account priced the cache and not the information.
+    - 8.3b (gate removed): long-horizon cost −0.7%, success 8/30 (not significant), still 5 of 30
+      at the turn limit. Toolset loss rose 8.8k → 22.9k: batching delayed the first eviction, so
+      `read_result` first appeared when the prefix was largest.
+    - The turn-limited runs end writing DeepSeek's tool-call markup as plain text; keeping old
+      narration verbatim until a boundary leaves such leaked text in view for many turns. 11 of 60
+      runs across the two variants hit the limit, against 1 of 30 in the baseline.
+    - 8.3c (narration collapses per turn again; `read_result` offered from the first tool result on
+      and kept): the provider account ran out of balance during the runs, and 16 of 30 ledger and
+      10 of 30 long-horizon runs ended in `402 Insufficient Balance`. The data is invalid and moved
+      to `results/partial-8.3c.jsonl`.
+    - Outcome: this release keeps 8.0's rendering by default; the code is on `exp/8.3c`
+      (`c8240078`). The next measurement starts from 8.3c, 30 tasks each on long-horizon and ledger.
+    - Ruled out: a cost gate on the light tiers (it trades information for cache), and narration
+      collapse only at boundaries (loop risk).
+    - 8.3c re-run (2026-11-11): ledger, 30 tasks, passes the paired gate (success 23/30 → 26/30,
+      `weighted_cost` −29.7%, cache loss −39.5%); long-horizon was stopped at 13 of 30 (3 of the 13
+      correct), moved to `results/partial-8.3c-horizon-stopped.jsonl`.
+    - Abandoned (2026-11-11): context management turns to stage 9 and no longer decides what to
+      compact from the cache account; `exp/8.3c` stays for reference only.
+  - Acceptance: compaction and render-time projections do the arithmetic before acting: an action
+    that creates a prefix break runs only if "tokens freed × amortized calls × (1 − cache read
+    discount)" exceeds "tokens after the break × (1 − cache read discount)". `ContextPolicy` gains
+    `cache_read_discount_ppm` (default 100_000) and `amortize_calls` (default 8); the hard window
+    limit takes precedence, and over the limit compaction runs as before. Concretely:
+    - narration collapse no longer happens unit by unit on every render; it runs in batches at a
+      boundary or during compaction (fixes Q13);
+    - dropping the oldest units over budget drops down to `target_after_compress` in one go
+      instead of one unit per turn;
+    - one compaction produces one break where possible: all rewrites start from the same earliest
+      position instead of breaking at several positions.
+  - Verification: `deepstrike-lab gate` on ledger, knowledge-pressure and long-horizon shows lower
+    `weighted_cost` and no drop in success (paired rule from 8.1); fan-out does not regress.
+    Goldens change; re-bless them and describe the change in MIGRATION.
+  - Files: `context/compression.rs`, `context/renderer.rs`, `context/pressure.rs`,
+    `context/policy.rs`, `context/config.rs`
+
+- [ ] Task 8.4 (2026-11-11; implemented and measured, failed the gate, withdrawn and not part of
+  0.2.82; the code is deleted, `exp/8.4-model-summaries` included; the implementation commit was
+  `761e8ac2`):
+    - Prior data: across four long-horizon variants (120 runs), `early_fact_lost` fired only 5
+      times, in 8.3b and 8.3c; wrong answers were mostly miscounts and did not follow the number of
+      compactions. The precondition said not to do it; it was implemented and measured by decision.
+    - Implementation: after ContextCollapse / AutoCompact archives, the kernel emits a
+      `summarize_context` effect (the archived conversation plus the previous summary, transcript
+      capped at 16k tokens, summary at 800); the host writes a summary with its own model, which
+      replaces the rule summary; on failure, timeout or an empty reply the rule summary stays. Added
+      a `summary` origin and `summarizes` edges, and the SDK option `modelSummaries` /
+      `model_summaries`, off by default.
+    - Measured (long-horizon, 30 tasks, `0.2.82-8.4` against `0.2.82-baseline`, paired): success
+      12/30 → 4/30 (−26.7 pt, 95% interval [−46.7, −3.3]), `weighted_cost` +71% ([+39%, +102%]);
+      both fail. 10 runs hit the turn limit (1 in the baseline), all ending in DeepSeek tool-call
+      markup written as text; compactions per run 5.6 → 9.8; brief re-reads 1.47 → 0.77, and
+      `early_fact_lost` stays 0. The wrong runs that did not loop are still off-by-1–3 miscounts.
+    - Reading: the model summary kept the rules but bought no accuracy; a synchronous summary at the
+      moment the window is tightest competes with the task. The failures are miscounts and leaked
+      markup, which the compaction pipeline cannot reach.
+    - Outcome: withdrawn; the effect ABI does not grow. Stage 9 does not reuse this plumbing: the
+      kernel initiates no model call at all (see the stage 9 principles).
+    - Also: without `--paired`, `deepstrike-lab gate` reported PASS for 8.4, because the default gate
+      does not compare success or cost (see task 9.0).
+  - Precondition: in the long-horizon baseline, `early_fact_lost` happens mostly inside ranges
+    covered by `RuleSummarizer` summaries. Otherwise skip this task and record the data.
+  - Acceptance: on auto compaction the kernel emits a `summarize` effect (the item range to
+    archive, with a token cap); the host calls a model and the summary comes back to the kernel as
+    a recorded fact (D1, so replay yields the same graph), written as a `summary` item with
+    `summarizes` edges to the covered items. If the effect fails or times out, fall back to
+    `RuleSummarizer`. `summarizes` edges then also come from the kernel's own compaction, and the
+    covered originals can be read back along them.
+  - Verification: on long-horizon, `early_fact_lost` falls, success does not drop, and
+    `weighted_cost` (including the summary calls) does not rise.
+  - Files: `context/summarizer.rs`, `context/compression.rs`, `runtime/kernel/wire/effect.rs`; effect
+    execution in the four SDKs
+
+Deferred items stay deferred: the model `RelevanceJudge` and Anthropic reporting compaction facts
+are scheduled once long-horizon can measure them.
+
+### Stage 9: the model builds, repairs and indexes the context graph (0.2.82)
+
+**Why.**
+- Both of stage 8's attempts to change decisions failed the gate, and they share one trait: the
+  kernel judged what content means by rule. 8.3 chose what to compact from the cache account; 8.4
+  had the model write a summary on the kernel's terms at compaction time and let the kernel decide
+  where it went. In both the kernel made the "what matters" call for the model.
+- The causes of wrong long-horizon answers are out of reach of any compaction rule: wrong runs are
+  mostly miscounts, the model's own running tallies lost to archiving; before 9.0 the largest
+  single failure was DeepSeek writing tool-call markup as text (21 of 90 runs across 8.3, 8.3b and
+  8.4 hit the turn limit). With the leak fixed in 9.0, 2 of 30 runs still hit the limit, both
+  ending in endless "re-verification" of files already read: the model does not know how far it
+  got. That is what notes are for.
+- Reference: Anthropic's research on agent memory (we worked from charts and a second-hand
+  write-up; take exact numbers from the original). Four layers: transcripts as the record, notes
+  the model writes during a task, wiki-like representations consolidated offline, and a light index
+  injected per session. Restrictive instructions such as "record only failures" cut a strong
+  model's gain; directional ones raise a weaker model's gain markedly.
+- We already have the skeleton of two layers: the item table with its archive (transcripts: every
+  item has an id and `read_result` reads it back) and the item graph (edges recorded from
+  committed input, replayable). Missing: the graph has no model-written nodes, and no decision
+  reads it (it has only reported since 7.1).
+
+**Principles.**
+- **The kernel never initiates a model call.** Every model call is a turn of the run, driven by the
+  model's own tool calls. 8.4's structural fault was not summary quality: the kernel made an extra
+  model call at a moment of its own choosing and had the model produce content on the kernel's
+  terms. Moving the moment or changing the output format does not change that. Stage 9 adds no
+  effect: building, repairing and indexing all go through tools the model already uses (`note`,
+  `memory`, `read_result`, `propose_memory`); the kernel only puts the facts that need attention in
+  front of the model. D1 then needs no extra guarantee: notes come from committed tool calls, so
+  replay is identical by construction.
+- **Division of labour.** The model decides meaning (what to record, how to link it, which note is
+  wrong, how to index); the kernel decides mechanics (budget, placement, cache, provenance,
+  validation, replay). The kernel stops producing content that stands in for the model's
+  understanding: no new semantic slots in rule summaries, no deleting content by cache account.
+- **The evidence layer is append-only.** Original items and the archive are the only record.
+  Model-written nodes cite evidence (`derived_from` edges), and repairs defer to the evidence.
+- **The kernel diagnoses, the model repairs.** Dead links, superseded evidence, near duplicates and
+  long-open questions are computed deterministically by the kernel and rendered in the state turn;
+  the model decides on its next turn whether to fix them.
+- **Instructions give direction, not prohibitions.** Tool descriptions and system text say what is
+  useful to record, never what is forbidden; the instruction text is an experimental variable
+  compared in the lab.
+- **Every change starts behind a switch, off by default, and the measurement has only two
+  outcomes: pass the gate and become the default, or fail and be deleted.** The gate is
+  [DEC-13](../decisions/013-model-led-context.md)'s default: in every scenario targeted, over 30 or
+  more pairs, success or price-weighted cost per correct answer is significantly better and
+  neither is significantly worse (`deepstrike-lab gate` with no options). It was set after the
+  0.2.82 data was seen, replacing 8.1's `--paired success_rate:0.05,weighted_cost:0` (which asked
+  cost to be significantly lower, a rule for cost-saving changes that would have failed notes);
+  checked against every earlier decision, it agrees with all of them. A feature that
+  fails leaves no off-by-default code behind: its implementation in the kernel, the four SDKs,
+  the contracts, the tests and the docs is removed, and the plan keeps only the measurement
+  (decided 2026-11-12). The principle is that the model leads: a mechanism that does not make the
+  model do better has no place in the framework, waiting to be misused.
+- **The memory-write freeze from "Out of scope" is lifted.** Cross-session writes reuse the
+  existing candidate ABI (`propose_memory`, attestation, leases); no new write channel.
+
+**New nodes and edges.** Stage 9 adds one origin and three relations; no lease, effect or fidelity.
+
+| Name | Kind | Meaning |
+|------|------|---------|
+| `note` | origin | A node the model writes: `title`, `kind`, `body`, `evidence`, `links`, `item`, `turn`. The title is its identity: writing it again rewrites in place. `kind` is `state` (working state of this session — running counts, done-lists, intermediate conclusions; lives until the session ends), `rule` (a rule or lesson; may be promoted to memory), `question` (open; retired once answered) or `index` (where things are, which note covers what; may be promoted) |
+| `derived_from` | relation | note → evidence item (tool result, archive entry) |
+| `links_to` | relation | note → note; the target may not exist yet (a dead link), which the model fills in |
+| `supersedes` | relation | new note → the note it replaced; the old one is retired but stays in the graph |
+
+- [x] Task 9.0 (2026-11-11): remove the confounders from measurement first.
+    - DeepSeek writing tool-call markup (`｜DSML｜`) as text: the OpenAI-chat dialect layer holds
+      the markup out of the visible text (also across stream chunks), parses what it can into real
+      tool calls (ids `call_text_…`, carried in the replay too) and fails the rest as a retryable
+      protocol error, code `textual_tool_call`, handled by the kernel's existing recovery, matching
+      the Anthropic adapter's guard. The four SDKs share
+      `tests/fixtures/provider-textual-tool-call/openai-chat.json`.
+    - Three old bugs fixed on the way: the WASM OpenAI provider dropped every tool call at `[DONE]`;
+      the Rust OpenAI provider emitted only one tool call per turn (picked from a HashMap) and
+      decoded each network chunk on its own, breaking multi-byte characters.
+    - Lab: `gate` without `--paired` compares `success_rate:0.05,weighted_cost:0` by default;
+      `--paired none` turns that off. 8.4 had reported PASS under the unpaired default.
+    - New baseline `0.2.82-9.0` (long-horizon, 30 tasks, DeepSeek `deepseek-flash`): 15/30 correct
+      (`0.2.82-baseline` 12/30), `weighted_cost` +21% (paired 95% interval [−16%, +60%], not
+      significant), calls 40.3 → 45.4, compactions 5.6 → 7.3; markup leaks 1 → 0; turn-limited runs
+      1 → 2, both (INC#11, INC#24) ending in repeated re-verification of files already read,
+      `count_error` 11 and 12. Later gates compare against this baseline.
+- [x] Task 9.1 (implemented 2026-11-11; passed and on by default 2026-11-13): in-session notes (the model
+  builds).
+    - Kernel tool `note` with `action` (`write`, the default, or `retire`), `title`, `kind`, `body`,
+      `evidence[]`, `links[]`, `replaced_by`. Decoded and executed by the kernel
+      (`SyscallRequest::WriteNote`); the host never executes it. Feature-gated (in
+      `FEATURE_GATED_SYSCALL_TOOL_NAMES`): it enters the toolset only when
+      `ContextPolicy.notes_budget_tokens > 0`; the default 0 keeps it off.
+    - Notes live in `TaskState.notes` (the working partition) and no compaction tier touches them;
+      they render as the `notes:` block of the state turn (rebuilt every turn, outside the cached
+      prefix). Checkpointed (`LogicalTaskState.notes`, omitted when empty, so old checkpoints
+      restore unchanged).
+    - Budget: `notes_budget_tokens` caps the notes block. Over it the kernel **refuses the write**
+      and reports the usage in the tool result ("notes are full (N of M tokens with this one):
+      merge, shorten or retire"); it deletes nothing, and the existing notes stay as they were.
+    - Evidence: each `evidence` entry resolves to an item by call id, handle source, or text found
+      in a tool call's arguments (a path, a query); without `evidence` the note links to the tool
+      results that arrived since the last note (at most 16; `notes_watermark` keeps the mark). Each
+      resolved reference is a `derived_from` edge; `links` become `links_to` edges, and unresolved
+      ones are reported back as "no note yet"; `retire` with `replaced_by` records a `supersedes`
+      edge. Note item ids come from the shared allocator and count as resident, so graph pruning
+      keeps their edges.
+    - Instruction (directional): the tool description says "write down what you worked out and
+      could not simply read again: running counts, lists of what is done and what is left,
+      conclusions, rules you learned; rewrite the same title as it changes; cite where it came
+      from in `evidence`". No prohibitions. `update_plan` is unchanged.
+    - Reporting: `context_lifecycle_reported` gains `notes_written` (rewrites count again) and
+      `notes_active`; the four SDKs' `ContextPolicy` gains `notesBudgetTokens` /
+      `notes_budget_tokens`; Rust `RuntimeOptions.notes_budget_tokens`.
+    - Tests: kernel `context/notes.rs` (budget refusal, evidence resolution, links and retirement,
+      notes survive compaction of their history); three driver tests (the tool appears only with a
+      budget; a write renders and checkpoints; an over-budget write is refused); two to three
+      end-to-end tests each in Node, Python and Rust; a real-kernel WASM script.
+    - Acceptance (final round): on long-horizon `undercount` and `count_error` fall, success is not
+      below `0.2.82-9.0` (paired) and `weighted_cost` is not higher; ledger does not regress.
+      Variables: budget (600 / 1500) and instruction text.
+    - Measured (2026-11-12, DeepSeek, budget 600, paired on the same tasks):
+        - long-horizon, 30 pairs against `0.2.82-9.0`: success 15/30 → 20/30 (+16.7 points, 95%
+          interval [−6.7, +40]); cost per correct answer −43% ([−62%, −19%], significant); brief
+          re-reads 1.77 → 0.33; `read_back` 1.87 → 0.33; cache loss −43%. The model writes or
+          rewrites a note about 23 times per task while holding 1–2: it keeps one running tally.
+        - ledger, 30 pairs against `0.2.82-9.0` (a new notes-off baseline): 25/30 → 30/30
+          (significant); cost per correct answer −3% (not significant).
+        - multi-session, 48 pairs (see 9.4): 9/48 → 33/48.
+        - The DEC-13 gate passes in all three. **On by default from 2026-11-13**: the kernel's
+          default `notes_budget_tokens` is 600 (`DEFAULT_NOTES_BUDGET_TOKENS`), and an SDK turns
+          notes off only with an explicit 0 (which previously never reached the wire). Every
+          request carries the `note` tool, about 320 tokens of description; kernel goldens were
+          re-blessed. Baselines reproducing pre-0.2.82 behavior pass `notesBudgetTokens: 0`.
+- [ ] Task 9.2 (deleted after measurement, 2026-11-12): compaction reads the graph — results a note
+  cites leave first, archived citations render as read-back handles, the compaction summary
+  becomes an archive locator, and a compaction about to archive uncited results waits a turn with a
+  notice.
+- [ ] Task 9.3 (deleted after measurement, 2026-11-12): the kernel computes structural diagnostics of
+  the notes each turn (dead links, superseded evidence, near duplicates, long-open questions) and
+  renders them for the model to fix.
+    - Measured (the same tasks 0–9; `0.2.82-9.3` is 9.1 + 9.2 + 9.3, against 9.1 and `0.2.82-9.0`):
+      7/10 correct, the same as notes alone; `count_error` 0.3 (9.1: 0.4); but 54.3 calls (9.1:
+      43.6), 5.8 compactions (3.7), 19.7 archived items (2.8), and `weighted_cost` about 31% above
+      9.1 and 4% above the baseline. At most 0.4 diagnostics at once on average: they barely fired.
+    - Reading: on top of notes they bought nothing and cost more; 9.2 made archiving more frequent
+      and larger, 9.3 hardly fired. Under "a mechanism that fails the gate is deleted"
+      (2026-11-12) and Occam's razor, both are deleted: the kernel's citation scoring, read-back
+      handles, archive-locator summary, page-out notice and diagnostics; the SDK switches
+      (`compactionReadsNotes`, `pageOutNotice`, `noteDiagnostics`); the `note_diagnostics` field and
+      its contract; their tests. Implementation in `a939e21e` and `4affbfd0`, reverted by
+      `3185848b` and `5ccc5bae`. The Rust option is back to the single field `notes_budget_tokens`.
+- [x] Task 9.4 (implemented 2026-11-12; measured 2026-11-13): across sessions, through the existing
+  memory channel only.
+    - Promotion is the model's (decided 2026-11-12, replacing "the kernel submits `rule` / `index`
+      notes at run end"): automatic submission is a rule — "marked rule, so it goes to long-term
+      memory" — the kernel judging for the model again, and the kernel admits one pending
+      `PersistMemory` at a time (DEC-3). Instead, when the model can call `propose_memory`, the
+      `note` description adds "notes end with this task: a rule or index worth keeping for later
+      tasks can be proposed for long-term memory with `propose_memory`". Injection uses the
+      existing recall.
+    - New benchmark `benchmark/context-lifecycle/multi-session.mjs`: sequences of 8 sessions, each
+      counting one code's ERROR lines across six logs and answering once with `submit`; each
+      sequence has two unwritten rules, and a wrong `submit` gives the expected count and a few
+      lines that should not have counted. `--memory none | notes` (`none` turns notes off
+      explicitly). `--dry`, `--provider mock`.
+    - Measured (2026-11-13, DeepSeek, 6 sequences × 8 sessions = 48 pairs):
+        - `none` → `notes` (notes plus model proposals, the host accepting all): 9/48 → 33/48 (+50
+          points, [+35, +65]); cost per correct answer −68% ([−86%, −45%]); both significant, the
+          DEC-13 gate passes. The model proposes 0.8 records per session on average; at session 8
+          the store holds 5.7 records on average; success rises from 2/6 at session 1 to 6/6 at
+          sessions 5 and 7.
+        - `notes` → `consolidate` (a consolidation run after every session, with the host-side
+          `transcript_search` and `consolidateMemory`): 33/48 → 33/48, cost per correct answer
+          +272% ([+196%, +383%]), nothing better. **Deleted**: `consolidateMemory` /
+          `consolidate_memory` and `transcript_search` in the four SDKs, their tests, and the
+          benchmark's `consolidate` mode (2026-11-13). It does pass against "no memory", but an
+          add-on is judged against the configuration without it (DEC-13).
+
+**Measurement record.** The original plan of five long-horizon groups of 30 tasks each became, for
+cost, the two ends first and then the full counts (2026-11-12 to 13). DeepSeek cost about 39 CNY:
+both ends at 10 tasks (8.6 CNY), then 9.1 on tasks 10–29, ledger with notes off and on (30 each)
+and three multi-session groups of 48 sessions (about 30 CNY). The two local Ollama rounds
+(`qwen3.8-27b-ctx8k`) support no conclusion: in the first, 11 of 14 runs were ended by the kernel
+because Ollama tool-call ids repeated every turn (fixed in `01aea145`); in the second, 55
+generations were cut at the 8192-token context, as Qwen's thinking did not fit an 8k window.
+
+**Abandoned directions.** Deciding what to compact from the cache account (8.3, `exp/8.3c`);
+writing summaries synchronously on the compaction path (8.4, code deleted); any kernel-initiated model call, including the earlier draft's `consolidate_notes`
+effect; compaction reading the notes and note diagnostics (9.2, 9.3, deleted after measurement); a
+host-side consolidation run (9.4, deleted after measurement); `RuleSummarizer` as a carrier of
+memory. Stage 8's measurement stays: the cache ledger, the
+price-weighted paired gate and the long-horizon benchmark.
+
+### 0.2.82 in review (2026-11-13, against the released v0.2.81)
+
+**What stays.** Against `v0.2.81` (`ebbe669b`), 0.2.82 brings to main:
+
+| Item | Content | Basis |
+|---|---|---|
+| Measurement | the cache ledger (8.0), the price-weighted paired gate (8.1), the long-horizon (8.2) and multi-session (9.4) benchmarks, a new ledger baseline | every keep-or-delete below rests on it; 8.0 showed the kernel reporting 0 cache loss while the measured hit rate fell |
+| Protocol fixes | DeepSeek tool-call markup written as text (shared fixture across the four SDKs); Ollama tool-call ids repeated every turn; WASM dropping tool calls at `[DONE]`; Rust emitting one parallel call and breaking multi-byte characters across chunks | these bugs ended more runs than any context policy |
+| Notes (9.1) | the `note` tool, on by default | long-horizon cost per correct answer −43%, ledger 25 → 30, multi-session 9 → 33 of 48 |
+| Memory promotion (9.4) | the note description points at `propose_memory`; injection through the existing recall | the multi-session result above |
+| Gate | by default "one of success or cost per correct answer significantly better, neither significantly worse" | DEC-13 |
+| Principles | DEC-13; `EffectKind` documentation and the closed-union test; CONTRIBUTING's rules for context changes | this section |
+
+**What was deleted.** The 8.3 family (compaction by cache account), 8.4 (model summaries at
+compaction, with the `summarize_context` effect), 9.2 (compaction reading the notes, page-out
+notice), 9.3 (note diagnostics) and the 9.4 consolidation run (`consolidateMemory`,
+`transcript_search`). Each was implemented and measured; the plan keeps the data, the code does not
+stay.
+
+**What it cost.** About 270 DeepSeek runs and 231M input tokens in stage 8, about 39 CNY more in
+stage 9, and some 30 hours of local Qwen compute, neither round of which could count because of a
+protocol bug or a context too small.
+
+**What we learned (now DEC-13).**
+1. Every time the kernel judged "what matters" for the model — by rule, by cache account, or with a
+   model call of its own — measurement showed no gain and mostly a loss. The one significant gain
+   came from giving the model a tool to decide what to keep, with the kernel only keeping it.
+2. The largest confounders in context experiments are provider-protocol bugs, not context policy;
+   rule them out first.
+3. What the gate measures decides the outcome: a gate without success passed 8.4; a gate asking only
+   for savings would have deleted notes; a gate asking only "not significantly worse" would have
+   passed 8.3b. The rule is now "significantly better somewhere, significantly worse nowhere", at
+   the price of a correct answer.
+4. A mechanism that fails is deleted. A dormant switch is not caution; it is a liability.
+
+**Next.** Audit, under DEC-13, the mechanisms that predate 0.2.82 and were never measured by this
+standard: `RuleSummarizer`'s semantic slots, narration collapse, utility-scored archiving, the
+compaction tiers themselves. Each is either significantly useful or deleted.
+
 ## Handoff (2026-11-02)
 
 Branch `feat/context-lifecycle-stage0`. Everything below is committed (`fda3aeb6` onward):
@@ -576,9 +1021,11 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next: 0.2.78–0.2.81 are released and stages 0–7 are done. Deferred: the model `RelevanceJudge`
-(another source of in-edge weight, compared on `knowledge-pressure`) and Anthropic reporting
-compaction facts.
+Next (updated 2026-11-11): 0.2.82 holds stage 8's measurement (8.0–8.2) and stage 9 (the model
+builds, repairs and indexes the context graph) and ships once stage 9 is done; 8.3 and 8.4 failed
+the gate and are not part of it. Stage 9 starts with 9.0. Deferred: the
+model `RelevanceJudge` (another source of in-edge weight) and Anthropic reporting compaction facts,
+scheduled once the long-horizon benchmark can measure them.
 
 Setting up on another machine:
 
@@ -606,6 +1053,13 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Released (PR #5) |
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 | 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
+| 0.2.82 | Stage 8: measure first, put the cache into decisions. 8.0 real cache loss with `prefix_breaks` attribution; 8.1 a price-weighted gate with paired statistics; 8.2 the `long-horizon` benchmark with a 0.2.81 baseline; 8.3 cache-aware compaction; 8.4 model summaries as an effect (depends on 8.2 data). `MIGRATION-0.2.81-to-0.2.82.md` | 8.0–8.2 done; 8.3 failed the gate, not merged, direction abandoned (`exp/8.3c`); 8.4 failed the gate when measured; its code is deleted |
+| 0.2.82 (cont.) | Stage 9: the model builds, repairs and indexes the context graph. Kept: 9.0 fixes for protocol confounders and a paired gate by default; 9.1 notes (passed, on by default); 9.4 the model promotes memory with `propose_memory`. Deleted after measurement: 9.2 compaction reading the notes, 9.3 note diagnostics, the 9.4 consolidation run. Principles in [DEC-13](../decisions/013-model-led-context.md) | Measured; to be released |
+
+0.2.82 internal order: 8.0 → 8.1 → 8.2 → 8.3 → 8.4. 8.0–8.2 change only measurement, not
+rendering, and produce a new baseline on 0.2.81 first; 8.3 is the only item in this release that
+changes rendering by default and must pass the new gate first; 8.4 is done only if 8.2's data meets
+its precondition.
 
 0.2.81 internal order: 7.0 → 7.1 → 7.2 → 7.3, with 7.4 interleavable with 7.2 / 7.3. 7.1 and 7.2
 leave rendering unchanged; only 7.3 changes decisions and must pass the lab gate first. If the model
@@ -666,7 +1120,8 @@ touches the related code.
 ```text
 stage0 ──► stage1 ──► stage2 ──► stage3 ──► stage6
               ├──► stage5
-              └──► stage4.2/4.3 ──► stage7 (item graph)
+              └──► stage4.2/4.3 ──► stage7 (item graph) ──► stage8 (8.0/8.1/8.2 ──► 8.3 ──► 8.4)
+                                                                  └──► stage9 (9.0 ──► 9.1 ──► 9.2 ──► 9.3 ──► 9.4)
 stage4.1 runs in parallel with stage1 and produces the baseline first
 ```
 
@@ -675,9 +1130,15 @@ their dependencies.
 
 ## Out of scope
 
-- The memory write side (candidate ABI, `MemoryWriter`) is frozen; no new write mechanism.
-- The compression pipeline's internal `RuleSummarizer` is not replaced by model summaries in this
-  plan; revisit once 4.1 data shows it is the bottleneck.
+- ~~The memory write side (candidate ABI, `MemoryWriter`) is frozen; no new write mechanism.~~
+  Lifted by stage 9: notes are promoted across sessions through the candidate ABI, with no new
+  write channel.
+- ~~The compression pipeline's internal `RuleSummarizer` is not replaced by model summaries in
+  this plan; revisit once 4.1 data shows it is the bottleneck.~~ Moved into task 8.4: the existing
+  benchmarks never reach the scale where summaries matter; 8.2's long-horizon provides the data.
+  8.4 failed the gate when measured and was withdrawn; in stage 9 `RuleSummarizer` becomes an
+  archive locator and memory is carried by notes the model writes.
+- Stage 8 adds no new relation, lease or origin kind.
 
 ## Risks
 
@@ -691,6 +1152,14 @@ their dependencies.
 | The item graph makes checkpoints and reports larger | edges are bounded (both ends present, plus the latest retired batch), and report edges are capped |
 | Judging every history message against every knowledge item to build edges adds cost | reuse the 4.2 distinctive-term sets, cache them per item; the lab records kernel time per turn |
 | Propagating along edges amplifies one misjudged reference | one hop only, strong weighs more than lexical; 7.3 must pass the lab gate |
+| Providers differ in cache granularity and rules, so measured cache loss is noisy | 8.0 uses a 15% tolerance; attribution only compares variants on the same provider |
+| Deferring compaction keeps the context longer and may hurt attention quality and success | the hard window limit takes precedence; 8.3's gate checks success and `weighted_cost` together |
+| Each long-horizon task is expensive, so samples may be too few | a scripted tool environment with a real model only for answering; 30 tasks per variant, compared as pairs |
+| The summary effect adds a model call and latency | fires only on auto compaction; summary calls count toward `weighted_cost`; falls back to `RuleSummarizer` on failure |
+| The model writes no notes, or useless ones | directional instructions and instruction-variant experiments; the page-out notice gives a moment to write; 9.3's diagnostics prompt repairs |
+| A wrong note becomes entrenched and misleads again and again | every note cites evidence; consolidation defers to evidence; `supersedes` keeps the correction trail |
+| Notes fill the window | the `notes_budget_tokens` cap; over it the model merges or retires, the kernel never deletes for it |
+| The diagnostics block takes state-turn space and distracts | at most 4 lines; rendered only when there is something to check; switchable; a consolidation run's cost is the host's call and counts in its variant's `weighted_cost` |
 
 ## Success metrics
 
@@ -702,5 +1171,12 @@ their dependencies.
 - Changing one lifecycle policy touches one place in the kernel (a PR check item)
 - fan-out→synthesize: downstream initial tokens independent of fan-out width
 - With server compaction on, the kernel's estimate deviates from measured tokens by <10%
+- Stage 8 (0.2.82): the kernel's self-reported cache_loss within 15% of measured; `weighted_cost`
+  on ledger and long-horizon below the 0.2.81 baseline with success not lower (paired 95%
+  confidence interval)
+- Stage 9 (0.2.82): long-horizon success above `0.2.82-9.0` with `weighted_cost` not
+  higher (paired 95% confidence interval); on multi-session, success at session N above the
+  no-memory variant, with injected tokens not growing linearly in the number of sessions; every
+  note leads to its evidence along `derived_from`
 - Item graph (0.2.81): on `knowledge-pressure`, regret and waste below the 0.2.80 baseline with
   success not lower; every regret and every wasted item points at a specific edge in the report

@@ -128,6 +128,10 @@ pub struct RuntimeOptions {
     pub payload_store: Option<Arc<dyn PayloadStore>>,
     /// Bounded recovery and replay policy. Omitted fields retain kernel defaults.
     pub kernel_reliability: Option<KernelReliability>,
+    /// Plan task 9.1 · tokens the model's notes may hold in the state turn. `None` keeps the kernel
+    /// default (600; notes are on since 0.2.82), `Some(0)` turns the `note` tool off. Notes are
+    /// written by the model and kept verbatim through compaction.
+    pub notes_budget_tokens: Option<u32>,
     /// When set, `execute` reuses this session id.
     pub session_id: Option<String>,
     pub max_tokens: u32,
@@ -1176,19 +1180,26 @@ impl RuntimeRunner {
 
             if !resume_mid_run {
                 let native_context = self.opts.provider.native_context_tiers();
+                let notes_budget = self.opts.notes_budget_tokens;
                 if self.opts.kernel_reliability.is_some()
                     || self.opts.scheduler_policy.is_some()
                     || native_context.tool_result_clearing
                     || native_context.compaction
+                    || notes_budget.is_some()
                 {
                     let mut config = serde_json::Map::new();
+                    let mut context_policy = serde_json::Map::new();
                     if native_context.tool_result_clearing || native_context.compaction {
-                        config.insert("context_policy".into(), serde_json::json!({
-                            "delegated_tiers": {
-                                "tool_result_clearing": native_context.tool_result_clearing,
-                                "compaction": native_context.compaction,
-                            }
+                        context_policy.insert("delegated_tiers".into(), serde_json::json!({
+                            "tool_result_clearing": native_context.tool_result_clearing,
+                            "compaction": native_context.compaction,
                         }));
+                    }
+                    if let Some(budget) = notes_budget {
+                        context_policy.insert("notes_budget_tokens".into(), budget.into());
+                    }
+                    if !context_policy.is_empty() {
+                        config.insert("context_policy".into(), serde_json::Value::Object(context_policy));
                     }
                     if let Some(reliability) = self.opts.kernel_reliability.as_ref() {
                         config.insert(
@@ -2836,6 +2847,7 @@ impl RuntimeRunner {
             compression_store: opts.compression_store.clone(),
             payload_store: opts.payload_store.clone(),
             kernel_reliability: opts.kernel_reliability.clone(),
+            notes_budget_tokens: opts.notes_budget_tokens,
             session_id: Some(session_id),
             max_tokens: opts.max_tokens,
             max_turns: node.max_turns.or(opts.max_turns),
