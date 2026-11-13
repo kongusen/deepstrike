@@ -88,6 +88,3 @@ export { memoryFetchRecall } from "./recall-projection.js"
 export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./candidate-sink.js"
 export { resolveMemoryRuntimePolicy } from "./runtime-policy.js"
 export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./runtime-policy.js"
-// Plan task 9.4 · consolidation is an ordinary run with a transcript search tool.
-export { DEFAULT_CONSOLIDATION_GOAL, TRANSCRIPT_SEARCH_TOOL_NAME, consolidateMemory, searchTranscripts, transcriptLines, transcriptSearchTool } from "./consolidate.js"
-export type { ConsolidateMemoryOptions, TranscriptLine, TranscriptSearchOptions } from "./consolidate.js"

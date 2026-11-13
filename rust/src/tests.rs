@@ -723,7 +723,7 @@ mod tests {
         let seen = captured.lock().unwrap();
         assert!(!seen.is_empty(), "expected at least one turn metric");
         let m = &seen[0];
-        assert_eq!(m.tools_exposed, 2);
+        assert_eq!(m.tools_exposed, 3, "two task tools and `note`, on by default since 0.2.82");
         assert_eq!(m.tools_called, 0);
         assert_eq!(m.input_tokens, 1000);
         assert_eq!(m.cache_read_tokens, 900);
@@ -855,10 +855,11 @@ mod tests {
 
         let e = exposures.lock().unwrap();
         assert!(e.len() >= 2, "expected ≥2 turns, got {e:?}");
-        // Turn 1: the minimal surface exposes bash (stable-core) and skill (meta).
-        assert_eq!(e[0], 2, "turn-1 exposure {e:?}");
-        // Turn 2: read+grep (declared) widen the surface alongside bash and skill.
-        assert_eq!(*e.last().unwrap(), 4, "post-load exposure {e:?}");
+        // Turn 1: the minimal surface exposes bash (stable-core), skill and note (meta; note is
+        // on by default since 0.2.82).
+        assert_eq!(e[0], 3, "turn-1 exposure {e:?}");
+        // Turn 2: read+grep (declared) widen the surface alongside bash, skill and note.
+        assert_eq!(*e.last().unwrap(), 5, "post-load exposure {e:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3573,164 +3574,13 @@ mod notes {
     }
 
     #[tokio::test]
-    async fn notes_are_off_without_a_budget() {
-        let script = Arc::new(Script::default());
-        run(script.clone(), None).await;
-        assert!(!script.offered.lock().unwrap()[0].iter().any(|name| name == "note"));
+    async fn notes_are_on_by_default_and_off_with_a_zero_budget() {
+        let by_default = Arc::new(Script::default());
+        run(by_default.clone(), None).await;
+        assert!(by_default.offered.lock().unwrap()[0].iter().any(|name| name == "note"));
+        let off = Arc::new(Script::default());
+        run(off.clone(), Some(0)).await;
+        assert!(!off.offered.lock().unwrap()[0].iter().any(|name| name == "note"));
     }
 }
 
-/// Plan task 9.4 · transcript search and a consolidation run (mirrors node/tests/consolidate.test.ts).
-mod consolidate {
-    use crate::consolidate::{consolidate_memory, search_transcripts, transcript_lines, transcript_search_tool};
-    use crate::providers::{LLMProvider, ProviderRunState, StreamEvent};
-    use crate::runtime::{InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, SessionLog};
-    use crate::tools::RegisteredTool;
-    use deepstrike_core::context::renderer::InternalRenderedContext;
-    use deepstrike_core::types::message::ToolSchema;
-    use futures::StreamExt;
-    use std::sync::{Arc, Mutex};
-
-    type Script = dyn Fn(u32, &[ToolSchema]) -> Vec<StreamEvent> + Send + Sync;
-
-    struct Scripted {
-        calls: Mutex<u32>,
-        offered: Mutex<Vec<Vec<String>>>,
-        script: Box<Script>,
-    }
-
-    #[async_trait::async_trait]
-    impl LLMProvider for Arc<Scripted> {
-        async fn stream(
-            &self,
-            _context: &InternalRenderedContext,
-            tools: &[ToolSchema],
-            _extensions: Option<&serde_json::Value>,
-            _state: Option<&ProviderRunState>,
-        ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
-            let call = {
-                let mut calls = self.calls.lock().unwrap();
-                *calls += 1;
-                *calls
-            };
-            self.offered.lock().unwrap().push(tools.iter().map(|t| t.name.to_string()).collect());
-            let events: Vec<crate::Result<StreamEvent>> = (self.script)(call, tools).into_iter().map(Ok).collect();
-            Ok(Box::new(futures::stream::iter(events)))
-        }
-    }
-
-    fn options(provider: Arc<Scripted>, log: Arc<InMemorySessionLog>, plane: Option<LocalExecutionPlane>, baseline: Vec<String>) -> RuntimeOptions {
-        RuntimeOptions {
-            provider: Box::new(provider),
-            execution_plane: plane.map(|p| Box::new(p) as Box<dyn crate::runtime::ExecutionPlane>),
-            session_log: Some(log),
-            compression_store: None,
-            payload_store: None,
-            kernel_reliability: None,
-            notes_budget_tokens: None,
-            session_id: None,
-            max_tokens: 8_000,
-            max_turns: Some(8),
-            timeout_ms: None,
-            extensions: None,
-            agent_id: None,
-            memory_scope: None,
-            system_prompt: None,
-            initial_memory: vec![],
-            dependency_outputs: Default::default(),
-            inherited_knowledge: Vec::new(),
-            skill_dir: None,
-            memory_store: None,
-            knowledge_source: None,
-            signal_source: None,
-            governance: None,
-            os_profile: None,
-            governance_policy: None,
-            signal_policy: None,
-            scheduler_policy: None,
-            resource_quota: None,
-            memory_policy: None,
-            tokenizer: None,
-            enable_plan_tool: None,
-            on_tool_suspend: None,
-            on_permission_request: None,
-            milestone_policy: crate::runtime::MilestonePolicy::Terminate,
-            milestone_contract: None,
-            run_spec: None,
-            allowed_tool_ids: None,
-            baseline_tool_ids: Some(baseline),
-            on_turn_metrics: None,
-            stable_core_tool_ids: vec![],
-            pre_query_memory: None,
-            on_milestone_evaluate: None,
-            memory_runtime_policy: None,
-            memory_candidate_sink: None,
-        }
-    }
-
-    async fn earlier_session(log: Arc<InMemorySessionLog>) {
-        let provider = Arc::new(Scripted {
-            calls: Mutex::new(0),
-            offered: Mutex::new(Vec::new()),
-            script: Box::new(|call, _| match call {
-                1 => vec![StreamEvent::ToolCall {
-                    id: "c1".into(),
-                    name: "read".into(),
-                    arguments: serde_json::json!({ "path": "logs/svc-03.log" }),
-                }],
-                _ => vec![StreamEvent::TextDelta { delta: "req ids ending in 0 are retries".into() }],
-            }),
-        });
-        let mut plane = LocalExecutionPlane::new();
-        plane.register(RegisteredTool::text(
-            "read",
-            "Read a file",
-            serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
-            |_args| Box::pin(async { Ok("2026-10-02 ERROR code=E503 req=r120 upstream timeout (retry)".to_string()) }),
-        ));
-        let mut opts = options(provider, log, Some(plane), vec!["read".into()]);
-        opts.session_id = Some("s1".into());
-        let runner = RuntimeRunner::new(opts);
-        let mut stream = runner.run_streaming("count the E503 errors", &[], None, Some("s1")).await.unwrap();
-        while stream.next().await.transpose().unwrap().is_some() {}
-    }
-
-    #[tokio::test]
-    async fn transcript_search_finds_tool_results_labeled_with_their_call() {
-        let log = Arc::new(InMemorySessionLog::new());
-        earlier_session(log.clone()).await;
-        let entries = log.read("s1", 0, None).await.unwrap();
-        let lines = transcript_lines("s1", &entries);
-        assert!(lines.iter().any(|l| l.source == "goal" && l.text.contains("E503")));
-        let found = search_transcripts(&lines, "E503 retry", 8);
-        assert!(found[0].source.contains("c1 read"), "{found:?}");
-        assert!(found[0].text.contains("code=E503 req=r120"));
-        let tool = transcript_search_tool(log.clone(), vec!["s1".into()], 8);
-        assert_eq!(tool.schema.name, "transcript_search");
-    }
-
-    #[tokio::test]
-    async fn consolidation_is_an_ordinary_run_with_transcript_search() {
-        let log = Arc::new(InMemorySessionLog::new());
-        earlier_session(log.clone()).await;
-        let provider = Arc::new(Scripted {
-            calls: Mutex::new(0),
-            offered: Mutex::new(Vec::new()),
-            script: Box::new(|call, _| match call {
-                1 => vec![StreamEvent::ToolCall {
-                    id: "t1".into(),
-                    name: "transcript_search".into(),
-                    arguments: serde_json::json!({ "query": "E503 retry" }),
-                }],
-                _ => vec![StreamEvent::TextDelta { delta: "checked".into() }],
-            }),
-        });
-        let opts = options(provider.clone(), log.clone(), None, vec![]);
-        let (session, text) = consolidate_memory(opts, vec!["s1".into()], None, 8).await.unwrap();
-        assert_eq!((session.as_str(), text.as_str()), ("consolidate-1", "checked"));
-        assert!(provider.offered.lock().unwrap()[0].iter().any(|n| n == "transcript_search"));
-        let events = log.read("consolidate-1", 0, None).await.unwrap();
-        let rendered = serde_json::to_string(&events.iter().map(|e| &e.event).collect::<Vec<_>>()).unwrap();
-        assert!(rendered.contains("code=E503 req=r120"), "the search result reached the run");
-    }
-}

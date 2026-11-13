@@ -3,7 +3,7 @@
 // something if a later session can use it.
 //
 //   node benchmark/context-lifecycle/multi-session.mjs [--repo <checkout>] [--variant <name>]
-//        [--memory none|notes|consolidate] [--sequences N] [--sessions N] [--start N]
+//        [--memory none|notes] [--sequences N] [--sessions N] [--start N]
 //        [--concurrency N] [--provider deepseek|openai|ollama|mock] [--max-tokens N] [--dry]
 //        [--out trials.jsonl]
 //
@@ -15,11 +15,12 @@
 // enough for a model to work the rule out, and to remember it, if it can.
 //
 // Memory (`--memory`):
-//   none         each session starts from nothing (the baseline)
-//   notes        notes on, and a memory store the model can propose records to with
-//                `propose_memory` (the host accepts every proposal); later sessions recall them
-//   consolidate  as notes, plus a consolidation run after every session (an ordinary run with
-//                `transcript_search`), whose cost counts toward the session it follows
+//   none   each session starts from nothing and notes are off (the baseline)
+//   notes  notes on, and a memory store the model can propose records to with `propose_memory`
+//          (the host accepts every proposal); later sessions recall them
+//
+// (A third mode, a consolidation run after every session, was measured in 0.2.82 — the same 33/48
+// correct as `notes` at 3.7× the cost per correct answer — and deleted with the helper it used.)
 //
 // One trial per session (`task` = `SEQ#<sequence>@<session>`), so sessions pair across variants.
 // Oracles: `memory_records` (records in the store when the session starts), `proposals`
@@ -39,7 +40,7 @@ const concurrency = Math.max(1, Number(arg("--concurrency", "3")))
 const maxTokens = Number(arg("--max-tokens", "32000"))
 const providerName = arg("--provider", "deepseek")
 const out = arg("--out")
-if (!["none", "notes", "consolidate"].includes(memoryMode)) throw new Error(`--memory must be none, notes or consolidate`)
+if (!["none", "notes"].includes(memoryMode)) throw new Error(`--memory must be none or notes`)
 
 // ── fixtures (deterministic per sequence and session) ──────────────────────────────────────────
 
@@ -190,7 +191,8 @@ async function runSequence(sequence) {
         const examples = t.dropped.slice(0, 3).map(line => `  ${line.text}`).join("\n")
         return `submitted: incorrect, the expected count was ${t.expected}. Lines like these match the code but do not count:\n${examples}`
       }))
-    const memory = memoryMode === "none" ? {} : {
+    // Notes are on by default since 0.2.82, so the baseline turns them off explicitly.
+    const memory = memoryMode === "none" ? { contextPolicy: { notesBudgetTokens: 0 } } : {
       agentId, memoryScope: scope, memoryStore: store, memoryCandidateSink: sink,
       memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
       contextPolicy: { notesBudgetTokens: 600 },
@@ -209,12 +211,6 @@ async function runSequence(sequence) {
         if (event.type === "error") error ??= redact(`run error: ${event.message}`)
       }
       done.push(sessionId)
-      if (memoryMode === "consolidate") {
-        await memoryApi.consolidateMemory({
-          provider, sessionLog: recorder.log, sessionIds: [...done], sessionId: `${sessionId}-consolidate`,
-          maxTokens, maxTurns: 20, ...memory,
-        })
-      }
     } catch (cause) {
       error = redact(cause?.message ?? cause)
     }

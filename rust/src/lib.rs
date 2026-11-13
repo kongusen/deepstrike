@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod consolidate;
 pub mod governance;
 pub mod harness;
 pub mod harness_loop;
@@ -56,10 +55,6 @@ pub use harness_loop::{
     FreshWithDigest, FreshWithFeedback, HybridJudge, JudgeContext, JudgeResult, LlmEvalJudge,
     PassHook, PassHookFuture, PreparedAttempt, RuntimeAttemptBody, StopPolicy, VerdictFn,
     VerdictFnJudge,
-};
-pub use consolidate::{
-    DEFAULT_CONSOLIDATION_GOAL, TRANSCRIPT_SEARCH_TOOL_NAME, TranscriptLine, consolidate_memory,
-    search_transcripts, transcript_lines, transcript_search_tool,
 };
 pub use knowledge::KnowledgeSource;
 pub use memory::{
