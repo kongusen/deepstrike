@@ -179,6 +179,32 @@ API 在输入达到阈值时，在 assistant 回复开头返回一个 `compactio
 
 ---
 
+## Level 7：模型自己记的笔记（0.2.82 起默认开启）
+
+压缩会丢掉模型推导出来、又没法再读回的东西：一条累计计数、已经处理过的文件清单、它摸索出的一条规则。笔记让模型自己把这些留住。每个请求都带 `note` 工具，模型可以写、改、撤笔记，kernel 负责留住：
+
+- 笔记存在 working 分区，**任何压缩层、renewal 都不碰它**；
+- 在 state turn 的 `notes:` 一段原样渲染；
+- 总量受 `notes_budget_tokens`（默认 600）限制；超出时 kernel **拒绝这次写入**并说明原因，而不是替模型删笔记；
+- 每条笔记都是上下文图里的一个 item（来源 `note`、作用域 task、写入权 model），带指向写它所依据工具结果的 `derived_from` 边、指向它提到的笔记的 `links_to` 边、指向它替换的笔记的 `supersedes` 边；
+- 生命周期报告记 `notes_written` 和 `notes_active`。
+
+笔记有 `kind`：`state`（本任务的工作状态，默认）、`rule`（学到的教训）、`question`（答完即撤）。run 能提交记忆时，工具说明还会提示模型：值得跨任务保留的内容用 `propose_memory` 提交（见 [Memory](./memory)）。
+
+```python
+RuntimeOptions(..., context_policy={"notes_budget_tokens": 600})  # 0 关闭笔记
+```
+
+```ts
+new RuntimeRunner({ ..., contextPolicy: { notesBudgetTokens: 600 } })  // 0 关闭笔记
+```
+
+Rust：`RuntimeOptions.notes_budget_tokens = Some(0)` 关闭。
+
+在 DeepSeek 上与“同一批题、不开笔记”逐题配对实测：long-horizon 15/30 → 20/30，每答对一题的成本 −43%；ledger 25/30 → 30/30。kernel 侧的替代方案——按缓存成本账压缩、kernel 请模型写摘要、压缩时读取笔记、笔记诊断——都实测过并已删除（[DEC-13](../decisions/013-model-led-context)）。复现 0.2.82 之前的基线时，要显式关掉笔记（`0`）。
+
+---
+
 ## 运行时行为摘要
 
 1. **压缩**：Snip 截断过长消息，Micro 缩减旧工具结果，Collapse / Auto 归档较低价值的旧对话，并由内核 `RuleSummarizer` 生成确定性摘要。无需配置 LLM 摘要器；Node 的 `asyncSummarizer` 可在后台升级摘要。

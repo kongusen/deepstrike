@@ -150,6 +150,37 @@ RuntimeOptions(
 
 ---
 
+## Level 4b: Memory the model proposes (`propose_memory`)
+
+With a candidate sink, the model itself proposes what should outlive the task: a rule it learned,
+a correction it was given. It calls `propose_memory`; the proposal goes through the same attested
+candidate ledger as any other write, and the host's review decides what reaches `MemoryStore`.
+Later sessions recall it as an index line and read it in full with `memory(record_id=…)`.
+
+```ts
+new RuntimeRunner({
+  ...,
+  agentId, memoryScope, memoryStore, memoryCandidateSink: sink,
+  memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+})
+```
+
+```python
+RuntimeOptions(
+    ...,
+    memory_candidate_sink=sink,
+    memory_runtime_policy={"retrieval": "host", "model_writes": "candidate_sink"},
+)
+```
+
+This is the promotion path since 0.2.82. On a multi-session benchmark where a lesson from one
+session is needed in the next, notes plus `propose_memory` took success from 9/48 to 33/48 at −68%
+cost per correct answer. A post-session consolidation run that reconciled memory with a separate
+model call added nothing on top (33/48 → 33/48, cost +272%) and was deleted
+([DEC-13](../decisions/013-model-led-context)).
+
+---
+
 ## Level 5: Recall journaling & retention
 
 Recall is a scored query with feedback, and forgetting is retention-based eviction. The application's `MemoryStore` owns both.
