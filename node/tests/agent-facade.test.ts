@@ -46,7 +46,7 @@ describe("createAgent", () => {
 
     await agent.run("say done")
 
-    expect(seen).toEqual([["visible"]])
+    expect(seen).toEqual([["visible", "note"]])
   })
 
   it("keeps inline skills and text knowledge out of the first context until activated", async () => {
@@ -89,7 +89,7 @@ describe("createAgent", () => {
 
     await agent.run("say done")
 
-    expect(seen).toEqual([["allowed"]])
+    expect(seen).toEqual([["allowed", "note"]])
   })
 
   it("runs a goal and returns a structured result", async () => {

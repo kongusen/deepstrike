@@ -17,6 +17,11 @@ use crate::types::message::{Content, ContentPart, Role, ToolSchema};
 
 pub const NOTE_TOOL_NAME: &str = "note";
 
+/// The notes budget a run gets unless its context policy says otherwise. Notes are on by default
+/// since 0.2.82: they passed the DEC-13 gate on long-horizon (cost per correct answer −43%),
+/// ledger (25/30 → 30/30) and multi-session (9/48 → 33/48). `0` turns them off.
+pub const DEFAULT_NOTES_BUDGET_TOKENS: u32 = 600;
+
 /// Longest title a note may have, in characters.
 pub const NOTE_TITLE_MAX_CHARS: usize = 120;
 

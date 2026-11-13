@@ -1,11 +1,11 @@
 {
-  "base_state_digest": "sha256:324789a077b6b978fa768f6b03ee2b0a3c5686bdc4b3bb15ee8c03cf1cc1bb71",
+  "base_state_digest": "sha256:0bd87ef02ad72a10892c034911a1b18e1d0ffd904c4cc5d6b327d0d0289a9fa0",
   "checkpoint": {
-    "base_record_digest": "sha256:828c0f621c57a8d62bc1f7ee8bab84544eadaeef9eb45604e2e171286feda47d",
+    "base_record_digest": "sha256:b42a4c03b01a282bb26bf6324e90130954636146851c16484533ef095ba9bd2e",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:69453b02f03ba80eafcda952060f91c1625371a7bde341c640e217a49b2a7770",
-    "covered_transaction_head_digest": "sha256:bbd044496fa10b9dc0afc1fa34fefceff5918cef8d0f30696839dd49045d3dfa",
-    "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
+    "checkpoint_digest": "sha256:b60515b4f6e82a9c7d9de945f78b3d60a9472c2ca75067383a9371c1e54ef542",
+    "covered_transaction_head_digest": "sha256:954545ead7ee47a78331e8c42f069adbfc3d0f90d07ca4a79f2c81f17e5e6416",
+    "genesis_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -22,8 +22,8 @@
             },
             "tail": 24,
             "tools": {
-              "hash": "1ad7f9d4fa4273e0",
-              "tokens": 247
+              "hash": "75b4a0b7173c2ced",
+              "tokens": 568
             },
             "turns": [
               {
@@ -69,7 +69,7 @@
         "last_activity_ms": "1700000001000",
         "last_compact_ms": null,
         "last_item_id": 1,
-        "last_request_estimate": 283,
+        "last_request_estimate": 604,
         "messages": [
           {
             "body": {
@@ -112,6 +112,7 @@
       "scheduler": {
         "advertised_tool_ids": [
           "memory",
+          "note",
           "publish_channel",
           "read_object",
           "read_result",
@@ -182,6 +183,7 @@
             "collapse_old_assistant_narration": true,
             "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
+            "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
@@ -354,6 +356,7 @@
             "effect_id": "op-driver-1:step:1:effect:0",
             "exposed_tools": [
               "memory",
+              "note",
               "publish_channel",
               "read_object",
               "read_result",
@@ -375,12 +378,12 @@
         "accepted_inputs": [
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
+            "record_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
             "step_seq": "0"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:828c0f621c57a8d62bc1f7ee8bab84544eadaeef9eb45604e2e171286feda47d",
+            "record_digest": "sha256:b42a4c03b01a282bb26bf6324e90130954636146851c16484533ef095ba9bd2e",
             "step_seq": "1"
           }
         ],
@@ -396,7 +399,7 @@
             "causation_input_id": "in-start",
             "effect": {
               "context": {
-                "estimated_tokens": 283,
+                "estimated_tokens": 604,
                 "state_turn": {
                   "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
                   "role": "user"
@@ -448,6 +451,60 @@
                   "name": "search"
                 },
                 {
+                  "description": "Keep notes that survive compaction. As the conversation grows, older tool results and turns are archived; your notes stay in [TASK STATE] word for word. Write down what you work out and could not simply read again: running counts and totals, lists of what is done and what is left, conclusions, rules you learned. When it changes, write the same title again to update it. `evidence` names what it came from (call ids, file paths or arguments); without it the note is linked to the results you received since your last note. Retire a note you no longer need.",
+                  "name": "note",
+                  "parameters": {
+                    "properties": {
+                      "action": {
+                        "description": "Default: write.",
+                        "enum": [
+                          "write",
+                          "retire"
+                        ],
+                        "type": "string"
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "evidence": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "kind": {
+                        "description": "state: progress of this task (counts, done-lists); rule: a lesson or rule; question: something still open; index: where things are.",
+                        "enum": [
+                          "state",
+                          "rule",
+                          "question",
+                          "index"
+                        ],
+                        "type": "string"
+                      },
+                      "links": {
+                        "description": "Titles of related notes.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "replaced_by": {
+                        "description": "On retire: the note that replaces this one.",
+                        "type": "string"
+                      },
+                      "title": {
+                        "description": "The note's name; writing an existing title updates it.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "title"
+                    ],
+                    "type": "object"
+                  }
+                },
+                {
                   "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
                   "name": "skill",
                   "parameters": {
@@ -474,6 +531,7 @@
             "collapse_old_assistant_narration": true,
             "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
+            "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
@@ -645,8 +703,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:324789a077b6b978fa768f6b03ee2b0a3c5686bdc4b3bb15ee8c03cf1cc1bb71",
-    "tail_digest": "sha256:a008ade92bd0e50b3c39e4649794d1a08620c335dd6d61e5bdefb0d4ff79b071",
+    "state_digest": "sha256:0bd87ef02ad72a10892c034911a1b18e1d0ffd904c4cc5d6b327d0d0289a9fa0",
+    "tail_digest": "sha256:034c53e7eb02148fff4429931146bf084046da5f323319627dd032a042eae122",
     "tail_inputs": [
       {
         "input": {
@@ -680,7 +738,7 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:ee0e33e24fbc61591e256bdf83d397083be20e628520a0bf6a912bc118aff743",
+        "record_digest": "sha256:327a6d9e2d98e116b9d7faff32ec02c57a508057bc47eb484a9cb03e364e19b7",
         "step_seq": "2"
       },
       {
@@ -709,7 +767,7 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
+        "record_digest": "sha256:56f4668cbd1f22b67668694d99a37affd82b7c84d2dde5e00f220d6659c2ebb5",
         "step_seq": "3"
       },
       {
@@ -736,7 +794,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:bbd044496fa10b9dc0afc1fa34fefceff5918cef8d0f30696839dd49045d3dfa",
+        "record_digest": "sha256:954545ead7ee47a78331e8c42f069adbfc3d0f90d07ca4a79f2c81f17e5e6416",
         "step_seq": "4"
       }
     ],

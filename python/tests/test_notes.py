@@ -72,10 +72,13 @@ async def test_notes_are_written_by_the_model_kept_by_the_kernel_and_shown_in_th
 
 
 @pytest.mark.asyncio
-async def test_notes_are_off_without_a_budget() -> None:
-    provider, log = ScriptedProvider(), InMemorySessionLog()
-    await _events(_runner(provider, log, None), log, "no-notes")
-    assert "note" not in provider.offered[0]
+async def test_notes_are_on_by_default_and_off_with_a_zero_budget() -> None:
+    by_default, log = ScriptedProvider(), InMemorySessionLog()
+    await _events(_runner(by_default, log, None), log, "default-notes")
+    assert "note" in by_default.offered[0]
+    off = ScriptedProvider()
+    await _events(_runner(off, log, {"notes_budget_tokens": 0}), log, "no-notes")
+    assert "note" not in off.offered[0]
 
 
 def test_a_negative_budget_is_rejected() -> None:

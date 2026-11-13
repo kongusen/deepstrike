@@ -12204,16 +12204,17 @@ fn agent_awaiting_provider_with_notes(budget: u32) -> (Runtime, EffectId, Vec<St
 }
 
 #[test]
-fn the_note_tool_is_offered_only_when_notes_have_a_budget() {
-    let (_, _, tools) = agent_awaiting_provider_with_notes(400);
-    assert!(tools.iter().any(|name| name == crate::context::notes::NOTE_TOOL_NAME), "{tools:?}");
+fn the_note_tool_is_offered_by_default_and_off_with_a_zero_budget() {
+    // DEC-13 · notes passed the gate in 0.2.82 and are on unless a policy turns them off.
     let mut runtime = Runtime::new();
     runtime.submit(&syscall_config());
     let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
     let EffectKind::CallProvider(call) = &sole_effect(&started).effect else {
         panic!("expected a provider call");
     };
-    assert!(!call.tools.iter().any(|tool| tool.name == crate::context::notes::NOTE_TOOL_NAME));
+    assert!(call.tools.iter().any(|tool| tool.name == crate::context::notes::NOTE_TOOL_NAME));
+    let (_, _, tools) = agent_awaiting_provider_with_notes(0);
+    assert!(!tools.iter().any(|name| name == crate::context::notes::NOTE_TOOL_NAME), "{tools:?}");
 }
 
 #[test]

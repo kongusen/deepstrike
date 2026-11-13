@@ -340,7 +340,8 @@ pub struct ContextPolicy {
     /// Compaction tiers the provider performs natively, which the kernel then skips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegated_tiers: Option<DelegatedContextTiers>,
-    /// Plan task 9.1 · tokens the model's notes may hold; `0` (the default) turns `note` off.
+    /// Plan task 9.1 · tokens the model's notes may hold (default
+    /// [`crate::context::notes::DEFAULT_NOTES_BUDGET_TOKENS`]); `0` turns `note` off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes_budget_tokens: Option<u32>,
 }
@@ -727,7 +728,7 @@ pub struct ResolvedContextPolicy {
     /// delegation resolves — and digests — exactly as before.
     #[serde(default, skip_serializing_if = "DelegatedContextTiers::is_none")]
     pub delegated_tiers: DelegatedContextTiers,
-    /// Plan task 9.1 · absent when notes are off, so earlier configurations digest as before.
+    /// Plan task 9.1 · absent when notes are off.
     #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
     pub notes_budget_tokens: u32,
 }
@@ -1013,7 +1014,7 @@ impl ConfigDefaults {
                         safety_margin_tokens: 0,
                     },
                     delegated_tiers: DelegatedContextTiers::default(),
-                    notes_budget_tokens: 0,
+                    notes_budget_tokens: crate::context::notes::DEFAULT_NOTES_BUDGET_TOKENS,
                 },
                 recovery_policy: ResolvedRecoveryPolicy {
                     provider_recovery_attempts: 1,

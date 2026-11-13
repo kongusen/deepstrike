@@ -1,7 +1,7 @@
 {
   "description": "The §7.10 external-payload arc (Task 13): configure → agent start → a provider turn calling one host tool → an **external** tool result → the model's `read_result` page-in → the loaded body. Read the records: the persisted body appears in exactly one place on this whole chain — the `payload_loaded` outcome the host sent when the kernel asked for it. It is in no effect the kernel published and in no accepted input the kernel did not ask for, which is what §25.10 means by \"large bodies do not enter the journal\". What the kernel holds instead is the reference: an opaque `payload_ref` it never interprets, a digest it checks the restored body against, and a bounded preview that is the only part to occupy context.",
-  "genesis_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
-  "head_digest": "sha256:16bfdb29fabeced42dbd52a2e3ea07e565b4c1dbd5dd9e53ae286900440fe2d6",
+  "genesis_digest": "sha256:7ad36fd2d3809a9fd909a9dad0c038f3442ae5dc39fdb120a740719dc697063a",
+  "head_digest": "sha256:19010aa84d02360cedee83420f5aad26252ad7d0c6e5379eb4b4c157b914ddb0",
   "links": [
     {
       "envelope": {
@@ -92,14 +92,14 @@
       },
       "record": {
         "canonical_input": {
-          "data": "eyJpbnB1dCI6eyJjb25maWciOnsiYnVkZ2V0X2dyYW50IjpudWxsLCJjb250ZXh0X3BvbGljeSI6eyJjb2xsYXBzZV9vbGRfYXNzaXN0YW50X25hcnJhdGlvbiI6dHJ1ZSwiaWRsZV9taWNyb19jb21wYWN0X21pbnV0ZXMiOjYwLCJrbm93bGVkZ2VfYnVkZ2V0X3BwbSI6MjUwMDAwLCJwcmVzZXJ2ZV9yZWNlbnRfdHVybnMiOjIsInByZXNzdXJlX3RocmVzaG9sZHNfcHBtIjp7ImF1dG8iOjk1MDAwMCwiY29sbGFwc2UiOjkwMDAwMCwibWljcm8iOjgwMDAwMCwicmVuZXdhbCI6OTgwMDAwLCJzbmlwIjo3MDAwMDB9LCJwcm9tcHRfYnVkZ2V0Ijp7Im91dHB1dF9yZXNlcnZlX3Rva2VucyI6MCwicHJvbXB0X292ZXJoZWFkX3Rva2VucyI6MCwic2FmZXR5X21hcmdpbl90b2tlbnMiOjB9LCJyZW5ld2FsX2NhcnJ5b3Zlcl9wcG0iOjUwMDAwLCJ0YXJnZXRfYWZ0ZXJfY29tcHJlc3NfcHBtIjo2NTAwMDB9LCJleGVjdXRpb25fcG9saWN5Ijp7ImNyaXRlcmlhX2dhdGVfZW5hYmxlZCI6dHJ1ZSwiZW50cm9weV93YXRjaCI6eyJjb29sZG93bl90dXJucyI6NCwiZW5hYmxlZCI6ZmFsc2UsImh5c3RlcmVzaXNfcHBtIjoxMDAwMDAsIm5vdGlmeV9tb2RlbCI6ZmFsc2UsInRocmVzaG9sZF9wcG0iOjY1MDAwMH0sIm1heF9jb250ZXh0X3Rva2VucyI6MTI4MDAwLCJtYXhfdG90YWxfdG9rZW5zIjoiMTAwMDAwMCIsIm1heF90dXJucyI6MTIsIm1heF93YWxsX21zIjpudWxsLCJyZXBlYXRfZnVzZSI6eyJkZW55X2FmdGVyIjo1LCJlbmFibGVkIjp0cnVlLCJ0ZXJtaW5hdGVfYWZ0ZXIiOjh9fSwiZmVhdHVyZV9wb2xpY3kiOnsia25vd2xlZGdlX2VuYWJsZWQiOmZhbHNlLCJtZW1vcnlfZW5hYmxlZCI6ZmFsc2UsInBsYW5fdG9vbF9lbmFibGVkIjpmYWxzZSwic3RhYmxlX2NvcmVfdG9vbF9pZHMiOltdfSwiZ292ZXJuYW5jZV9wb2xpY3kiOnsiY29uc3RyYWludHMiOltdLCJkZWZhdWx0X2FjdGlvbiI6ImFsbG93IiwicmF0ZV9saW1pdHMiOltdLCJydWxlcyI6W10sInZldG9lZF90b29scyI6W119LCJob3N0X2VmZmVjdF9zdXBwb3J0Ijp7InN1cHBvcnRlZCI6WyJjYWxsX3Byb3ZpZGVyIiwiZXhlY3V0ZV90b29scyIsImxvYWRfcGF5bG9hZCIsInNwYXduX3Rhc2tzIiwicHJlZW1wdF90YXNrcyIsInBlcnNpc3RfbWVtb3J5IiwicXVlcnlfbWVtb3J5IiwiYXJjaGl2ZV9wYWdlX291dCJdfSwia2VybmVsX2xpbWl0cyI6eyJjb2xsZWN0aW9uX2xpbWl0cyI6eyJjYXBhYmlsaXR5X2dyYW50cyI6NjU1MzYsImdvdmVybmFuY2VfcnVsZXMiOjY1NTM2LCJpbml0aWFsX21lc3NhZ2VzIjo2NTUzNiwia25vd2xlZGdlX2VudHJpZXMiOjY1NTM2LCJza2lsbF9jYXRhbG9nIjo2NTUzNiwidG9vbF9jYXRhbG9nIjo2NTUzNn0sIm1heF9jb2xsZWN0aW9uX2VudHJpZXMiOjY1NTM2LCJtYXhfaW5wdXRfYnl0ZXMiOjE2Nzc3MjE2LCJtYXhfanNvbl9kZXB0aCI6NjR9LCJtZW1vcnlfYWNjZXNzIjp7ImJpbmRpbmdfaWQiOiJtZW0tYmluZGluZy0xIiwiY2FwYWJpbGl0aWVzIjp7InJlYWQiOnRydWUsIndyaXRlIjp0cnVlfX0sIm1lbW9yeV9wb2xpY3kiOnsibWF4X2NvbnRlbnRfYnl0ZXMiOjEwMDAwLCJtYXhfbmFtZV9sZW5ndGgiOjEwMCwicHJvbW90aW9uX3JlY2FsbF90aHJlc2hvbGQiOm51bGwsInJldHJpZXZhbF90b3BfayI6NCwic3RhbGVfd2FybmluZ19kYXlzIjoyLCJ2YWxpZGF0aW9uX2VuYWJsZWQiOnRydWV9LCJwYXlsb2FkX3BvbGljeSI6eyJpbmxpbmVfdGhyZXNob2xkX2J5dGVzIjo2NCwicHJldmlld19ieXRlcyI6MzJ9LCJyZWNvdmVyeV9wb2xpY3kiOnsib3V0cHV0X3JlY292ZXJ5X2F0dGVtcHRzIjoxLCJwcm92aWRlcl9yZWNvdmVyeV9hdHRlbXB0cyI6MSwidGFpbF9ib3VuZHMiOnsiaGFyZF9ieXRlcyI6IjE2Nzc3MjE2IiwiaGFyZF9yZWNvcmRzIjoiMjA0OCIsInNvZnRfYnl0ZXMiOiI0MTk0MzA0Iiwic29mdF9yZWNvcmRzIjoiNTEyIn19LCJyZXNvdXJjZV9xdW90YSI6eyJtYXhfd29ya2Zsb3dfbm9kZXMiOjN9LCJzY2hlZHVsZXJfcG9saWN5Ijp7ImFnZV93ZWlnaHQiOjEwMDAsImJ1ZGdldF9wcmVzc3VyZV93ZWlnaHQiOjAsImNyaXRpY2FsX3BhdGhfd2VpZ2h0IjoxMDAwMDAwLCJkZWFkbGluZV93ZWlnaHQiOjAsImZhbm91dF93ZWlnaHQiOjEwMDAwLCJwcm9jZXNzX3ByaW9yaXR5X3dlaWdodCI6MCwicmVzb3VyY2VfcHJlc3N1cmVfd2VpZ2h0IjowLCJ0b2tlbl9jb3N0X3dlaWdodCI6MX0sInNpZ25hbF9wb2xpY3kiOnsiZGVhZGxpbmVfZXNjYWxhdGlvbiI6ZmFsc2UsInF1ZXVlX21heCI6NjQsInR0bF9tcyI6bnVsbH0sInNraWxsX2NhdGFsb2ciOlt7ImRlc2NyaXB0aW9uIjoiZGVidWcgaGVscGVyIiwibmFtZSI6ImRlYnVnIn1dLCJ0b29sX2NhdGFsb2ciOlt7Im5hbWUiOiJzdGFydF93b3JrZmxvdyJ9LHsibmFtZSI6InN1Ym1pdF93b3JrZmxvd19ub2RlcyJ9LHsibmFtZSI6InNraWxsIn0seyJuYW1lIjoidXBkYXRlX3BsYW4ifSx7Im5hbWUiOiJtZW1vcnkifSx7Im5hbWUiOiJyZWFkX3Jlc3VsdCJ9LHsibmFtZSI6InNlbmRfbWVzc2FnZSJ9LHsibmFtZSI6InB1Ymxpc2hfY2hhbm5lbCJ9LHsibmFtZSI6InJlY2VpdmVfbWFpbGJveCJ9LHsibmFtZSI6InJlY2VpdmVfY2hhbm5lbCJ9LHsibmFtZSI6InJlYWRfb2JqZWN0In0seyJuYW1lIjoic2VhcmNoIn1dLCJ2ZXJpZmljYXRpb25fY29udHJhY3RzIjpbXX0sImtpbmQiOiJjb25maWd1cmVfb3BlcmF0aW9uIn0sImlucHV0X2lkIjoiaW4tY29uZmlndXJlIiwib2JzZXJ2ZWRfYXRfbXMiOiIxNzAwMDAwMDAwMDAwIiwib3BlcmF0aW9uX2lkIjoib3AtZHJpdmVyLTEifQ==",
+          "data": "eyJpbnB1dCI6eyJjb25maWciOnsiYnVkZ2V0X2dyYW50IjpudWxsLCJjb250ZXh0X3BvbGljeSI6eyJjb2xsYXBzZV9vbGRfYXNzaXN0YW50X25hcnJhdGlvbiI6dHJ1ZSwiaWRsZV9taWNyb19jb21wYWN0X21pbnV0ZXMiOjYwLCJrbm93bGVkZ2VfYnVkZ2V0X3BwbSI6MjUwMDAwLCJub3Rlc19idWRnZXRfdG9rZW5zIjo2MDAsInByZXNlcnZlX3JlY2VudF90dXJucyI6MiwicHJlc3N1cmVfdGhyZXNob2xkc19wcG0iOnsiYXV0byI6OTUwMDAwLCJjb2xsYXBzZSI6OTAwMDAwLCJtaWNybyI6ODAwMDAwLCJyZW5ld2FsIjo5ODAwMDAsInNuaXAiOjcwMDAwMH0sInByb21wdF9idWRnZXQiOnsib3V0cHV0X3Jlc2VydmVfdG9rZW5zIjowLCJwcm9tcHRfb3ZlcmhlYWRfdG9rZW5zIjowLCJzYWZldHlfbWFyZ2luX3Rva2VucyI6MH0sInJlbmV3YWxfY2FycnlvdmVyX3BwbSI6NTAwMDAsInRhcmdldF9hZnRlcl9jb21wcmVzc19wcG0iOjY1MDAwMH0sImV4ZWN1dGlvbl9wb2xpY3kiOnsiY3JpdGVyaWFfZ2F0ZV9lbmFibGVkIjp0cnVlLCJlbnRyb3B5X3dhdGNoIjp7ImNvb2xkb3duX3R1cm5zIjo0LCJlbmFibGVkIjpmYWxzZSwiaHlzdGVyZXNpc19wcG0iOjEwMDAwMCwibm90aWZ5X21vZGVsIjpmYWxzZSwidGhyZXNob2xkX3BwbSI6NjUwMDAwfSwibWF4X2NvbnRleHRfdG9rZW5zIjoxMjgwMDAsIm1heF90b3RhbF90b2tlbnMiOiIxMDAwMDAwIiwibWF4X3R1cm5zIjoxMiwibWF4X3dhbGxfbXMiOm51bGwsInJlcGVhdF9mdXNlIjp7ImRlbnlfYWZ0ZXIiOjUsImVuYWJsZWQiOnRydWUsInRlcm1pbmF0ZV9hZnRlciI6OH19LCJmZWF0dXJlX3BvbGljeSI6eyJrbm93bGVkZ2VfZW5hYmxlZCI6ZmFsc2UsIm1lbW9yeV9lbmFibGVkIjpmYWxzZSwicGxhbl90b29sX2VuYWJsZWQiOmZhbHNlLCJzdGFibGVfY29yZV90b29sX2lkcyI6W119LCJnb3Zlcm5hbmNlX3BvbGljeSI6eyJjb25zdHJhaW50cyI6W10sImRlZmF1bHRfYWN0aW9uIjoiYWxsb3ciLCJyYXRlX2xpbWl0cyI6W10sInJ1bGVzIjpbXSwidmV0b2VkX3Rvb2xzIjpbXX0sImhvc3RfZWZmZWN0X3N1cHBvcnQiOnsic3VwcG9ydGVkIjpbImNhbGxfcHJvdmlkZXIiLCJleGVjdXRlX3Rvb2xzIiwibG9hZF9wYXlsb2FkIiwic3Bhd25fdGFza3MiLCJwcmVlbXB0X3Rhc2tzIiwicGVyc2lzdF9tZW1vcnkiLCJxdWVyeV9tZW1vcnkiLCJhcmNoaXZlX3BhZ2Vfb3V0Il19LCJrZXJuZWxfbGltaXRzIjp7ImNvbGxlY3Rpb25fbGltaXRzIjp7ImNhcGFiaWxpdHlfZ3JhbnRzIjo2NTUzNiwiZ292ZXJuYW5jZV9ydWxlcyI6NjU1MzYsImluaXRpYWxfbWVzc2FnZXMiOjY1NTM2LCJrbm93bGVkZ2VfZW50cmllcyI6NjU1MzYsInNraWxsX2NhdGFsb2ciOjY1NTM2LCJ0b29sX2NhdGFsb2ciOjY1NTM2fSwibWF4X2NvbGxlY3Rpb25fZW50cmllcyI6NjU1MzYsIm1heF9pbnB1dF9ieXRlcyI6MTY3NzcyMTYsIm1heF9qc29uX2RlcHRoIjo2NH0sIm1lbW9yeV9hY2Nlc3MiOnsiYmluZGluZ19pZCI6Im1lbS1iaW5kaW5nLTEiLCJjYXBhYmlsaXRpZXMiOnsicmVhZCI6dHJ1ZSwid3JpdGUiOnRydWV9fSwibWVtb3J5X3BvbGljeSI6eyJtYXhfY29udGVudF9ieXRlcyI6MTAwMDAsIm1heF9uYW1lX2xlbmd0aCI6MTAwLCJwcm9tb3Rpb25fcmVjYWxsX3RocmVzaG9sZCI6bnVsbCwicmV0cmlldmFsX3RvcF9rIjo0LCJzdGFsZV93YXJuaW5nX2RheXMiOjIsInZhbGlkYXRpb25fZW5hYmxlZCI6dHJ1ZX0sInBheWxvYWRfcG9saWN5Ijp7ImlubGluZV90aHJlc2hvbGRfYnl0ZXMiOjY0LCJwcmV2aWV3X2J5dGVzIjozMn0sInJlY292ZXJ5X3BvbGljeSI6eyJvdXRwdXRfcmVjb3ZlcnlfYXR0ZW1wdHMiOjEsInByb3ZpZGVyX3JlY292ZXJ5X2F0dGVtcHRzIjoxLCJ0YWlsX2JvdW5kcyI6eyJoYXJkX2J5dGVzIjoiMTY3NzcyMTYiLCJoYXJkX3JlY29yZHMiOiIyMDQ4Iiwic29mdF9ieXRlcyI6IjQxOTQzMDQiLCJzb2Z0X3JlY29yZHMiOiI1MTIifX0sInJlc291cmNlX3F1b3RhIjp7Im1heF93b3JrZmxvd19ub2RlcyI6M30sInNjaGVkdWxlcl9wb2xpY3kiOnsiYWdlX3dlaWdodCI6MTAwMCwiYnVkZ2V0X3ByZXNzdXJlX3dlaWdodCI6MCwiY3JpdGljYWxfcGF0aF93ZWlnaHQiOjEwMDAwMDAsImRlYWRsaW5lX3dlaWdodCI6MCwiZmFub3V0X3dlaWdodCI6MTAwMDAsInByb2Nlc3NfcHJpb3JpdHlfd2VpZ2h0IjowLCJyZXNvdXJjZV9wcmVzc3VyZV93ZWlnaHQiOjAsInRva2VuX2Nvc3Rfd2VpZ2h0IjoxfSwic2lnbmFsX3BvbGljeSI6eyJkZWFkbGluZV9lc2NhbGF0aW9uIjpmYWxzZSwicXVldWVfbWF4Ijo2NCwidHRsX21zIjpudWxsfSwic2tpbGxfY2F0YWxvZyI6W3siZGVzY3JpcHRpb24iOiJkZWJ1ZyBoZWxwZXIiLCJuYW1lIjoiZGVidWcifV0sInRvb2xfY2F0YWxvZyI6W3sibmFtZSI6InN0YXJ0X3dvcmtmbG93In0seyJuYW1lIjoic3VibWl0X3dvcmtmbG93X25vZGVzIn0seyJuYW1lIjoic2tpbGwifSx7Im5hbWUiOiJ1cGRhdGVfcGxhbiJ9LHsibmFtZSI6Im1lbW9yeSJ9LHsibmFtZSI6InJlYWRfcmVzdWx0In0seyJuYW1lIjoic2VuZF9tZXNzYWdlIn0seyJuYW1lIjoicHVibGlzaF9jaGFubmVsIn0seyJuYW1lIjoicmVjZWl2ZV9tYWlsYm94In0seyJuYW1lIjoicmVjZWl2ZV9jaGFubmVsIn0seyJuYW1lIjoicmVhZF9vYmplY3QifSx7Im5hbWUiOiJzZWFyY2gifV0sInZlcmlmaWNhdGlvbl9jb250cmFjdHMiOltdfSwia2luZCI6ImNvbmZpZ3VyZV9vcGVyYXRpb24ifSwiaW5wdXRfaWQiOiJpbi1jb25maWd1cmUiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDAwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
           "encoding": "base64"
         },
-        "input_digest": "sha256:30d353829dfb53831dd0c56a08faace205a0a401d18c3aba7e6f77b5a51bc46a",
+        "input_digest": "sha256:2ce0a13aa091e5c1e7fe8522c7cb00236add449dcb55ff7e8d9388635722f2e7",
         "input_id": "in-configure",
         "operation_id": "op-driver-1",
         "previous_record_digest": null,
-        "record_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
+        "record_digest": "sha256:7ad36fd2d3809a9fd909a9dad0c038f3442ae5dc39fdb120a740719dc697063a",
         "step_digest": "sha256:e35fec9e43d83f26934d990af2aa6be57869acabb43fbc3134b5baf086e5c3d5",
         "step_seq": "0"
       },
@@ -150,9 +150,9 @@
         "input_digest": "sha256:e220be428d16a508d883c6b51cd7268b2a8ae020cf7f0da3f9e5486a9015d802",
         "input_id": "in-start",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
-        "record_digest": "sha256:65f8aa14bfd98b249d360c94583dc875dfc15530b0f5b1556ee0c400ba412d73",
-        "step_digest": "sha256:67ce43c3b28b30e80322643ce891aef627e1df72e9f4eba884ee90d93f611ab6",
+        "previous_record_digest": "sha256:7ad36fd2d3809a9fd909a9dad0c038f3442ae5dc39fdb120a740719dc697063a",
+        "record_digest": "sha256:a9720ad0e5305e99b5d8168c0855126a60330bb14ca03e0b54f41267ccf91c54",
+        "step_digest": "sha256:1dc6c98bf554a6152b0d8367e14c96a869200a0d18b9ddd9926a3f278685045a",
         "step_seq": "1"
       },
       "step": {
@@ -162,7 +162,7 @@
               "causation_input_id": "in-start",
               "effect": {
                 "context": {
-                  "estimated_tokens": 283,
+                  "estimated_tokens": 604,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
                     "role": "user"
@@ -212,6 +212,60 @@
                   },
                   {
                     "name": "search"
+                  },
+                  {
+                    "description": "Keep notes that survive compaction. As the conversation grows, older tool results and turns are archived; your notes stay in [TASK STATE] word for word. Write down what you work out and could not simply read again: running counts and totals, lists of what is done and what is left, conclusions, rules you learned. When it changes, write the same title again to update it. `evidence` names what it came from (call ids, file paths or arguments); without it the note is linked to the results you received since your last note. Retire a note you no longer need.",
+                    "name": "note",
+                    "parameters": {
+                      "properties": {
+                        "action": {
+                          "description": "Default: write.",
+                          "enum": [
+                            "write",
+                            "retire"
+                          ],
+                          "type": "string"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "kind": {
+                          "description": "state: progress of this task (counts, done-lists); rule: a lesson or rule; question: something still open; index: where things are.",
+                          "enum": [
+                            "state",
+                            "rule",
+                            "question",
+                            "index"
+                          ],
+                          "type": "string"
+                        },
+                        "links": {
+                          "description": "Titles of related notes.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "replaced_by": {
+                          "description": "On retire: the note that replaces this one.",
+                          "type": "string"
+                        },
+                        "title": {
+                          "description": "The note's name; writing an existing title updates it.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title"
+                      ],
+                      "type": "object"
+                    }
                   },
                   {
                     "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
@@ -290,8 +344,8 @@
         "input_digest": "sha256:8d01c323dcb5b9059957a498afed825d767f916cc919abce37f8e9317a2b53bd",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:65f8aa14bfd98b249d360c94583dc875dfc15530b0f5b1556ee0c400ba412d73",
-        "record_digest": "sha256:ff642b54baabdb7835a74e3a0aafd282b03abed0f4ac11990aba78e84149bd83",
+        "previous_record_digest": "sha256:a9720ad0e5305e99b5d8168c0855126a60330bb14ca03e0b54f41267ccf91c54",
+        "record_digest": "sha256:b20422101c26d5b6f0c508c0efe73248340a4c4a75de77847235827cd92cd442",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -359,9 +413,9 @@
         "input_digest": "sha256:333a77d94e1856e4e8fe04050213046abe753c7d9959bd4bbb7134d4564d1018",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:ff642b54baabdb7835a74e3a0aafd282b03abed0f4ac11990aba78e84149bd83",
-        "record_digest": "sha256:b37b30bb09f10816ef095d81a7ec27f37407bda3e47c5eaa6f4e669a12dd6fd4",
-        "step_digest": "sha256:102fdff41fcc4dd05a7d4877f21311a3a3d5009b9d49eb3a7da2ddbaaec85d7e",
+        "previous_record_digest": "sha256:b20422101c26d5b6f0c508c0efe73248340a4c4a75de77847235827cd92cd442",
+        "record_digest": "sha256:a43ae96907a7fe1eac2fbdb0a1f4457e63354f5ea10414f5ca320f062cbe3356",
+        "step_digest": "sha256:eed310c12768ae0167cd6c1b6442cdf8e6783a814ca790d82356bcceff696c58",
         "step_seq": "3"
       },
       "step": {
@@ -371,7 +425,7 @@
               "causation_input_id": "in-results",
               "effect": {
                 "context": {
-                  "estimated_tokens": 439,
+                  "estimated_tokens": 756,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                     "role": "user"
@@ -441,6 +495,60 @@
                   },
                   {
                     "name": "search"
+                  },
+                  {
+                    "description": "Keep notes that survive compaction. As the conversation grows, older tool results and turns are archived; your notes stay in [TASK STATE] word for word. Write down what you work out and could not simply read again: running counts and totals, lists of what is done and what is left, conclusions, rules you learned. When it changes, write the same title again to update it. `evidence` names what it came from (call ids, file paths or arguments); without it the note is linked to the results you received since your last note. Retire a note you no longer need.",
+                    "name": "note",
+                    "parameters": {
+                      "properties": {
+                        "action": {
+                          "description": "Default: write.",
+                          "enum": [
+                            "write",
+                            "retire"
+                          ],
+                          "type": "string"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "kind": {
+                          "description": "state: progress of this task (counts, done-lists); rule: a lesson or rule; question: something still open; index: where things are.",
+                          "enum": [
+                            "state",
+                            "rule",
+                            "question",
+                            "index"
+                          ],
+                          "type": "string"
+                        },
+                        "links": {
+                          "description": "Titles of related notes.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "replaced_by": {
+                          "description": "On retire: the note that replaces this one.",
+                          "type": "string"
+                        },
+                        "title": {
+                          "description": "The note's name; writing an existing title updates it.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title"
+                      ],
+                      "type": "object"
+                    }
                   },
                   {
                     "description": "Re-read the full content of a tool result that was truncated to save context (marked '[Output truncated: … call the read_result tool …]'), or of a dependency output (call_id \"dep:<agent_id>\"). Pass that call_id; use offset/max_bytes to page through large content.",
@@ -561,8 +669,8 @@
         "input_digest": "sha256:332d904efa8994ee2aa9c68acbc12ea3279ac07fa3d630e465a258266f3bf1cc",
         "input_id": "in-read",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:b37b30bb09f10816ef095d81a7ec27f37407bda3e47c5eaa6f4e669a12dd6fd4",
-        "record_digest": "sha256:293cfe93af8e94d01c1ff5651cde5773ff4342a52f0812f613455577110bb876",
+        "previous_record_digest": "sha256:a43ae96907a7fe1eac2fbdb0a1f4457e63354f5ea10414f5ca320f062cbe3356",
+        "record_digest": "sha256:f62d86f400c4d6592af359d4a989f54d0a9da615a068282b3e8189cd827cf4dd",
         "step_digest": "sha256:133a194cd855dc754907fc7174ca3da970c5c7ecfd3f86e180165afded54d338",
         "step_seq": "4"
       },
@@ -618,9 +726,9 @@
         "input_digest": "sha256:bfbf740950a71e6ccf181a3b3b64e189b27db28d79189d814fc7a7e02cbcb904",
         "input_id": "in-loaded",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:293cfe93af8e94d01c1ff5651cde5773ff4342a52f0812f613455577110bb876",
-        "record_digest": "sha256:16bfdb29fabeced42dbd52a2e3ea07e565b4c1dbd5dd9e53ae286900440fe2d6",
-        "step_digest": "sha256:2acf1b5b917128419da98750094c25b8f01584976c027247f45835f137fea2fc",
+        "previous_record_digest": "sha256:f62d86f400c4d6592af359d4a989f54d0a9da615a068282b3e8189cd827cf4dd",
+        "record_digest": "sha256:19010aa84d02360cedee83420f5aad26252ad7d0c6e5379eb4b4c157b914ddb0",
+        "step_digest": "sha256:30eb00c2c57b318a9c69eceff5ca98aa39631af1a206c8dab982479e334995ae",
         "step_seq": "5"
       },
       "step": {
@@ -630,7 +738,7 @@
               "causation_input_id": "in-loaded",
               "effect": {
                 "context": {
-                  "estimated_tokens": 339,
+                  "estimated_tokens": 660,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                     "role": "user"
@@ -725,6 +833,60 @@
                   },
                   {
                     "name": "search"
+                  },
+                  {
+                    "description": "Keep notes that survive compaction. As the conversation grows, older tool results and turns are archived; your notes stay in [TASK STATE] word for word. Write down what you work out and could not simply read again: running counts and totals, lists of what is done and what is left, conclusions, rules you learned. When it changes, write the same title again to update it. `evidence` names what it came from (call ids, file paths or arguments); without it the note is linked to the results you received since your last note. Retire a note you no longer need.",
+                    "name": "note",
+                    "parameters": {
+                      "properties": {
+                        "action": {
+                          "description": "Default: write.",
+                          "enum": [
+                            "write",
+                            "retire"
+                          ],
+                          "type": "string"
+                        },
+                        "body": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "kind": {
+                          "description": "state: progress of this task (counts, done-lists); rule: a lesson or rule; question: something still open; index: where things are.",
+                          "enum": [
+                            "state",
+                            "rule",
+                            "question",
+                            "index"
+                          ],
+                          "type": "string"
+                        },
+                        "links": {
+                          "description": "Titles of related notes.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "replaced_by": {
+                          "description": "On retire: the note that replaces this one.",
+                          "type": "string"
+                        },
+                        "title": {
+                          "description": "The note's name; writing an existing title updates it.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title"
+                      ],
+                      "type": "object"
+                    }
                   },
                   {
                     "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",

@@ -15,8 +15,9 @@ export interface ContextPolicy {
   renewalCarryover: number
   collapseOldAssistantNarration: boolean
   idleMicroCompactMinutes: number
-  /** Plan task 9.1 · tokens the model's notes may hold in the state turn; 0 (the default) turns the
-   *  `note` tool off. Notes are written by the model and kept verbatim through compaction. */
+  /** Plan task 9.1 · tokens the model's notes may hold in the state turn (kernel default 600, on since
+   *  0.2.82); 0 turns the `note` tool off. Notes are written by the model and kept verbatim through
+   *  compaction. */
   notesBudgetTokens?: number
 }
 
@@ -79,8 +80,7 @@ export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire
   if (typeof policy.collapseOldAssistantNarration !== "boolean") {
     throw new TypeError("collapseOldAssistantNarration must be boolean")
   }
-  const notes = policy.notesBudgetTokens ?? 0
-  assertIntegerAtLeast(notes, 0, "notesBudgetTokens")
+  if (policy.notesBudgetTokens !== undefined) assertIntegerAtLeast(policy.notesBudgetTokens, 0, "notesBudgetTokens")
 
   return {
     pressure_thresholds_ppm,
@@ -89,7 +89,7 @@ export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire
     renewal_carryover_ppm: ratioToPpm(policy.renewalCarryover, "renewalCarryover"),
     collapse_old_assistant_narration: policy.collapseOldAssistantNarration,
     idle_micro_compact_minutes: policy.idleMicroCompactMinutes,
-    ...(notes > 0 ? { notes_budget_tokens: notes } : {}),
+    ...(policy.notesBudgetTokens !== undefined ? { notes_budget_tokens: policy.notesBudgetTokens } : {}),
   }
 }
 

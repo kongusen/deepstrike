@@ -182,7 +182,8 @@ async def test_unset_baseline_keeps_the_minimal_surface():
     ))
     async for _ in runner.run(goal="do it", session_id="baseline-unset"):
         pass
-    assert provider.tools == ["read", "update_plan"]
+    # `note` is on by default since 0.2.82 (DEC-13).
+    assert provider.tools == ["read", "note", "update_plan"]
 
 
 class UnexposedCallProvider:

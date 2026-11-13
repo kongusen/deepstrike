@@ -29,8 +29,8 @@ class ContextPolicy(TypedDict, total=False):
     collapse_old_assistant_narration: bool
     idle_micro_compact_minutes: int
     delegated_tiers: DelegatedContextTiers
-    #: Plan task 9.1 · tokens the model's notes may hold in the state turn; 0 (the default) turns
-    #: the ``note`` tool off.
+    #: Plan task 9.1 · tokens the model's notes may hold in the state turn (kernel default 600, on
+    #: since 0.2.82); 0 turns the ``note`` tool off.
     notes_budget_tokens: int
 
 
@@ -100,10 +100,9 @@ def normalize_context_policy(policy: ContextPolicy) -> ContextPolicyWire:
         "collapse_old_assistant_narration": policy["collapse_old_assistant_narration"],
         "idle_micro_compact_minutes": policy["idle_micro_compact_minutes"],
     }
-    notes = policy.get("notes_budget_tokens", 0)
-    _integer_at_least(notes, 0, "notes_budget_tokens")
-    if notes > 0:
-        wire["notes_budget_tokens"] = notes
+    if "notes_budget_tokens" in policy:
+        _integer_at_least(policy["notes_budget_tokens"], 0, "notes_budget_tokens")
+        wire["notes_budget_tokens"] = policy["notes_budget_tokens"]
     delegated = policy.get("delegated_tiers")
     if delegated and any(delegated.values()):
         wire["delegated_tiers"] = {

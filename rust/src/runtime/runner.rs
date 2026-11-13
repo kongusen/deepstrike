@@ -128,8 +128,9 @@ pub struct RuntimeOptions {
     pub payload_store: Option<Arc<dyn PayloadStore>>,
     /// Bounded recovery and replay policy. Omitted fields retain kernel defaults.
     pub kernel_reliability: Option<KernelReliability>,
-    /// Plan task 9.1 · tokens the model's notes may hold in the state turn. `None` or `0` leaves
-    /// the `note` tool off; notes are written by the model and kept verbatim through compaction.
+    /// Plan task 9.1 · tokens the model's notes may hold in the state turn. `None` keeps the kernel
+    /// default (600; notes are on since 0.2.82), `Some(0)` turns the `note` tool off. Notes are
+    /// written by the model and kept verbatim through compaction.
     pub notes_budget_tokens: Option<u32>,
     /// When set, `execute` reuses this session id.
     pub session_id: Option<String>,
@@ -1179,12 +1180,12 @@ impl RuntimeRunner {
 
             if !resume_mid_run {
                 let native_context = self.opts.provider.native_context_tiers();
-                let notes_budget = self.opts.notes_budget_tokens.unwrap_or(0);
+                let notes_budget = self.opts.notes_budget_tokens;
                 if self.opts.kernel_reliability.is_some()
                     || self.opts.scheduler_policy.is_some()
                     || native_context.tool_result_clearing
                     || native_context.compaction
-                    || notes_budget > 0
+                    || notes_budget.is_some()
                 {
                     let mut config = serde_json::Map::new();
                     let mut context_policy = serde_json::Map::new();
@@ -1194,8 +1195,8 @@ impl RuntimeRunner {
                             "compaction": native_context.compaction,
                         }));
                     }
-                    if notes_budget > 0 {
-                        context_policy.insert("notes_budget_tokens".into(), notes_budget.into());
+                    if let Some(budget) = notes_budget {
+                        context_policy.insert("notes_budget_tokens".into(), budget.into());
                     }
                     if !context_policy.is_empty() {
                         config.insert("context_policy".into(), serde_json::Value::Object(context_policy));

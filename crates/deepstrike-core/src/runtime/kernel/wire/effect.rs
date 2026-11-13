@@ -242,6 +242,12 @@ impl std::error::Error for EffectResolutionMismatch {}
 
 /// The closed set of actions a host must execute and report back.
 ///
+/// DEC-13 (model-led context): the kernel never asks the host to have a model write, judge or
+/// summarize context for it. A model is reached only through `CallProvider`, as a turn of the run;
+/// what deserves keeping is the model's call, made through its own tools (`note`, `memory`,
+/// `propose_memory`). 0.2.82 measured the alternative — a `summarize_context` effect at compaction
+/// time — at 12/30 → 4/30 correct and +71% cost on long-horizon, and removed it.
+///
 /// Newtype variants over strict structs, not inline struct variants: `deny_unknown_fields` does
 /// not apply to an inline variant of an internally tagged enum.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1707,7 +1713,12 @@ mod tests {
                 "evaluate_milestone",
             ])
         );
-        assert_eq!(EffectKindTag::ALL.len(), 10);
+        assert_eq!(
+            EffectKindTag::ALL.len(),
+            10,
+            "a new effect widens what the kernel asks hosts to do; read DEC-13 first: the kernel \
+             never initiates a model call to manage context (docs/en/decisions/013)"
+        );
 
         let sampled: Vec<EffectKindTag> = effect_samples().iter().map(EffectKind::tag).collect();
         assert_eq!(

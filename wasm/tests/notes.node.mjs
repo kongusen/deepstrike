@@ -41,7 +41,7 @@ async function events(run, sessionId, notesBudgetTokens) {
   plane.register(tool("read", "read a file", { type: "object", properties: { path: { type: "string" } } }, () => "ERROR x\nERROR y\nERROR z"))
   const runner = new RuntimeRunner({
     provider: run.provider, sessionLog, executionPlane: plane, maxTokens: 8000, maxTurns: 10,
-    baselineToolIds: ["read"], ...(notesBudgetTokens ? { contextPolicy: { notesBudgetTokens } } : {}),
+    baselineToolIds: ["read"], ...(notesBudgetTokens === undefined ? {} : { contextPolicy: { notesBudgetTokens } }),
   })
   assert.equal(await collectText(runner.run({ sessionId, goal: "count the errors" })), "3")
   return (await sessionLog.read(sessionId)).map(entry => entry.event)
@@ -57,8 +57,12 @@ async function events(run, sessionId, notesBudgetTokens) {
   assert.equal(report.notes_active, 1)
 }
 {
-  const run = scripted()
-  await events(run, "no-notes", 0)
-  assert.ok(!run.offered[0].includes("note"))
+  // DEC-13 · on by default, off with a zero budget.
+  const byDefault = scripted()
+  await events(byDefault, "default-notes", undefined)
+  assert.ok(byDefault.offered[0].includes("note"))
+  const off = scripted()
+  await events(off, "no-notes", 0)
+  assert.ok(!off.offered[0].includes("note"))
 }
-console.log("notes: 2 scenarios passed against the real WASM kernel")
+console.log("notes: 3 scenarios passed against the real WASM kernel")

@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:89f483a9643d3a59586ca95a75208725d215949287d7ec41efe69134a13f6405",
+    "checkpoint_digest": "sha256:8e72d9063f01f06d4b94b8a7e0e27b6fbee1af68ef113bf602545c296f88dd32",
     "covered_transaction_head_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -97,6 +97,7 @@
             "collapse_old_assistant_narration": true,
             "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
+            "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,

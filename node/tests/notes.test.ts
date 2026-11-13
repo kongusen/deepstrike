@@ -78,11 +78,13 @@ describe("notes (plan task 9.1)", () => {
     expect(report.edges?.some(edge => edge.relation === "derived_from")).toBe(true)
   })
 
-  it("are off without a budget", async () => {
-    const { provider, offered } = scripted()
-    const { runner: run } = runner(provider)
-    await collectText(run.run({ sessionId: "no-notes", goal: "count the errors" }))
-    expect(offered[0]).not.toContain("note")
+  it("are on by default and off with a zero budget (DEC-13)", async () => {
+    const byDefault = scripted()
+    await collectText(runner(byDefault.provider).runner.run({ sessionId: "default-notes", goal: "count the errors" }))
+    expect(byDefault.offered[0]).toContain("note")
+    const off = scripted()
+    await collectText(runner(off.provider, 0).runner.run({ sessionId: "no-notes", goal: "count the errors" }))
+    expect(off.offered[0]).not.toContain("note")
   })
 
   it("reject a negative or fractional budget", () => {

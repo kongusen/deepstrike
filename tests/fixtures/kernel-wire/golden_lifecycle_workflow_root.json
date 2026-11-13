@@ -1,7 +1,7 @@
 {
   "description": "Configure → atomic workflow root start → spawn ack → child completions → workflow terminal (spec 10.1). No LoadWorkflow, no placeholder agent run, and no host CompleteRun: the last committed step's disposition is the terminal itself.",
-  "genesis_digest": "sha256:37cf7f256f73de5de61d898c1a8cb1ce41cfb282bac269e7a4a5d72def45635e",
-  "head_digest": "sha256:3d377185950f30dc46152b993a3370c3316954901a829abbe69217fcc8929c2b",
+  "genesis_digest": "sha256:70c51ceb32aa043e7d4ccd477fb905c5dca27fced74d9c9638c051e6a5f4498f",
+  "head_digest": "sha256:29d743403a3df31292aa68ae3a2f4a3e7f74db284accd5f050666349690c5721",
   "links": [
     {
       "envelope": {
@@ -25,14 +25,14 @@
       },
       "record": {
         "canonical_input": {
-          "data": "eyJpbnB1dCI6eyJjb25maWciOnsiYnVkZ2V0X2dyYW50IjpudWxsLCJjb250ZXh0X3BvbGljeSI6eyJjb2xsYXBzZV9vbGRfYXNzaXN0YW50X25hcnJhdGlvbiI6dHJ1ZSwiaWRsZV9taWNyb19jb21wYWN0X21pbnV0ZXMiOjYwLCJrbm93bGVkZ2VfYnVkZ2V0X3BwbSI6MjUwMDAwLCJwcmVzZXJ2ZV9yZWNlbnRfdHVybnMiOjIsInByZXNzdXJlX3RocmVzaG9sZHNfcHBtIjp7ImF1dG8iOjk1MDAwMCwiY29sbGFwc2UiOjkwMDAwMCwibWljcm8iOjgwMDAwMCwicmVuZXdhbCI6OTgwMDAwLCJzbmlwIjo3MDAwMDB9LCJwcm9tcHRfYnVkZ2V0Ijp7Im91dHB1dF9yZXNlcnZlX3Rva2VucyI6MCwicHJvbXB0X292ZXJoZWFkX3Rva2VucyI6MCwic2FmZXR5X21hcmdpbl90b2tlbnMiOjB9LCJyZW5ld2FsX2NhcnJ5b3Zlcl9wcG0iOjUwMDAwLCJ0YXJnZXRfYWZ0ZXJfY29tcHJlc3NfcHBtIjo2NTAwMDB9LCJleGVjdXRpb25fcG9saWN5Ijp7ImNyaXRlcmlhX2dhdGVfZW5hYmxlZCI6dHJ1ZSwiZW50cm9weV93YXRjaCI6eyJjb29sZG93bl90dXJucyI6NCwiZW5hYmxlZCI6ZmFsc2UsImh5c3RlcmVzaXNfcHBtIjoxMDAwMDAsIm5vdGlmeV9tb2RlbCI6ZmFsc2UsInRocmVzaG9sZF9wcG0iOjY1MDAwMH0sIm1heF9jb250ZXh0X3Rva2VucyI6MTI4MDAwLCJtYXhfdG90YWxfdG9rZW5zIjoiMTAwMDAwMCIsIm1heF90dXJucyI6MTIsIm1heF93YWxsX21zIjpudWxsLCJyZXBlYXRfZnVzZSI6eyJkZW55X2FmdGVyIjo1LCJlbmFibGVkIjp0cnVlLCJ0ZXJtaW5hdGVfYWZ0ZXIiOjh9fSwiZmVhdHVyZV9wb2xpY3kiOnsia25vd2xlZGdlX2VuYWJsZWQiOmZhbHNlLCJtZW1vcnlfZW5hYmxlZCI6ZmFsc2UsInBsYW5fdG9vbF9lbmFibGVkIjpmYWxzZSwic3RhYmxlX2NvcmVfdG9vbF9pZHMiOltdfSwiZ292ZXJuYW5jZV9wb2xpY3kiOnsiY29uc3RyYWludHMiOltdLCJkZWZhdWx0X2FjdGlvbiI6ImFsbG93IiwicmF0ZV9saW1pdHMiOltdLCJydWxlcyI6W10sInZldG9lZF90b29scyI6W119LCJob3N0X2VmZmVjdF9zdXBwb3J0Ijp7InN1cHBvcnRlZCI6WyJjYWxsX3Byb3ZpZGVyIiwic3Bhd25fdGFza3MiXX0sImtlcm5lbF9saW1pdHMiOnsiY29sbGVjdGlvbl9saW1pdHMiOnsiY2FwYWJpbGl0eV9ncmFudHMiOjY1NTM2LCJnb3Zlcm5hbmNlX3J1bGVzIjo2NTUzNiwiaW5pdGlhbF9tZXNzYWdlcyI6NjU1MzYsImtub3dsZWRnZV9lbnRyaWVzIjo2NTUzNiwic2tpbGxfY2F0YWxvZyI6NjU1MzYsInRvb2xfY2F0YWxvZyI6NjU1MzZ9LCJtYXhfY29sbGVjdGlvbl9lbnRyaWVzIjo2NTUzNiwibWF4X2lucHV0X2J5dGVzIjoxNjc3NzIxNiwibWF4X2pzb25fZGVwdGgiOjY0fSwibWVtb3J5X2FjY2VzcyI6bnVsbCwibWVtb3J5X3BvbGljeSI6eyJtYXhfY29udGVudF9ieXRlcyI6MTAwMDAsIm1heF9uYW1lX2xlbmd0aCI6MTAwLCJwcm9tb3Rpb25fcmVjYWxsX3RocmVzaG9sZCI6bnVsbCwicmV0cmlldmFsX3RvcF9rIjo1LCJzdGFsZV93YXJuaW5nX2RheXMiOjIsInZhbGlkYXRpb25fZW5hYmxlZCI6dHJ1ZX0sInBheWxvYWRfcG9saWN5Ijp7ImlubGluZV90aHJlc2hvbGRfYnl0ZXMiOjUxMjAwLCJwcmV2aWV3X2J5dGVzIjoyMDQ4fSwicmVjb3ZlcnlfcG9saWN5Ijp7Im91dHB1dF9yZWNvdmVyeV9hdHRlbXB0cyI6MSwicHJvdmlkZXJfcmVjb3ZlcnlfYXR0ZW1wdHMiOjEsInRhaWxfYm91bmRzIjp7ImhhcmRfYnl0ZXMiOiIxNjc3NzIxNiIsImhhcmRfcmVjb3JkcyI6IjIwNDgiLCJzb2Z0X2J5dGVzIjoiNDE5NDMwNCIsInNvZnRfcmVjb3JkcyI6IjUxMiJ9fSwicmVzb3VyY2VfcXVvdGEiOnt9LCJzY2hlZHVsZXJfcG9saWN5Ijp7ImFnZV93ZWlnaHQiOjEwMDAsImJ1ZGdldF9wcmVzc3VyZV93ZWlnaHQiOjAsImNyaXRpY2FsX3BhdGhfd2VpZ2h0IjoxMDAwMDAwLCJkZWFkbGluZV93ZWlnaHQiOjAsImZhbm91dF93ZWlnaHQiOjEwMDAwLCJwcm9jZXNzX3ByaW9yaXR5X3dlaWdodCI6MCwicmVzb3VyY2VfcHJlc3N1cmVfd2VpZ2h0IjowLCJ0b2tlbl9jb3N0X3dlaWdodCI6MX0sInNpZ25hbF9wb2xpY3kiOnsiZGVhZGxpbmVfZXNjYWxhdGlvbiI6ZmFsc2UsInF1ZXVlX21heCI6NjQsInR0bF9tcyI6bnVsbH0sInNraWxsX2NhdGFsb2ciOltdLCJ0b29sX2NhdGFsb2ciOltdLCJ2ZXJpZmljYXRpb25fY29udHJhY3RzIjpbXX0sImtpbmQiOiJjb25maWd1cmVfb3BlcmF0aW9uIn0sImlucHV0X2lkIjoiaW4tY29uZmlndXJlIiwib2JzZXJ2ZWRfYXRfbXMiOiIxNzAwMDAwMDAwMDAwIiwib3BlcmF0aW9uX2lkIjoib3AtZHJpdmVyLTEifQ==",
+          "data": "eyJpbnB1dCI6eyJjb25maWciOnsiYnVkZ2V0X2dyYW50IjpudWxsLCJjb250ZXh0X3BvbGljeSI6eyJjb2xsYXBzZV9vbGRfYXNzaXN0YW50X25hcnJhdGlvbiI6dHJ1ZSwiaWRsZV9taWNyb19jb21wYWN0X21pbnV0ZXMiOjYwLCJrbm93bGVkZ2VfYnVkZ2V0X3BwbSI6MjUwMDAwLCJub3Rlc19idWRnZXRfdG9rZW5zIjo2MDAsInByZXNlcnZlX3JlY2VudF90dXJucyI6MiwicHJlc3N1cmVfdGhyZXNob2xkc19wcG0iOnsiYXV0byI6OTUwMDAwLCJjb2xsYXBzZSI6OTAwMDAwLCJtaWNybyI6ODAwMDAwLCJyZW5ld2FsIjo5ODAwMDAsInNuaXAiOjcwMDAwMH0sInByb21wdF9idWRnZXQiOnsib3V0cHV0X3Jlc2VydmVfdG9rZW5zIjowLCJwcm9tcHRfb3ZlcmhlYWRfdG9rZW5zIjowLCJzYWZldHlfbWFyZ2luX3Rva2VucyI6MH0sInJlbmV3YWxfY2FycnlvdmVyX3BwbSI6NTAwMDAsInRhcmdldF9hZnRlcl9jb21wcmVzc19wcG0iOjY1MDAwMH0sImV4ZWN1dGlvbl9wb2xpY3kiOnsiY3JpdGVyaWFfZ2F0ZV9lbmFibGVkIjp0cnVlLCJlbnRyb3B5X3dhdGNoIjp7ImNvb2xkb3duX3R1cm5zIjo0LCJlbmFibGVkIjpmYWxzZSwiaHlzdGVyZXNpc19wcG0iOjEwMDAwMCwibm90aWZ5X21vZGVsIjpmYWxzZSwidGhyZXNob2xkX3BwbSI6NjUwMDAwfSwibWF4X2NvbnRleHRfdG9rZW5zIjoxMjgwMDAsIm1heF90b3RhbF90b2tlbnMiOiIxMDAwMDAwIiwibWF4X3R1cm5zIjoxMiwibWF4X3dhbGxfbXMiOm51bGwsInJlcGVhdF9mdXNlIjp7ImRlbnlfYWZ0ZXIiOjUsImVuYWJsZWQiOnRydWUsInRlcm1pbmF0ZV9hZnRlciI6OH19LCJmZWF0dXJlX3BvbGljeSI6eyJrbm93bGVkZ2VfZW5hYmxlZCI6ZmFsc2UsIm1lbW9yeV9lbmFibGVkIjpmYWxzZSwicGxhbl90b29sX2VuYWJsZWQiOmZhbHNlLCJzdGFibGVfY29yZV90b29sX2lkcyI6W119LCJnb3Zlcm5hbmNlX3BvbGljeSI6eyJjb25zdHJhaW50cyI6W10sImRlZmF1bHRfYWN0aW9uIjoiYWxsb3ciLCJyYXRlX2xpbWl0cyI6W10sInJ1bGVzIjpbXSwidmV0b2VkX3Rvb2xzIjpbXX0sImhvc3RfZWZmZWN0X3N1cHBvcnQiOnsic3VwcG9ydGVkIjpbImNhbGxfcHJvdmlkZXIiLCJzcGF3bl90YXNrcyJdfSwia2VybmVsX2xpbWl0cyI6eyJjb2xsZWN0aW9uX2xpbWl0cyI6eyJjYXBhYmlsaXR5X2dyYW50cyI6NjU1MzYsImdvdmVybmFuY2VfcnVsZXMiOjY1NTM2LCJpbml0aWFsX21lc3NhZ2VzIjo2NTUzNiwia25vd2xlZGdlX2VudHJpZXMiOjY1NTM2LCJza2lsbF9jYXRhbG9nIjo2NTUzNiwidG9vbF9jYXRhbG9nIjo2NTUzNn0sIm1heF9jb2xsZWN0aW9uX2VudHJpZXMiOjY1NTM2LCJtYXhfaW5wdXRfYnl0ZXMiOjE2Nzc3MjE2LCJtYXhfanNvbl9kZXB0aCI6NjR9LCJtZW1vcnlfYWNjZXNzIjpudWxsLCJtZW1vcnlfcG9saWN5Ijp7Im1heF9jb250ZW50X2J5dGVzIjoxMDAwMCwibWF4X25hbWVfbGVuZ3RoIjoxMDAsInByb21vdGlvbl9yZWNhbGxfdGhyZXNob2xkIjpudWxsLCJyZXRyaWV2YWxfdG9wX2siOjUsInN0YWxlX3dhcm5pbmdfZGF5cyI6MiwidmFsaWRhdGlvbl9lbmFibGVkIjp0cnVlfSwicGF5bG9hZF9wb2xpY3kiOnsiaW5saW5lX3RocmVzaG9sZF9ieXRlcyI6NTEyMDAsInByZXZpZXdfYnl0ZXMiOjIwNDh9LCJyZWNvdmVyeV9wb2xpY3kiOnsib3V0cHV0X3JlY292ZXJ5X2F0dGVtcHRzIjoxLCJwcm92aWRlcl9yZWNvdmVyeV9hdHRlbXB0cyI6MSwidGFpbF9ib3VuZHMiOnsiaGFyZF9ieXRlcyI6IjE2Nzc3MjE2IiwiaGFyZF9yZWNvcmRzIjoiMjA0OCIsInNvZnRfYnl0ZXMiOiI0MTk0MzA0Iiwic29mdF9yZWNvcmRzIjoiNTEyIn19LCJyZXNvdXJjZV9xdW90YSI6e30sInNjaGVkdWxlcl9wb2xpY3kiOnsiYWdlX3dlaWdodCI6MTAwMCwiYnVkZ2V0X3ByZXNzdXJlX3dlaWdodCI6MCwiY3JpdGljYWxfcGF0aF93ZWlnaHQiOjEwMDAwMDAsImRlYWRsaW5lX3dlaWdodCI6MCwiZmFub3V0X3dlaWdodCI6MTAwMDAsInByb2Nlc3NfcHJpb3JpdHlfd2VpZ2h0IjowLCJyZXNvdXJjZV9wcmVzc3VyZV93ZWlnaHQiOjAsInRva2VuX2Nvc3Rfd2VpZ2h0IjoxfSwic2lnbmFsX3BvbGljeSI6eyJkZWFkbGluZV9lc2NhbGF0aW9uIjpmYWxzZSwicXVldWVfbWF4Ijo2NCwidHRsX21zIjpudWxsfSwic2tpbGxfY2F0YWxvZyI6W10sInRvb2xfY2F0YWxvZyI6W10sInZlcmlmaWNhdGlvbl9jb250cmFjdHMiOltdfSwia2luZCI6ImNvbmZpZ3VyZV9vcGVyYXRpb24ifSwiaW5wdXRfaWQiOiJpbi1jb25maWd1cmUiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDAwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
           "encoding": "base64"
         },
-        "input_digest": "sha256:490cd5a614230a18e66d0bde2c6f86b1a7b1161533bdef931b951f3d54248999",
+        "input_digest": "sha256:fd3c58aea1e62f3423cb2b79f950b28ca3a0df4a7bf604ad11aa66b329f65cc2",
         "input_id": "in-configure",
         "operation_id": "op-driver-1",
         "previous_record_digest": null,
-        "record_digest": "sha256:37cf7f256f73de5de61d898c1a8cb1ce41cfb282bac269e7a4a5d72def45635e",
+        "record_digest": "sha256:70c51ceb32aa043e7d4ccd477fb905c5dca27fced74d9c9638c051e6a5f4498f",
         "step_digest": "sha256:e35fec9e43d83f26934d990af2aa6be57869acabb43fbc3134b5baf086e5c3d5",
         "step_seq": "0"
       },
@@ -117,8 +117,8 @@
         "input_digest": "sha256:7e4abfebd376295f963fc45a1124dcd98f1ed1c66a08ced6d0d4cf03e4dc2f78",
         "input_id": "in-start",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:37cf7f256f73de5de61d898c1a8cb1ce41cfb282bac269e7a4a5d72def45635e",
-        "record_digest": "sha256:cc25b2767c560410300532431d23314a7037556af5b235522faf826784f6a59d",
+        "previous_record_digest": "sha256:70c51ceb32aa043e7d4ccd477fb905c5dca27fced74d9c9638c051e6a5f4498f",
+        "record_digest": "sha256:412c7576c23016f4fc0b80c81f4cdd67bc58746f1177640a920336e2e504c535",
         "step_digest": "sha256:368707b25236b624963e47d1d7d9c8992c5fd317fbe4001fc98029bfec26ba2b",
         "step_seq": "1"
       },
@@ -201,8 +201,8 @@
         "input_digest": "sha256:0ac52fdeb1dc656b3bef98ec8aeb344841f0f793b522f0bf940aa3dad80619fc",
         "input_id": "in-ack-1",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:cc25b2767c560410300532431d23314a7037556af5b235522faf826784f6a59d",
-        "record_digest": "sha256:c8a5fe080e0e8bd5995d6783253e17e74d14741ed66e2f0feb875fb4038f7736",
+        "previous_record_digest": "sha256:412c7576c23016f4fc0b80c81f4cdd67bc58746f1177640a920336e2e504c535",
+        "record_digest": "sha256:6d51f9227c995d1b3368a18938bcce7a7c3daaafb4533ca83758fbd2cdb22854",
         "step_digest": "sha256:e97f970a77cd1243b33185284ad88ea74d451b99fdbbf84cdf8a1358132e77e5",
         "step_seq": "2"
       },
@@ -277,8 +277,8 @@
         "input_digest": "sha256:959a3f80ceeb56b0fbde6a05b9c2752813d281a7783424fdc69cd7126e38bf54",
         "input_id": "in-done-1",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:c8a5fe080e0e8bd5995d6783253e17e74d14741ed66e2f0feb875fb4038f7736",
-        "record_digest": "sha256:1d2ca3db41044f72489605ee62e9ab55b3cce51e32440d1beba777d0e32fed9d",
+        "previous_record_digest": "sha256:6d51f9227c995d1b3368a18938bcce7a7c3daaafb4533ca83758fbd2cdb22854",
+        "record_digest": "sha256:55b72a7cc3d73cbde45b6cde09e83605c27ab500ff81e96ae083a69214e01471",
         "step_digest": "sha256:a3395c0b0b2bfca05cf1669d6e2923045d3dc0799603d6744b89eb45a5cc2580",
         "step_seq": "3"
       },
@@ -378,8 +378,8 @@
         "input_digest": "sha256:680c38149771f235834519712fa3bc1015f9d79363ab347ae1a2abc005791e3e",
         "input_id": "in-ack-2",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:1d2ca3db41044f72489605ee62e9ab55b3cce51e32440d1beba777d0e32fed9d",
-        "record_digest": "sha256:313dad850a6620b9071b9dafd03f26fa243a57aeec66aa20309fd8eefc5cc122",
+        "previous_record_digest": "sha256:55b72a7cc3d73cbde45b6cde09e83605c27ab500ff81e96ae083a69214e01471",
+        "record_digest": "sha256:2b660c66515026fe51c16dab79cd0338326e452d36114a5ff71be13641bd2539",
         "step_digest": "sha256:44de1f59b3aa01b8ec7ccdee706814f11c2445e8d91d806d4debf9ffe7c0e58f",
         "step_seq": "4"
       },
@@ -457,8 +457,8 @@
         "input_digest": "sha256:d82df24d9fadaba4e8762500c6a51ae7b513365e5212d2334f08b28bf4a4ab2a",
         "input_id": "in-done-2",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:313dad850a6620b9071b9dafd03f26fa243a57aeec66aa20309fd8eefc5cc122",
-        "record_digest": "sha256:3d377185950f30dc46152b993a3370c3316954901a829abbe69217fcc8929c2b",
+        "previous_record_digest": "sha256:2b660c66515026fe51c16dab79cd0338326e452d36114a5ff71be13641bd2539",
+        "record_digest": "sha256:29d743403a3df31292aa68ae3a2f4a3e7f74db284accd5f050666349690c5721",
         "step_digest": "sha256:bfe8966be0d9ba7b6642714dedf9e5d9793194e0faab4b6983f3e77c50e18624",
         "step_seq": "5"
       },

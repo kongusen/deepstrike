@@ -28,7 +28,7 @@ it("snapshots declaration data before the caller mutates it", async () => {
   for (let run = 0; run < 2; run++) {
     await expect(agent.run("go")).resolves.toMatchObject({ status: "completed", outputValidation: { ok: true } })
   }
-  expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["lookup"], ["lookup"]])
+  expect(provider.requests.map(([, schemas]) => schemas.map(schema => schema.name))).toEqual([["lookup", "note"], ["lookup", "note"]])
   expect(provider.requests.map(([, , extensions]) => extensions)).toEqual([
     { openai: { temperature: 0 } }, { openai: { temperature: 0 } },
   ])

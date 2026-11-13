@@ -96,6 +96,7 @@
             "collapse_old_assistant_narration": true,
             "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
+            "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
@@ -211,7 +212,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:ad041c63ee0e6664f37ca5e5053400a1ed61546c475d8215802a0396c90dcea2",
+    "state_digest": "sha256:71bdefac5444d915aa6f6650cdc2503b38dd43d1babfceca2a0c2c2e4b3b4ef2",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
