@@ -235,7 +235,7 @@ The kernel renders context as four LLM API slots — only **history** is compres
 |------|--------|------|
 | `system_stable` | system partition | Identity, rules — never changes within a run |
 | `system_knowledge` | knowledge partition | Preloaded memory, skill defs — low frequency |
-| `turns[0]` | `task_state` + signals | Goal, plan, progress, compression log, runtime signals |
+| `turns[0]` | `task_state` + signals | Goal, plan, progress, the model's notes, compression log, runtime signals |
 | `turns[1..N]` | history | Conversation transcript |
 
 ```python
@@ -250,6 +250,47 @@ runner = RuntimeRunner(RuntimeOptions(
 - Inbound signals are routed by the in-kernel attention policy and rendered into **Slot 3**
 
 Full reference: [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-compression.md)
+
+---
+
+## Notes and model-proposed memory (0.2.82)
+
+The model decides what is worth keeping; the kernel keeps it.
+
+- **Notes.** Every request carries a `note` tool. The model writes, rewrites and retires notes — a
+  running count, what is done, a rule it learned. Notes render in the state turn (`notes:`), and no
+  compaction tier or renewal touches them. Over the budget (default 600 tokens) the kernel refuses
+  the write instead of deleting for the model. Each note is a context-graph item with
+  `derived_from` edges to the tool results it came from.
+- **Memory the model proposes.** With a candidate sink, the model calls `propose_memory` for what
+  should outlive the task; the proposal goes through the attested candidate ledger, and later
+  sessions recall it as an index line.
+
+```python
+RuntimeOptions(..., context_policy={"notes_budget_tokens": 600})  # default; 0 turns notes off
+```
+
+```python
+RuntimeOptions(
+    ...,
+    memory_candidate_sink=sink,
+    memory_runtime_policy={"retrieval": "host", "model_writes": "candidate_sink"},
+)
+```
+
+Measured on DeepSeek `deepseek-flash`, paired against the same tasks without the mechanism
+(cost is price-weighted, per correct answer):
+
+| Scenario | Without | With | Cost per correct answer |
+|---|---|---|---|
+| long-horizon (30 pairs) | 15/30 | **20/30** with notes | **−43%** |
+| ledger (30 pairs) | 25/30 | **30/30** with notes | −3% |
+| multi-session (48 pairs) | 9/48, no memory | **33/48** with notes + `propose_memory` | **−68%** |
+
+The kernel never initiates a model call to manage context: kernel-side summaries, cache-account
+compaction, note diagnostics and a post-session consolidation run were measured and deleted. Why,
+and how a mechanism earns its place: [DEC-13: Model-Led Context](https://github.com/kongusen/deepstrike/blob/main/docs/en/decisions/013-model-led-context.md). Details:
+[Context Engineering — notes](https://github.com/kongusen/deepstrike/blob/main/docs/en/guides/context-engineering.md).
 
 ---
 

@@ -182,6 +182,47 @@ See [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-
 
 ---
 
+## Notes and model-proposed memory (0.2.82)
+
+The model decides what is worth keeping; the kernel keeps it.
+
+- **Notes.** Every request carries a `note` tool. The model writes, rewrites and retires notes — a
+  running count, what is done, a rule it learned. Notes render in the state turn (`notes:`), and no
+  compaction tier or renewal touches them. Over the budget (default 600 tokens) the kernel refuses
+  the write instead of deleting for the model. Each note is a context-graph item with
+  `derived_from` edges to the tool results it came from.
+- **Memory the model proposes.** With a candidate sink, the model calls `propose_memory` for what
+  should outlive the task; the proposal goes through the attested candidate ledger, and later
+  sessions recall it as an index line.
+
+```typescript
+new RuntimeRunner({ /* ... */ contextPolicy: { notesBudgetTokens: 600 } })  // default; 0 turns notes off
+```
+
+```typescript
+new RuntimeRunner({
+  // ...
+  agentId, memoryScope, memoryStore, memoryCandidateSink: sink,
+  memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+})
+```
+
+Measured on DeepSeek `deepseek-flash`, paired against the same tasks without the mechanism
+(cost is price-weighted, per correct answer):
+
+| Scenario | Without | With | Cost per correct answer |
+|---|---|---|---|
+| long-horizon (30 pairs) | 15/30 | **20/30** with notes | **−43%** |
+| ledger (30 pairs) | 25/30 | **30/30** with notes | −3% |
+| multi-session (48 pairs) | 9/48, no memory | **33/48** with notes + `propose_memory` | **−68%** |
+
+The kernel never initiates a model call to manage context: kernel-side summaries, cache-account
+compaction, note diagnostics and a post-session consolidation run were measured and deleted. Why,
+and how a mechanism earns its place: [DEC-13: Model-Led Context](https://github.com/kongusen/deepstrike/blob/main/docs/en/decisions/013-model-led-context.md). Details:
+[Context Engineering — notes](https://github.com/kongusen/deepstrike/blob/main/docs/en/guides/context-engineering.md).
+
+---
+
 ## Governance
 
 ```typescript
