@@ -74,8 +74,9 @@ There is only one kind of thing in context: an item. Memory index lines, skill b
 | Tool result | this task | full, collapsible/pageable | governed by the compression pipeline | host |
 | Dependency output | this edge only | handle | permanent | kernel |
 | Provider summary | this operation | full | permanent | provider |
+| Note `note` (since 0.2.82) | this task | full | until the model retires it; never compacted | model |
 
-So: a recalled memory line lives eight turns from its last reference; a skill body leaves when the skill is deactivated — a host trying to remove it mid-activation is refused outright; a dependency output belongs to its downstream node alone; a provider summary can only be written by the provider.
+So: a recalled memory line lives eight turns from its last reference; a skill body leaves when the skill is deactivated — a host trying to remove it mid-activation is refused outright; a dependency output belongs to its downstream node alone; a provider summary can only be written by the provider; a note is written, rewritten and retired only by the model, and no compaction tier touches it.
 
 ### Edges: every relationship recorded
 
@@ -86,15 +87,18 @@ The value of a graph is in its edges. The kernel draws them only from recorded i
 - **reads_back** — which read-back retrieved which collapsed or paged-out result;
 - **summarizes** — which summary covers which original content;
 - **inherited_from** — which parent item a child run's copy came from;
-- **depends_on** — which upstream output a downstream node depends on.
+- **depends_on** — which upstream output a downstream node depends on;
+- **derived_from / links_to / supersedes** — which tool results a note was written from, which notes it names, and which note it replaced.
 
-With edges, feedback lands on specific items instead of aggregate numbers: regret points at the entry evicted and then requested back along a reference; waste points at the entry no edge ever pointed at; cache loss accounts every mid-run promotion. Every run ends with a lifecycle report, and a policy change must pass its gate on real benchmarks (`deepstrike-lab`) before it lands.
+With edges, feedback lands on specific items instead of aggregate numbers: regret points at the entry evicted and then requested back along a reference; waste points at the entry no edge ever pointed at; cache loss accounts every mid-run promotion. Every run ends with a lifecycle report, and a policy change must pass its gate on real benchmarks (`deepstrike-lab`) before it lands: paired live runs on the same tasks, where success or cost per correct answer must get significantly better and neither may get significantly worse ([DEC-13](./docs/en/decisions/013-model-led-context.md)).
 
 ### Collaboration is model-driven; the kernel admits and accounts
 
-On this graph, collaboration is not a hard-coded pipeline. Skills are activated by the model — the body loads on activation, the toolset narrows with it, deactivation releases the space. Memory is expanded by the model — index lines stay resident, `memory(record_id=…)` fetches the full record. Collapsed results are paged back in by the model. The next batch of workflow nodes is submitted by the model (`submit_workflow_nodes`) and admitted by the kernel as a canonical DAG. Host programs (`runDynamicWorkflow`) share the same vocabulary — loops, branches, and parallelism are the program itself or the model itself. We deleted the declarative loop/classify/tournament node templates: control flow is part of the model's capability, not a fill-in-the-blank in the framework.
+On this graph, collaboration is not a hard-coded pipeline. Skills are activated by the model — the body loads on activation, the toolset narrows with it, deactivation releases the space. Memory is expanded by the model — index lines stay resident, `memory(record_id=…)` fetches the full record. Collapsed results are paged back in by the model. What is worth keeping is decided by the model too: it writes its working state — a running count, what is done, a rule it learned — with the `note` tool, and proposes what should outlive the task with `propose_memory`; the kernel keeps both, refusing a write over budget rather than deleting for the model. The next batch of workflow nodes is submitted by the model (`submit_workflow_nodes`) and admitted by the kernel as a canonical DAG. Host programs (`runDynamicWorkflow`) share the same vocabulary — loops, branches, and parallelism are the program itself or the model itself. We deleted the declarative loop/classify/tournament node templates: control flow is part of the model's capability, not a fill-in-the-blank in the framework.
 
 The kernel keeps exactly three things: **admission** (governance, quotas, edge legality), **bookkeeping** (the graph and its lifecycle report), and **constraint** (scope, form, lifetime, write authority); hosts only fetch bytes — run a search, read the payload store, make a request. Side effects are governed by a separate effect-admission line (approvals, sandboxing, quotas). Shared state between a program and its agents is not closure variables pasted into prompts either: `ctx.blackboard` writes nodes on the graph (`blackboard:<key>`) that every agent spawned afterwards starts with, whatever its inheritance setting.
+
+**The kernel never initiates a model call to manage context** ([DEC-13](./docs/en/decisions/013-model-led-context.md)). It does not ask a model to summarize, judge, rank or consolidate context on its behalf; the model is reached only as a turn of the run. In 0.2.82 every mechanism that had the kernel judge what content means — by rule or by a call of its own — was measured and deleted; the one that let the model decide was kept and turned on by default.
 
 ### Boundaries and the cache invariant
 
@@ -118,6 +122,20 @@ Every expansion path is limited to content the caller already holds an address f
 - Token estimates are calibrated per request against the provider's own counts — raised, never lowered.
 
 ## Measured results
+
+### 0.2.82: model-led notes and memory
+
+Paired live runs on DeepSeek `deepseek-flash`, the same tasks with and without the mechanism; cost is price-weighted per correct answer, and **bold** marks a significant difference (bootstrap 95% CI).
+
+| Scenario | Without | With | Cost per correct answer |
+| --- | --- | --- | --- |
+| long-horizon (30 pairs): a running tally across many files and compactions | 15/30 | **20/30** with notes | **−43%** [−62%, −19%] |
+| ledger (30 pairs) | 25/30 | **30/30** with notes | −3% |
+| multi-session (48 pairs): a lesson learned in one session needed in the next | 9/48 (no memory) | **33/48** with notes + `propose_memory` | **−68%** |
+
+Mechanisms measured on the same benchmarks and deleted, because they made nothing significantly better or made something worse: compaction driven by a cache-cost account (8.3), kernel-requested model summaries at compaction (long-horizon 12/30 → 4/30, cost ×5), compaction reading notes (cost +31%), note diagnostics, and a post-session consolidation run (33/48 → 33/48, cost +272%). Fixing two provider bugs mattered more than any of them: DeepSeek tool-call markup leaking as text ended 21 of 90 runs, and repeated Ollama call ids ended 11 of 14. The full record is in [DEC-13](./docs/en/decisions/013-model-led-context.md) and the [plan](./docs/en/plans/context-lifecycle-first.md).
+
+### Earlier: handle-shaped edges and calibrated estimates
 
 From the lab and two live-model benchmarks (DeepSeek `deepseek-flash`):
 
@@ -197,9 +215,9 @@ The Agent facade provides in-memory sessions by default. Configure a durable ses
 
 - **Tools and integrations.** Files, services, and MCP servers behind a controlled execution boundary; side effects constrained by a separate admission line (governance, approval, sandbox, quotas).
 - **Reusable expertise.** Skill catalogs stay resident, bodies load on activation, the toolset narrows with them, and deactivation releases the space.
-- **Project memory.** Kernel-issued recall and re-recall, index lines first with on-demand expansion; writes go through an attested candidate ledger that rejects duplicates and unauthorized writes.
+- **Project memory.** Kernel-issued recall and re-recall, index lines first with on-demand expansion; the model proposes what to keep with `propose_memory`, and writes go through an attested candidate ledger that rejects duplicates and unauthorized writes.
 - **Teamwork.** Model-driven collaboration with kernel admission: dynamic workflows, handle-shaped dependency edges, a blackboard that is itself a graph node — orchestration no longer blows up the context it runs on.
-- **Longer tasks.** Item-level compression tiers, tool-result collapse and paging, renewal at the threshold — with the cache prefix defended throughout.
+- **Longer tasks.** Notes the model writes and the kernel keeps through every compaction (on by default, 600 tokens; `notesBudgetTokens: 0` turns them off); item-level compression tiers, tool-result collapse and paging, renewal at the threshold — with the cache prefix defended throughout.
 - **Control.** Permissions, budgets, deadlines, approval points, and cancellation rules.
 - **Recovery and inspection.** Deterministic replay from journal + checkpoints; a lifecycle report that records, item by item, what was injected, referenced, and why it left.
 
@@ -223,6 +241,7 @@ The task scheduler runs locally. Connecting remote tools does not provide a dist
 | Control what assistants may do | [Governance](./docs/en/guides/governance.md) |
 | Recover and inspect work | [Session and recovery](./docs/en/guides/session-replay-and-recovery.md) |
 | Understand the architecture and its vocabulary | [Runtime Language](./docs/en/architecture/runtime-language.md) |
+| Why context is model-led, and how a mechanism earns its place | [DEC-13: Model-Led Context](./docs/en/decisions/013-model-led-context.md) |
 | Contribute to the project | [Contributing](./CONTRIBUTING.md) · [API reference](./docs/en/reference/index.md) · [Security](./SECURITY.md) |
 
 ## License

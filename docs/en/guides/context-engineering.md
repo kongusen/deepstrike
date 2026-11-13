@@ -162,6 +162,44 @@ runner.deactivate_skill("debug")                                        # K3: ex
 
 ---
 
+## Level 6: Notes the model keeps (on by default since 0.2.82)
+
+Compaction loses what the model derived and cannot read again: a running count, the list of files
+already done, a rule it worked out. Notes let the model keep those itself. Every request carries a
+`note` tool; the model writes, rewrites and retires notes, and the kernel keeps them:
+
+- notes live in the working partition, so **no compaction tier and no renewal touches them**;
+- they render in the state turn under `notes:`, verbatim;
+- their total is capped by `notes_budget_tokens` (default 600); over the cap the kernel **refuses
+  the write** and says why, rather than deleting a note for the model;
+- each note is an item of the context graph (origin `note`, scope task, authority model) with
+  `derived_from` edges to the tool results it was written from, `links_to` edges to notes it names,
+  and `supersedes` edges to the note it replaced;
+- the lifecycle report counts `notes_written` and `notes_active`.
+
+A note has a `kind`: `state` (working state of this task, the default), `rule` (a lesson learned)
+or `question` (retired once answered). When the run can propose memory, the tool description also
+points the model at `propose_memory` for what should outlive the task (see
+[Memory](./memory)).
+
+```python
+RuntimeOptions(..., context_policy={"notes_budget_tokens": 600})  # 0 turns notes off
+```
+
+```ts
+new RuntimeRunner({ ..., contextPolicy: { notesBudgetTokens: 600 } })  // 0 turns notes off
+```
+
+Rust: `RuntimeOptions.notes_budget_tokens = Some(0)` turns them off.
+
+Measured on DeepSeek, paired against the same tasks without notes: long-horizon 15/30 → 20/30 with
+cost per correct answer −43%; ledger 25/30 → 30/30. Kernel-side alternatives — compaction driven by
+a cache-cost account, kernel-requested model summaries, compaction that reads notes, note
+diagnostics — were measured and deleted ([DEC-13](../decisions/013-model-led-context)). Turn notes
+off (`0`) when reproducing a pre-0.2.82 baseline.
+
+---
+
 ## Runtime behavior summary
 
 1. **Compression:** Snip caps oversized messages, Micro reduces older tool results, and Collapse / Auto archive lower-value conversations. The kernel's deterministic `RuleSummarizer` supplies summaries without an LLM summarizer; Node's optional `asyncSummarizer` upgrades them in the background.

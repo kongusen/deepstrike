@@ -131,6 +131,30 @@ RuntimeOptions(
 
 ---
 
+## Level 4b：模型提交的记忆（`propose_memory`）
+
+配置了候选 sink 后，值得跨任务保留的内容由模型自己提交：它学到的一条规则、别人给它的一次纠正。模型调用 `propose_memory`，提交和其他写入一样走带校验的候选账本，由宿主审核决定哪些进入 `MemoryStore`。之后的会话以索引行召回它，用 `memory(record_id=…)` 读全文。
+
+```ts
+new RuntimeRunner({
+  ...,
+  agentId, memoryScope, memoryStore, memoryCandidateSink: sink,
+  memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+})
+```
+
+```python
+RuntimeOptions(
+    ...,
+    memory_candidate_sink=sink,
+    memory_runtime_policy={"retrieval": "host", "model_writes": "candidate_sink"},
+)
+```
+
+0.2.82 起，这是记忆提升的路径。在“上一个会话学到的教训，下一个会话要用”的 multi-session 基准上，笔记加 `propose_memory` 把正确数从 9/48 提到 33/48，每答对一题的成本 −68%。会话结束后另起一次模型调用来对账记忆的整理 run，叠加上去没有任何收益（33/48 → 33/48，成本 +272%），已删除（[DEC-13](../decisions/013-model-led-context)）。
+
+---
+
 ## Level 5：召回 journaling 与 retention
 
 召回是一次带反馈的打分查询，遗忘是基于 retention 的驱逐，两者都由应用的 `MemoryStore` 掌控。
