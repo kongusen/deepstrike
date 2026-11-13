@@ -90,6 +90,34 @@ docs: refresh SDK quick start
 test: cover milestone wake recovery
 ```
 
+## Releases
+
+The canonical version is the `VERSION` file; every other manifest is derived from it. A release is
+cut from `main` only, in this order:
+
+1. On a branch (`feat/<version>` or `chore/release-<version>`), bump `VERSION`, then run
+   `node scripts/sync-release-version.mjs` (Cargo, npm and PyPI manifests, lockfiles),
+   `cargo update --workspace --offline` (workspace crates in `Cargo.lock`) and
+   `node scripts/check-boundary-contracts.mjs` (the `version` field of `contracts/manifests/*`).
+   Add the `CHANGELOG.md` entry. Commit as `chore: release v<version>`.
+2. Open a PR to `main` and wait for CI to pass. Merge it.
+3. Tag the merge commit on `main`, never a branch commit:
+
+   ```bash
+   git switch main && git pull --ff-only
+   git tag -a v<version> -m "v<version>"
+   git push origin v<version>
+   ```
+
+   The four `release-*` workflows run on the tag. `_verify-version.yml` refuses a tag that does not
+   equal `v$(cat VERSION)` at the tagged commit.
+4. Confirm the four workflow runs succeed and the registries (npm, PyPI, crates.io) list the version.
+
+A tag is never moved, deleted or re-pushed: the registries are immutable, so a re-run of the same
+version is skipped or rejected. If a release missed a change, bump to the next patch version and
+release again. Do not tag from a feature branch to "try" the pipeline; a tag off `main` publishes
+a build that `main` does not contain.
+
 ## Documentation Changes
 
 Docs should explain what a user can do, what contract the runtime guarantees, and what tradeoff led to the design. Avoid duplicating implementation details that are already obvious from source.

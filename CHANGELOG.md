@@ -11,6 +11,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Documentation release. The published SDK packages for Node, Python, Rust and WASM carry the
   README sections on notes and model-proposed memory (DEC-13), which landed on `main` after the
   v0.2.82 tag. No kernel or SDK code changes against 0.2.82.
+- CONTRIBUTING gains a Releases section: releases are tagged on `main` after the release PR merges,
+  never from a branch; tags are never moved or re-pushed.
 
 ## [0.2.82] - 2026-11-11
 
