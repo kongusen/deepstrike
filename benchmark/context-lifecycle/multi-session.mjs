@@ -3,7 +3,7 @@
 // something if a later session can use it.
 //
 //   node benchmark/context-lifecycle/multi-session.mjs [--repo <checkout>] [--variant <name>]
-//        [--memory none|notes] [--sequences N] [--sessions N] [--start N]
+//        [--memory none|notes] [--drift K] [--sequences N] [--sessions N] [--start N]
 //        [--concurrency N] [--provider deepseek|openai|ollama|mock] [--max-tokens N] [--dry]
 //        [--out trials.jsonl]
 //
@@ -22,9 +22,19 @@
 // (A third mode, a consolidation run after every session, was measured in 0.2.82 — the same 33/48
 // correct as `notes` at 3.7× the cost per correct answer — and deleted with the helper it used.)
 //
+// Drift (`--drift K`, kernel-distillation plan task 4.3): from session index K on (0-based, as in
+// task ids), the sequence's second rule is retired and a third takes its place. Nothing announces
+// it; the feedback of a wrong `submit` is the same as before. What was learned is now half wrong:
+// does the model notice, and does it repair its memory or pile a new record beside the old one?
+//
 // One trial per session (`task` = `SEQ#<sequence>@<session>`), so sessions pair across variants.
 // Oracles: `memory_records` (records in the store when the session starts), `proposals`
-// (`propose_memory` calls in the session), `memory_reads` (`memory` calls). Never prints a key.
+// (`propose_memory` calls in the session), `memory_reads` (`memory` calls), `overwrites` (accepted
+// proposals that replaced a record of the same kind and name). With `--drift`, from the drift on:
+// `stale_applied` (the answer is the count under the retired rules), and each trial keeps the
+// records it started with (`records`). What those records claim has to be read: the first live run
+// showed that nearly every record names every rule ("canary lines DO count"), so counting records
+// by the rules they mention says nothing about which are stale. Never prints a key.
 
 import { resolve } from "node:path"
 import { MeteredProvider, here, loadEnv, parseArgs, realProvider, recordingSessionLog, redact, sdk, trialFrom, writeTrials } from "./trial.mjs"
@@ -40,6 +50,10 @@ const concurrency = Math.max(1, Number(arg("--concurrency", "3")))
 const maxTokens = Number(arg("--max-tokens", "32000"))
 const providerName = arg("--provider", "deepseek")
 const out = arg("--out")
+const drift = arg("--drift") === undefined ? undefined : Number(arg("--drift"))
+if (drift !== undefined && !(Number.isInteger(drift) && drift > 0 && drift < sessions)) {
+  throw new Error(`--drift must be a session index between 1 and ${sessions - 1}`)
+}
 if (!["none", "notes"].includes(memoryMode)) throw new Error(`--memory must be none or notes`)
 
 // ── fixtures (deterministic per sequence and session) ──────────────────────────────────────────
@@ -68,7 +82,7 @@ const USERS = ["u-1042", "u-2210", "u-3307", "synthetic-probe"]
 const LOGS = 6
 const LINES = 40
 
-/** A sequence's two rules: the same for every session of the sequence. */
+/** A sequence's two rules: the same for every session of the sequence, unless it drifts. */
 function sequenceRules(sequence) {
   const next = rng(1000 + sequence)
   const first = Math.floor(next() * RULES.length)
@@ -76,10 +90,20 @@ function sequenceRules(sequence) {
   return [RULES[first], RULES[second]]
 }
 
+/** The rules in force at a session. After the drift the second rule is retired and one of the two
+ *  the sequence never had replaces it; `retired` and `introduced` name the change. */
+function rulesAt(sequence, index) {
+  const original = sequenceRules(sequence)
+  if (drift === undefined || index < drift) return { rules: original, original }
+  const unused = RULES.filter(rule => !original.includes(rule))
+  const introduced = unused[Math.floor(rng(2000 + sequence)() * unused.length)]
+  return { rules: [original[0], introduced], original, retired: original[1], introduced }
+}
+
 function session(sequence, index) {
   const next = rng(sequence * 101 + index + 7)
   const pick = list => list[Math.floor(next() * list.length)]
-  const rules = sequenceRules(sequence)
+  const { rules, original, retired, introduced } = rulesAt(sequence, index)
   const code = pick(CODES)
   const logs = Array.from({ length: LOGS }, (_, file) => Array.from({ length: LINES }, (_, n) => {
     const level = pick(LEVELS)
@@ -99,7 +123,9 @@ function session(sequence, index) {
   const counted = matching.filter(line => !rules.some(rule => rule.drops(line)))
   const dropped = matching.filter(line => rules.some(rule => rule.drops(line)))
   return {
-    code, rules: rules.map(rule => rule.id), expected: counted.length, dropped,
+    code, rules: rules.map(rule => rule.id), expected: counted.length, dropped, retired, introduced,
+    // What a session still following the retired rules would answer.
+    staleExpected: matching.filter(line => !original.some(rule => rule.drops(line))).length,
     files: new Map(logs.map((lines, file) => [`logs/svc-${file + 1}.log`, lines.map(line => line.text).join("\n")])),
     goal: `Session ${index + 1} of the incident desk. Count the log lines with level ERROR and code=${code} across logs/ (list_files, read_file). Some lines do not count by this team's rules, which are not written down anywhere; earlier sessions may have learned them. Submit the count once with submit(count).`,
   }
@@ -109,7 +135,7 @@ if (process.argv.includes("--dry")) {
   for (let s = start; s < start + sequences; s++) {
     for (let k = 0; k < sessions; k++) {
       const t = session(s, k)
-      console.log(`SEQ#${s}@${k}: code=${t.code} rules=${t.rules.join(",")} expected=${t.expected} dropped=${t.dropped.length}`)
+      console.log(`SEQ#${s}@${k}: code=${t.code} rules=${t.rules.join(",")} expected=${t.expected} dropped=${t.dropped.length}${t.retired ? ` stale=${t.staleExpected}` : ""}`)
     }
   }
   process.exit(0)
@@ -148,12 +174,18 @@ function mockProvider() {
 
 const { provider: inner, model } = providerName === "mock" ? mockProvider() : await realProvider(dist, providerName)
 
-/** A host that accepts every proposal straight into the store, so later sessions can recall it. */
+/** A host that accepts every proposal straight into the store, so later sessions can recall it.
+ *  `records` mirrors the store (which replaces a record of the same kind and name). */
 function acceptingSink(store) {
   const sink = {
     accepted: 0,
+    overwrites: 0,
+    records: new Map(),
     async submit(agentId, candidate) {
       await store.put(agentId, candidate.record)
+      const key = `${candidate.record.kind}/${candidate.record.name}`
+      if (sink.records.has(key)) sink.overwrites += 1
+      sink.records.set(key, { name: candidate.record.name, kind: candidate.record.kind, content: `${candidate.record.description ?? ""}\n${candidate.record.content ?? ""}`.trim() })
       sink.accepted += 1
       const n = sink.accepted
       return { status: "accepted", candidate_id: candidate.candidate_id, receipt_id: `r-${n}`, record_ref: candidate.record.record_id, digest: `d-${n}` }
@@ -197,7 +229,9 @@ async function runSequence(sequence) {
       memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
       contextPolicy: { notesBudgetTokens: 600 },
     }
-    const recordsAtStart = sink.accepted
+    const recordsAtStart = sink.records.size
+    const startRecords = [...sink.records.values()]
+    const overwritesAtStart = sink.overwrites
     const sessionId = `seq-${sequence}-s${k}`
     let error
     try {
@@ -221,9 +255,14 @@ async function runSequence(sequence) {
     })
     trials.push({
       ...trial,
-      oracle: { memory_records: recordsAtStart, proposals, memory_reads: memoryReads, submitted: submitted === undefined ? 0 : 1 },
+      oracle: {
+        memory_records: recordsAtStart, proposals, memory_reads: memoryReads, submitted: submitted === undefined ? 0 : 1,
+        overwrites: sink.overwrites - overwritesAtStart,
+        ...(t.retired ? { stale_applied: t.staleExpected !== t.expected && submitted === t.staleExpected ? 1 : 0 } : {}),
+      },
       expected: String(t.expected),
       answer: submitted === undefined ? "" : String(submitted),
+      ...(drift === undefined ? {} : { records: startRecords }),
     })
     await writeTrials(out, [trials.at(-1)])
     console.error(`SEQ#${sequence}@${k}: ${trials.at(-1).success ? "correct" : "wrong"} (expected ${t.expected}, got ${submitted ?? "-"}) records ${recordsAtStart} proposals ${proposals}${error ? ` (${error})` : ""}`)
@@ -239,6 +278,8 @@ async function worker() {
 await Promise.all(Array.from({ length: concurrency }, worker))
 for (let k = 0; k < sessions; k++) {
   const at = all.filter(trial => trial.task.endsWith(`@${k}`))
-  console.error(`session ${k + 1}: ${at.filter(trial => trial.success).length}/${at.length} correct`)
+  const recall = at.reduce((sum, trial) => sum + trial.lifecycle.flatMap(report => report.items ?? [])
+    .filter(item => item.origin === "memory_recall").reduce((tokens, item) => tokens + (item.tokens ?? 0), 0), 0)
+  console.error(`session ${k}${k === drift ? " (drift)" : ""}: ${at.filter(trial => trial.success).length}/${at.length} correct, recall ${Math.round(recall / Math.max(1, at.length))} tokens`)
 }
 console.error(`${variant} on ${model}: ${all.filter(trial => trial.success).length}/${all.length} correct`)

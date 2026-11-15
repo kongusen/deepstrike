@@ -9,6 +9,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Kernel distillation, phase 0 (`docs/plans/kernel-distillation.md`). No change to what the model
 sees in a default run; kernel golden fixtures are unchanged.
 
+### Added
+
+- `deepstrike-lab` reports what a model spends keeping its own memory (kernel-distillation plan
+  task 4.2): `recall_tokens` (the memory index lines recall injected), `memory_calls` (`note`,
+  `propose_memory` and `memory` calls per trial), `memory_turn_share` (turns that called nothing
+  else) and `memory_output_share` (the share of what the model wrote that went into those calls).
+  The benchmark harness records the tally as `memory_tools` on every trial; trials recorded before
+  it show "–" for the last three. None of them is in the default gate.
+- Benchmarks: `multi-session --drift K` (plan task 4.3) retires one of a sequence's two unwritten
+  rules at session K and puts another in its place, with oracles `stale_applied` and `overwrites` and
+  the records each session started with; the per-session summary prints recall tokens.
+
 ### Removed
 
 - **Node `asyncSummarizer`** and the `AsyncSummarizer` type. The SDK no longer calls a model in the

@@ -43,6 +43,30 @@ pub struct Trial {
     /// better.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub oracle: BTreeMap<String, f64>,
+    /// Kernel-distillation plan task 4.2 · what the model spent keeping its own memory, counted by
+    /// the harness from the recorded turns. Absent on trials recorded before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_tools: Option<MemoryTools>,
+}
+
+/// The model's `note`, `propose_memory` and `memory` calls in one task.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MemoryTools {
+    /// Calls to the three tools.
+    #[serde(default)]
+    pub calls: u64,
+    /// Model turns of the task.
+    #[serde(default)]
+    pub turns: u64,
+    /// Turns that called nothing but those tools: a whole request spent on upkeep.
+    #[serde(default)]
+    pub solo_turns: u64,
+    /// Characters of the arguments of those calls.
+    #[serde(default)]
+    pub chars: u64,
+    /// Characters of everything the model wrote (text and every call's arguments).
+    #[serde(default)]
+    pub output_chars: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -196,12 +220,34 @@ pub struct LifecycleReport {
     pub recalled: u64,
     #[serde(default)]
     pub recall_expanded: u64,
+    /// The run's knowledge items; the lab reads their origin and size.
+    #[serde(default)]
+    pub items: Vec<KnowledgeItem>,
     #[serde(default)]
     pub history: Vec<OriginTally>,
     #[serde(default)]
     pub history_items: Vec<HistoryItem>,
     #[serde(default)]
     pub history_items_omitted: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeItem {
+    #[serde(default)]
+    pub origin: String,
+    #[serde(default)]
+    pub tokens: u64,
+}
+
+/// Tokens of the memory index lines recall injected into a task's runs.
+pub fn recall_tokens(trial: &Trial) -> u64 {
+    trial
+        .lifecycle
+        .iter()
+        .flat_map(|report| report.items.iter())
+        .filter(|item| item.origin == "memory_recall")
+        .map(|item| item.tokens)
+        .sum()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -275,6 +321,15 @@ pub struct Summary {
     pub cache_loss_by_cause: BTreeMap<String, f64>,
     /// Share of recalled records the model read in full; `None` when nothing was recalled.
     pub recall_hit_rate: Option<f64>,
+    /// Kernel-distillation plan task 4.2 · tokens of the memory index lines recall injected, per
+    /// trial ([`recall_tokens`]).
+    pub recall_tokens: f64,
+    /// `note` / `propose_memory` / `memory` calls per trial, over the trials that count them.
+    pub memory_calls: Option<f64>,
+    /// Share of model turns that called nothing but those tools.
+    pub memory_turn_share: Option<f64>,
+    /// Share of what the model wrote (characters) that went into those calls.
+    pub memory_output_share: Option<f64>,
     /// `read_result` reads of earlier tool results or dependency outputs.
     pub read_back: f64,
     /// History items compaction archived.
@@ -307,6 +362,10 @@ impl Summary {
             "observed_cache_loss_tokens" => return self.observed_cache_loss_tokens,
             "cache_loss_error" => return self.cache_loss_error,
             "recall_hit_rate" => return self.recall_hit_rate,
+            "recall_tokens" => self.recall_tokens,
+            "memory_calls" => return self.memory_calls,
+            "memory_turn_share" => return self.memory_turn_share,
+            "memory_output_share" => return self.memory_output_share,
             "read_back" => self.read_back,
             "compacted_items" => self.compacted_items,
             "estimate_error" => return self.estimate_error,
@@ -339,6 +398,10 @@ pub const REPORT_METRICS: &[&str] = &[
     "observed_cache_loss_tokens",
     "cache_loss_error",
     "recall_hit_rate",
+    "recall_tokens",
+    "memory_calls",
+    "memory_turn_share",
+    "memory_output_share",
     "read_back",
     "compacted_items",
     "estimate_error",
@@ -412,6 +475,9 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial], prices: &Pr
         *total += value;
         *count += 1.0;
     }
+    let kept: Vec<&MemoryTools> = trials.iter().filter_map(|trial| trial.memory_tools.as_ref()).collect();
+    let kept_sum = |value: &dyn Fn(&MemoryTools) -> u64| kept.iter().map(|m| value(m) as f64).sum::<f64>();
+    let share = |part: f64, whole: f64| (whole > 0.0).then(|| part / whole);
     Summary {
         scenario: scenario.to_string(),
         variant: variant.to_string(),
@@ -437,6 +503,10 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial], prices: &Pr
         },
         cache_loss_by_cause: by_cause,
         recall_hit_rate: (recalled > 0).then(|| expanded as f64 / recalled as f64),
+        recall_tokens: mean(&|t| recall_tokens(t)),
+        memory_calls: (!kept.is_empty()).then(|| kept_sum(&|m| m.calls) / kept.len() as f64),
+        memory_turn_share: share(kept_sum(&|m| m.solo_turns), kept_sum(&|m| m.turns)),
+        memory_output_share: share(kept_sum(&|m| m.chars), kept_sum(&|m| m.output_chars)),
         read_back: sum_reports(&|r| r.history.iter().map(|tally| tally.read_back).sum()),
         compacted_items: sum_reports(&|r| {
             r.history_items
@@ -542,6 +612,8 @@ pub fn trial_metric(trial: &Trial, metric: &str, prices: &PriceTable) -> Option<
         "waste_tokens" => sum(&|r| r.waste_tokens),
         "cache_loss_tokens" => sum(&|r| r.cache_loss_tokens),
         "observed_cache_loss_tokens" => observed_cache_loss(trial)? as f64,
+        "recall_tokens" => recall_tokens(trial) as f64,
+        "memory_calls" => trial.memory_tools.as_ref()?.calls as f64,
         name => return name.strip_prefix("oracle.").and_then(|key| trial.oracle.get(key).copied()),
     })
 }
@@ -909,7 +981,7 @@ pub fn markdown(summaries: &[Summary], baseline: Option<&str>) -> String {
 }
 
 fn is_ratio(metric: &str) -> bool {
-    metric.ends_with("_rate") || metric.starts_with("estimate_error") || metric == "cache_loss_error"
+    metric.ends_with("_rate") || metric.ends_with("_share") || metric.starts_with("estimate_error") || metric == "cache_loss_error"
 }
 
 fn format_metric(metric: &str, value: Option<f64>) -> String {
@@ -987,6 +1059,28 @@ mod tests {
         assert_eq!(failures[0].metric, "oracle.required_dropped");
         let table = markdown(&summaries, Some("base"));
         assert!(table.contains("| oracle.required_dropped | 1.50 | 2 | +33.3% |"), "{table}");
+    }
+
+    #[test]
+    fn memory_upkeep_is_reported_from_the_harness_tally_and_the_recalled_items() {
+        let text = r#"{"scenario":"s","variant":"v","task":"a","success":true,
+            "memory_tools":{"calls":3,"turns":10,"solo_turns":2,"chars":50,"output_chars":200},
+            "lifecycle":[{"items":[{"origin":"memory_recall","tokens":40},{"origin":"skill","tokens":900},{"origin":"memory_recall","tokens":20}]}]}
+{"scenario":"s","variant":"v","task":"b","success":true,
+            "memory_tools":{"calls":1,"turns":10,"solo_turns":0,"chars":50,"output_chars":200}}
+{"scenario":"s","variant":"old","task":"a","success":true}"#
+            .replace("\n            ", "");
+        let summaries = summarize(&parse_trials(&text).unwrap());
+        let (old, new) = (&summaries[0], &summaries[1]);
+        assert_eq!(new.metric("recall_tokens"), Some(30.0));
+        assert_eq!(new.metric("memory_calls"), Some(2.0));
+        assert_eq!(new.metric("memory_turn_share"), Some(0.1));
+        assert_eq!(new.metric("memory_output_share"), Some(0.25));
+        // A trial recorded before the tally reports no upkeep rather than zero upkeep.
+        assert_eq!(old.metric("memory_calls"), None);
+        assert_eq!(old.metric("memory_turn_share"), None);
+        assert_eq!(old.metric("recall_tokens"), Some(0.0));
+        assert!(markdown(&summaries, None).contains("| memory_turn_share | – | 10.0% |"), "{}", markdown(&summaries, None));
     }
 
     #[test]
