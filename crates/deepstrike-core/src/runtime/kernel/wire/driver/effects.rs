@@ -729,7 +729,10 @@ impl CanonicalOperationDriver {
         let engine = self.engine_mut()?;
         let content = format!("[MEMORY PROPOSAL name={}] {outcome}", authored.name);
         let tokens = engine.ctx.engine.count(&content).max(1);
-        engine.ctx.push_history(CoreMessage::user(content), tokens);
+        // After the batch's tool results, like a memory hit: the proposal may settle while a host
+        // tool the same turn called is still running, and a user message between an assistant's
+        // calls and their results is a request OpenAI-compatible providers reject.
+        engine.ctx.push_history_after_tool_results(CoreMessage::user(content), tokens);
         let action = engine.resume_after_preload();
         // §5k · a sibling effect of the same batch is still owed; the last of them to settle
         // resumes the turn instead.

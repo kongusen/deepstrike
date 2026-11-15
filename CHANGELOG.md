@@ -21,6 +21,18 @@ sees in a default run; kernel golden fixtures are unchanged.
   rules at session K and puts another in its place, with oracles `stale_applied` and `overwrites` and
   the records each session started with; the per-session summary prints recall tokens.
 
+### Fixed
+
+- A `propose_memory` call in the same turn as a host tool could end the run on OpenAI-compatible
+  providers with "assistant tool_calls with no tool result". The proposal's outcome was written
+  into history as soon as the host settled it, ahead of the host tool's result; it now waits behind
+  the turn's tool results, as memory hits have since 0.2.80. This ended 3 of 128 live multi-session
+  sessions (1 of 48 in the 0.2.82 measurements).
+- Node: a turn that called `memory` and `propose_memory` together failed with "canonical kernel
+  transition must return one host action". The kernel publishes both effects in one step; the
+  runner ran the first and then found no action in the step that settled it. It now takes the
+  kernel's next outstanding effect.
+
 ### Removed
 
 - **Node `asyncSummarizer`** and the `AsyncSummarizer` type. The SDK no longer calls a model in the

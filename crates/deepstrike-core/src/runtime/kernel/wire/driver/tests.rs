@@ -11868,6 +11868,47 @@ fn a_memory_proposal_answers_the_model_and_resumes_its_turn() {
     }
 }
 
+/// A proposal that settles while a host tool of the same turn is still running must not put its
+/// outcome between the assistant's calls and their results: OpenAI-compatible providers reject
+/// that request ("assistant tool_calls with no tool result"), which ended 3 of 128 live
+/// multi-session runs.
+#[test]
+fn a_proposal_settled_before_a_sibling_tool_waits_behind_the_tool_results() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let mixed = runtime.submit(&provider_result(
+        "in-mixed",
+        1_700_000_002_000,
+        &provider,
+        vec![
+            proposal_call("call-1", "brief-style", "prefers numbered sections"),
+            tool_call("call-2", "search", json!({"q": "x"})),
+        ],
+    ));
+    let write = mixed
+        .published_effects()
+        .iter()
+        .find(|effect| matches!(effect.effect, EffectKind::PersistMemory(_)))
+        .expect("the proposal publishes a memory write")
+        .effect_id
+        .clone();
+
+    runtime.submit(&resolved(
+        "in-candidate",
+        1_700_000_003_000,
+        &write,
+        candidate_settled("cand-1"),
+    ));
+    assert!(
+        tool_result_for(&runtime, "call-2").is_none(),
+        "the host tool has not answered yet"
+    );
+    assert!(
+        !history_text(&runtime).iter().any(|text| text.contains("[MEMORY PROPOSAL")),
+        "the outcome is held until call-2 is answered: {:?}",
+        history_text(&runtime)
+    );
+}
+
 #[test]
 fn a_refused_memory_proposal_tells_the_model_why_and_resumes_its_turn() {
     let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
