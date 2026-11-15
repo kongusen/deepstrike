@@ -579,12 +579,6 @@ class KernelObservationEvent(TypedDict):
     raw: dict[str, Any]
 
 
-class SummaryUpgradedEvent(TypedDict):
-    kind: Literal["summary_upgraded"]
-    compressed_seq: int
-    summary: str
-
-
 class _GroupMemberJoinedRequired(TypedDict):
     kind: Literal["group_member_joined"]
     session_id: str
@@ -674,7 +668,6 @@ SessionEvent = (
     | WorkflowCompletedEvent
     | KernelObservationEvent
     | RunTerminalEvent
-    | SummaryUpgradedEvent
     | GroupMemberJoinedEvent
     | GroupBudgetChargedEvent
     | RoundStartedEvent

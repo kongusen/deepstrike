@@ -126,7 +126,7 @@ describe("ContextCollapse — summary contains tool names for follow-up task", (
       const allText = context.turns.map(t => t.content ?? "").join(" ")
 
       // RuleSummarizer six-slot format renders tool calls under `artifacts:` as
-      // "- tool <name> args <args>". CollapseCompactor routes the summary through
+      // "- tool <name> args <args>". The context_collapse stage routes the summary through
       // compression_log → task_state → systemText/stateTurn.
       const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
       if (allCtx.includes("[Compressed: context_collapse]") && allCtx.includes("tool accumulate")) {

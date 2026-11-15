@@ -652,14 +652,6 @@ export interface LLMProvider {
   ): AsyncIterable<StreamEvent>
 }
 
-/**
- * Optional async summarizer called after context compression.
- * Produces a richer LLM-generated summary that replaces the rule-based one on next wake.
- */
-export interface AsyncSummarizer {
-  summarize(archived: ModelMessage[], action: string): Promise<string>
-}
-
 export interface TaskUpdate {
   plan?: string[]
   currentStep?: number

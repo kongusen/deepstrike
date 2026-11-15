@@ -701,11 +701,6 @@
         "turns_used": 3,
         "total_tokens": 1200
       },
-      "summary_upgraded": {
-        "kind": "summary_upgraded",
-        "compressed_seq": 5,
-        "summary": "better summary"
-      },
       "group_member_joined": {
         "kind": "group_member_joined",
         "session_id": "s2",
@@ -1395,18 +1390,6 @@
             "node",
             "python",
             "rust",
-            "wasm"
-          ]
-        },
-        "summary_upgraded": {
-          "required": [
-            "compressed_seq",
-            "summary"
-          ],
-          "optional": [],
-          "sdks": [
-            "node",
-            "python",
             "wasm"
           ]
         },

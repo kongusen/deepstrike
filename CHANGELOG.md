@@ -4,6 +4,33 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Kernel distillation, phase 0 (`docs/plans/kernel-distillation.md`). No change to what the model
+sees in a default run; kernel golden fixtures are unchanged.
+
+### Removed
+
+- **Node `asyncSummarizer`** and the `AsyncSummarizer` type. The SDK no longer calls a model in the
+  background to rewrite archive summaries or page them back in (DEC-13: the summary is the kernel's
+  rule-based one).
+- **The `summary_upgraded` session event** (contract, Node / WASM / Python types and registries).
+  Session logs from earlier versions still load; a `summary_upgraded` event in them is ignored, and
+  replay uses the `compressed` event's rule-based summary.
+- `ContextConfig.autocompact_buffer` and `ContextConfig::autocompact_threshold()` (never read).
+- `ContextConfig.verbose_control_notes` and the `[SYSTEM] …` verbose rollback / rejection notes.
+- Rust: `EvictionOp::Snip` and `EvictionOp::AutoCompact` lose their fields (the executor ignored
+  them); `plan_eviction` drops its `preserve_turns` argument;
+  `ContextManager::plan_compaction_params` is replaced by `compaction_target_tokens`.
+
+### Changed
+
+- `ContextConfig::default().notes_budget_tokens` is `DEFAULT_NOTES_BUDGET_TOKENS` (600), matching
+  the wire default. Code that builds a `ContextManager` directly now gets the `note` tool; set the
+  field to `0` to turn it off.
+- `CollapseCompactor` and `AutoCompactor` (identical bodies) are one `ArchiveCompactor`; the
+  pipeline still labels the two stages `context_collapse` and `auto_compact`.
+
 ## [0.2.83] - 2026-11-14
 
 ### Changed

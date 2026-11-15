@@ -69,7 +69,9 @@ Host answers provider/tool effects through `ResolveEffect`. History grows; handl
 
 ## Phase 4 — Delta
 
-If pressure exceeds threshold → compression pipeline (Snip → Drop → Summarize), optional renewal, update `frozen_prefix_len`.
+If pressure exceeds threshold → compression pipeline (Snip → Micro → Collapse → Auto; the last two archive the oldest history units and record a rule-based summary), optional renewal, update `frozen_prefix_len`.
+
+No LLM call happens here (DEC-13): the archive summary is rule-based, and the SDKs no longer rewrite it in the background.
 
 ## Sub-agent spawn
 

@@ -202,7 +202,7 @@ off (`0`) when reproducing a pre-0.2.82 baseline.
 
 ## Runtime behavior summary
 
-1. **Compression:** Snip caps oversized messages, Micro reduces older tool results, and Collapse / Auto archive lower-value conversations. The kernel's deterministic `RuleSummarizer` supplies summaries without an LLM summarizer; Node's optional `asyncSummarizer` upgrades them in the background.
+1. **Compression:** Snip caps oversized messages, Micro reduces older tool results, and Collapse / Auto archive lower-value conversations. The kernel's deterministic `RuleSummarizer` supplies summaries; there is no LLM summarizer.
 2. **Renewal:** History is rebuilt only when pressure remains above the renewal threshold after compression. Recent complete conversational transactions are carried within the carryover budget; a transaction that cannot fit is never split between a tool call and its results. System, Knowledge and task state survive.
 3. **Meta-tool exclusion:** `skill`, `memory`, `submit_workflow_nodes`, etc. are excluded from the progress footer
 

@@ -2753,12 +2753,6 @@ export async function replayMessages(
   maxBytes?: number,
   archiveStore?: ArchiveStore,
 ): Promise<ModelMessage[]> {
-  // Build upgraded-summary index: compressed_seq -> upgraded summary
-  const upgradedSummaries = new Map<number, string>()
-  for (const { event: e } of events) {
-    if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
-  }
-
   const messages: ModelMessage[] = []
   const archivedTurns = new Set(events.flatMap(({ event }) =>
     event.kind === "page_out" && event.archive_ref && archiveStore?.read ? [event.turn] : [],
@@ -2782,7 +2776,7 @@ export async function replayMessages(
       })
     } else if (e.kind === "compressed") {
       if (archivedTurns.has(e.turn)) continue
-      const summary = upgradedSummaries.get(seq) ?? e.summary
+      const summary = e.summary
       if (summary) {
         const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
         messages.push({

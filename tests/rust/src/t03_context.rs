@@ -470,6 +470,8 @@ fn agent_run_spec_capability_filter_enforcement() {
         .with_exposure_baseline(["read_file"]);
 
     sm.run_spec = Some(spec);
+    // Task-tool exposure only: the `note` meta tool is out of scope here.
+    sm.ctx.config.notes_budget_tokens = 0;
 
     let action = sm.start(deepstrike_core::types::task::RuntimeTask::new("goal"));
 

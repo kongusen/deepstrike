@@ -751,14 +751,10 @@ impl ContextManager {
         (saved, summary, archived, cache_at)
     }
 
-    /// W1-1 收口: the truthful compaction parameters the planner stamps into the [`EvictionPlan`],
-    /// read once from config so the ops carry real values (not magic-number placeholders) and the
-    /// executor stays a pure executor. Returns `(target_tokens, preserve_recent_turns)`.
-    pub fn plan_compaction_params(&self) -> (u32, usize) {
-        (
-            self.config.target_tokens(self.max_tokens),
-            self.config.preserve_recent_turns,
-        )
+    /// W1-1 收口: the compaction target the planner stamps into `EvictionOp::Collapse`, read once
+    /// from config so the op carries the real value and the executor stays a pure executor.
+    pub fn compaction_target_tokens(&self) -> u32 {
+        self.config.target_tokens(self.max_tokens)
     }
 
     // ── Renewal ───────────────────────────────────────────────────────────────
@@ -3126,7 +3122,10 @@ mod tests {
             .into_iter()
             .map(|s| s.name.to_string())
             .collect::<Vec<_>>();
-        assert_eq!(names, ["knowledge", "memory", "propose_memory", "skill"]);
+        assert_eq!(
+            names,
+            ["knowledge", "memory", "note", "propose_memory", "skill"]
+        );
     }
 
     #[test]

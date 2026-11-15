@@ -1466,25 +1466,6 @@
       }
     },
     {
-      "kind": "summary_upgraded",
-      "group": "context",
-      "sdks": [
-        "node",
-        "python",
-        "wasm"
-      ],
-      "required": [
-        "compressed_seq",
-        "summary"
-      ],
-      "optional": [],
-      "sample": {
-        "kind": "summary_upgraded",
-        "compressed_seq": 5,
-        "summary": "better summary"
-      }
-    },
-    {
       "kind": "group_member_joined",
       "group": "group",
       "sdks": [

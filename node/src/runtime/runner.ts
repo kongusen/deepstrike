@@ -5,7 +5,7 @@ import type {
   LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
-  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer,
+  PermissionResponse, PermissionResolvedEvent,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions, NativeContextTiers,
 } from "../types.js"
 import { createHash } from "node:crypto"
@@ -649,13 +649,6 @@ export interface RuntimeOptions {
     evalProvider: LLMProvider
     maxAttempts?: number
   }
-  /**
-   * Optional async LLM summarizer. When provided, a background call is fired
-   * after each compression event to produce a richer semantic summary.
-   * The result is written back to SessionLog as `summary_upgraded` and used
-   * on the next wake() in place of the rule-based summary.
-   */
-  asyncSummarizer?: AsyncSummarizer
   /** Enable real-time CLI diagnostics dashboard grouped by the three kernel primitives (Syscall, Sched, Mm) */
   enableDiagnosticsDashboard?: boolean
 }
@@ -803,14 +796,12 @@ export class RuntimeRunner {
   private nextArchiveStart = 0
   private pendingPageOutArchives: Array<{
     archiveStart: number
-    compressedSeq: number
     action?: string
     summary?: string
     tier?: "semantic" | "durable"
   }> = []
   private activePageOutArchive: {
     archiveStart: number
-    compressedSeq: number
     action?: string
     summary?: string
     tier?: "semantic" | "durable"
@@ -3500,16 +3491,12 @@ export class RuntimeRunner {
       } else if (action.kind === "archive_page_out") {
         const archiveMeta: {
           archiveStart: number
-          compressedSeq: number
           action?: string
           summary?: string
           tier?: "semantic" | "durable"
         } = this.activePageOutArchive
           ?? this.pendingPageOutArchives.shift()
-          ?? {
-            archiveStart: this.nextArchiveStart,
-            compressedSeq: await this.opts.sessionLog.latestSeq(sessionId),
-          }
+          ?? { archiveStart: this.nextArchiveStart }
         this.activePageOutArchive = archiveMeta
 
         let archiveRef: string | undefined
@@ -3537,9 +3524,6 @@ export class RuntimeRunner {
           error = formatToolError(cause)
         }
 
-        const archived = action.archived ?? []
-        const archiveAction = archiveMeta.action ?? "auto_compact"
-        const compressedSeq = archiveMeta.compressedSeq
         if (!error) this.activePageOutArchive = undefined
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "page_out_archive_result",
@@ -3548,18 +3532,6 @@ export class RuntimeRunner {
           ...(archiveRef ? { archive_ref: archiveRef } : {}),
           ...(error ? { error } : {}),
         })
-
-        if (!error) {
-          if (this.opts.asyncSummarizer && archived.length > 0) {
-            const upgrade = () => this.upgradeCompressedSummary(
-              sessionId,
-              compressedSeq,
-              archived,
-              archiveAction,
-            )
-            taskScope.spawn("compressed-summary-upgrade", upgrade)
-          }
-        }
 
       } else if (action.kind === "load_payload") {
         let content: string | undefined
@@ -4072,7 +4044,6 @@ export class RuntimeRunner {
           const archivePresentation = archivePresentationFromObservations([obs])
           this.pendingPageOutArchives.push({
             archiveStart: nextArchiveStart,
-            compressedSeq,
             ...archivePresentation,
           })
         }
@@ -4082,34 +4053,6 @@ export class RuntimeRunner {
     return nextArchiveStart
   }
 
-  private async upgradeCompressedSummary(
-    sessionId: string,
-    compressedSeq: number,
-    archived: ModelMessage[],
-    action: string,
-    runtime?: CanonicalRunnerRuntime,
-  ): Promise<void> {
-    const summary = await this.opts.asyncSummarizer!.summarize(archived, action)
-    await this.opts.sessionLog.append(sessionId, {
-      kind: "summary_upgraded",
-      compressed_seq: compressedSeq,
-      summary,
-    })
-    // P4: the LLM summary also re-enters the LIVE session as a keyed page-in entry —
-    // K1 boundary-deferred upsert lands it with zero mid-generation cache churn and the
-    // K2 budget governs its size. The RuleSummarizer text remains the synchronous label.
-    if (runtime) {
-      await this.commitKernelApply(runtime, this.pendingObservations, {
-        kind: "page_in",
-        entries: [{
-          content: `[ARCHIVE SUMMARY] ${summary}`,
-          key: `summary:seq-${compressedSeq}`,
-          pinned: false,
-          source: "async_summarizer",
-        }],
-      })
-    }
-  }
 }
 
 function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean {
@@ -4213,12 +4156,6 @@ export function pairOrphanToolCalls(messages: ModelMessage[], closePendingTail =
 }
 
 export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): ModelMessage[] {
-  // Build upgraded-summary index: compressed_seq -> upgraded summary
-  const upgradedSummaries = new Map<number, string>()
-  for (const { event: e } of events) {
-    if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
-  }
-
   const messages: ModelMessage[] = []
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const { seq, event: e } = events[eventIndex]!
@@ -4239,7 +4176,7 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
         toolCalls: [],
       })
     } else if (e.kind === "compressed") {
-      const summary = upgradedSummaries.get(seq) ?? e.summary
+      const summary = e.summary
       if (summary) {
         const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
         messages.push({
@@ -4284,12 +4221,6 @@ export async function replayMessagesAsync(
   loadArchive?: (archiveRef: string) => Promise<ModelMessage[]>,
   closePendingTail = false,
 ): Promise<ModelMessage[]> {
-  // Build upgraded-summary index: compressed_seq -> upgraded summary
-  const upgradedSummaries = new Map<number, string>()
-  for (const { event: e } of events) {
-    if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
-  }
-
   const messages: ModelMessage[] = []
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const { seq, event: e } = events[eventIndex]!
@@ -4317,7 +4248,7 @@ export async function replayMessagesAsync(
           && event.archive_ref.length > 0,
       )
       if (!pageOutWillSupplyArchive) {
-        const summary = upgradedSummaries.get(seq) ?? e.summary
+        const summary = e.summary
         if (summary) {
           const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
           messages.push({

@@ -420,58 +420,13 @@ pub fn plan_drop_oldest(
     (n, saved)
 }
 
-/// rho > collapse_threshold: drop oldest messages until within target. Selection via
-/// [`plan_drop_oldest`]; this executor only drains the chosen count.
-pub struct CollapseCompactor;
+/// Archive whole history units until history fits the target. Selection via
+/// [`super::utility::plan_utility_archive_with_measurements`]; this executor only drains the plan.
+/// Runs as both the `ContextCollapse` and the `AutoCompact` stage — the stages differ only in the
+/// `PressureAction` label the pipeline attributes the drain to, not in what they archive.
+pub struct ArchiveCompactor;
 
-impl Compressor for CollapseCompactor {
-    fn compress(
-        &self,
-        partitions: &mut ContextPartitions,
-        target_tokens: u32,
-        _max_tokens: u32,
-        preserve_k: usize,
-        engine: &ContextTokenEngine,
-    ) -> CompressResult {
-        let non_history_tokens = partitions
-            .total_tokens(engine)
-            .saturating_sub(partitions.history.token_count());
-        let history_target = target_tokens.saturating_sub(non_history_tokens);
-        let plan = super::utility::plan_utility_archive_with_measurements(
-            partitions.history.messages(),
-            partitions.history.measurements(),
-            partitions.history.token_count(),
-            history_target,
-            preserve_k,
-            engine,
-            &UtilitySelectionContext {
-                goal: &partitions.task_state.goal,
-                criteria: &partitions.task_state.criteria,
-                preserved_refs: &partitions.task_state.preserved_refs,
-                active_directives: &partitions.task_state.directives,
-            },
-        );
-        if plan.archived_ranges.is_empty() {
-            return CompressResult::default();
-        }
-        let prefix_invalidated_at = plan.archived_ranges.iter().map(|range| range.start).min();
-        let (archived, saved) = apply_utility_plan(&mut partitions.history, &plan);
-
-        // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
-        // requested action. Removing an interior unit invalidates from its original start index.
-        CompressResult {
-            tokens_saved: saved,
-            archived,
-            prefix_invalidated_at,
-            ..Default::default()
-        }
-    }
-}
-
-/// rho > auto_threshold: collapse history entirely except last K turns, updating compression log.
-pub struct AutoCompactor;
-
-impl Compressor for AutoCompactor {
+impl Compressor for ArchiveCompactor {
     fn compress(
         &self,
         partitions: &mut ContextPartitions,
@@ -508,7 +463,7 @@ impl Compressor for AutoCompactor {
         let (archived, saved) = apply_utility_plan(&mut partitions.history, &plan);
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
-        // requested action.
+        // requested action. Removing an interior unit invalidates from its original start index.
         CompressResult {
             tokens_saved: saved,
             archived,
@@ -554,8 +509,8 @@ impl CompressionPipeline {
                     }),
                 ),
                 (PressureAction::MicroCompact, Box::new(MicroCompactor)),
-                (PressureAction::ContextCollapse, Box::new(CollapseCompactor)),
-                (PressureAction::AutoCompact, Box::new(AutoCompactor)),
+                (PressureAction::ContextCollapse, Box::new(ArchiveCompactor)),
+                (PressureAction::AutoCompact, Box::new(ArchiveCompactor)),
             ],
         }
     }
@@ -780,7 +735,7 @@ mod tests {
 
     #[test]
     fn collapse_compactor_drops_oldest_to_reach_target() {
-        let compactor = CollapseCompactor;
+        let compactor = ArchiveCompactor;
         let mut ctx = ContextPartitions::new(&config());
         for _ in 0..8 {
             ctx.history.push(CoreMessage::user("msg"), 50);
@@ -827,7 +782,7 @@ mod tests {
         assert!(ctx.history.tags().iter().filter(|tag| tag.id < 8).all(|tag| tag.fidelity == Fidelity::Full));
 
         // Archiving takes whole rows out: the archived ids and the retained ids partition the table.
-        let result = CollapseCompactor.compress(&mut ctx, 250, MAX, 2, &engine());
+        let result = ArchiveCompactor.compress(&mut ctx, 250, MAX, 2, &engine());
         let archived: Vec<_> = result.archived.iter().map(|row| row.tag.id).collect();
         let retained: Vec<_> = ctx.history.tags().iter().map(|tag| tag.id).collect();
         assert!(!archived.is_empty());
@@ -840,7 +795,7 @@ mod tests {
 
     #[test]
     fn collapse_utility_selection_changes_the_archived_units_not_only_the_score() {
-        let compactor = CollapseCompactor;
+        let compactor = ArchiveCompactor;
         let mut ctx = ContextPartitions::new(&config());
         ctx.task_state.goal = "ship ORCHID release".into();
         for (user, assistant) in [
@@ -880,7 +835,7 @@ mod tests {
 
     #[test]
     fn utility_selector_deducts_fixed_context_before_budgeting_history() {
-        let compactor = CollapseCompactor;
+        let compactor = ArchiveCompactor;
         let mut ctx = ContextPartitions::new(&config());
         ctx.system.push(CoreMessage::system("fixed"), 600);
         for index in 0..4 {
@@ -955,7 +910,7 @@ mod tests {
 
     #[test]
     fn auto_compactor_merges_all_except_last_two_turns() {
-        let compactor = AutoCompactor;
+        let compactor = ArchiveCompactor;
         let mut ctx = ContextPartitions::new(&config());
         for i in 0..10 {
             ctx.history.push(CoreMessage::user(format!("msg {i}")), 10);
@@ -1023,7 +978,7 @@ mod tests {
 
     #[test]
     fn auto_compactor_preserves_the_latest_complete_tool_unit() {
-        let compactor = AutoCompactor;
+        let compactor = ArchiveCompactor;
         let mut ctx = ContextPartitions::new(&config());
         ctx.history.push(CoreMessage::user("old"), 10);
         ctx.history.push(CoreMessage::assistant("old answer"), 10);

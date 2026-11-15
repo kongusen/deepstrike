@@ -52,7 +52,6 @@ SESSION_EVENT_REGISTRY: dict[str, dict[str, tuple[str, ...]]] = {
     "workflow_completed": {"required": ("node_outcomes", "total_nodes", "turn"), "optional": ()},
     "kernel_observation": {"required": ("observation_kind", "raw", "turn"), "optional": ()},
     "run_terminal": {"required": ("reason", "total_tokens", "turns_used"), "optional": ()},
-    "summary_upgraded": {"required": ("compressed_seq", "summary"), "optional": ()},
     "group_member_joined": {"required": ("session_id",), "optional": ("member_kind", "role")},
     "group_budget_charged": {"required": ("subagents", "tokens"), "optional": ("rounds",)},
     "round_started": {"required": ("goal", "round"), "optional": ()},

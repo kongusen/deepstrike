@@ -762,7 +762,6 @@ impl CanonicalOperationDriver {
         let note = crate::scheduler::rollback::build_control_rejection_note(
             rejection.operation,
             &rejection.reason,
-            engine.ctx.config.verbose_control_notes,
         );
         engine.ctx.push_signal(note);
         let turn = engine.turn;

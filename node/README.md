@@ -486,7 +486,6 @@ const runner = new RuntimeRunner({
 
   // Memory paging & compression (SDK-side I/O)
   compressionStore: archiveStore,       // persist compressed transcript slices
-  asyncSummarizer: mySummarizer,        // upgrade rule-based compression summaries
   memoryProvider: memoryLlm,             // LLM for durable-memory extraction
   memorySummarizer: myMemorySummarizer,   // LLM for semantic page_out → MemoryStore
 
@@ -516,7 +515,6 @@ const runner = new RuntimeRunner({
 | `onPermissionRequest` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compressionStore` | Writes archived messages on `compressed` observations |
 | `payloadStore` | Resolves canonical opaque payload locators (default: `.payloads/`) |
-| `asyncSummarizer` | Background LLM summary after compression; stored as `summary_upgraded` |
 | `memorySummarizer` | Summarizes `page_out { tier_hint: "semantic" }` into `MemoryStore` during a run |
 | `memoryProvider` | Separate LLM for durable-memory extraction (falls back to `provider`) |
 

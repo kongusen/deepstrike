@@ -230,7 +230,8 @@ impl HandleTable {
     /// Sum of tokens for handles that have left working context (`Collapsed` / `External` /
     /// `PagedOut`). Their anchored messages still sit in `partitions` at full weight (collapse is
     /// non-destructive), so this is exactly the over-count that the *estimate* rho path must
-    /// discount to become paging-aware — see [`crate::context::manager::ContextManager::effective_rho`].
+    /// discount to become paging-aware. Compaction tiers deliberately run on raw rho (see
+    /// `ContextManager::should_compress`).
     pub fn non_resident_tokens(&self) -> u32 {
         self.handles
             .iter()
@@ -412,14 +413,12 @@ pub fn object_access_allowed_at(
 /// ops the planner emits directly (the old `Pressure(PressureAction)` umbrella is deleted), each
 /// annotated with cache-aware metadata via [`EvictionOp::invalidates_prefix_at`].
 ///
-/// P1-6 (async LLM semantic summary) is **not** a distinct op here: every archiving op already
-/// emits the drained messages as `archived` on the `Compressed` observation, and the SDK upgrades
-/// that summary out-of-band (LLM call = SDK I/O, a kernel non-goal), writing back a second
-/// `compressed` event. A separate in-kernel `Summarize` op would be a never-produced dead variant.
+/// There is no `Summarize` op: the kernel never calls a model (DEC-13). Archiving ops emit the
+/// drained messages as `archived` on the `Compressed` observation with the rule-based summary.
 ///
 /// **Layer boundary vs [`crate::context::pressure::PressureAction`] (do not collapse the two):**
 /// `EvictionOp` is the *planner-op* vocabulary — what `plan_eviction` decides to do, carrying the
-/// per-op payload (`target_tokens` / `per_msg_ratio` / `preserve_turns`). `PressureAction` is the
+/// per-op payload (`Collapse`'s `target_tokens`). `PressureAction` is the
 /// *pressure-level* vocabulary owned by the pressure subsystem: it is what `PressureMonitor::recommend`
 /// and `ContextManager::should_compress` return, the `Ord`-keyed cascade selector inside the
 /// compression pipeline, and the canonical wire label. They map ~1:1 by layer but are not redundant —
@@ -427,8 +426,9 @@ pub fn object_access_allowed_at(
 /// per-op data. The one bridge is `execute_eviction_op`, which is the intended seam, not duplication.
 #[derive(Debug, Clone)]
 pub enum EvictionOp {
-    /// Layer 2: cap oversized messages at a per-message token limit (in-place rewrite).
-    Snip { per_msg_ratio: f64 },
+    /// Layer 2: cap oversized messages at a per-message token limit (in-place rewrite). The limit
+    /// is `ContextConfig::snip_per_msg_ratio`, read by the pipeline.
+    Snip,
     /// Layer 3: idle/time-decay micro-compact — excerpt large tool results to placeholders.
     /// Independent of rho; stamps `last_compact_ms` and uses the non-time compress path.
     TimeDecayMicro,
@@ -436,18 +436,19 @@ pub enum EvictionOp {
     /// Now a distinct op (no longer bundled under `Pressure`), so the planner can annotate it
     /// with cache-aware metadata and order it explicitly.
     Collapse { target_tokens: u32 },
-    /// Layer 5: auto-compact — collapse history entirely except last K turns. Distinct from Collapse
-    /// for the same reason: the planner needs to control ordering and metadata.
-    AutoCompact { preserve_turns: usize },
+    /// Layer 5: auto-compact — collapse history entirely except the last
+    /// `ContextConfig::preserve_recent_turns` turns. Distinct from Collapse for the same reason:
+    /// the planner needs to control ordering and metadata.
+    AutoCompact,
 }
 
 impl EvictionOp {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Snip { .. } => "snip",
+            Self::Snip => "snip",
             Self::TimeDecayMicro => "time_decay_micro",
             Self::Collapse { .. } => "collapse",
-            Self::AutoCompact { .. } => "auto_compact",
+            Self::AutoCompact => "auto_compact",
         }
     }
 
@@ -458,7 +459,7 @@ impl EvictionOp {
         match self {
             // Snip: in-place rewrite of oversized messages anywhere in history. May hit early
             // messages if an early turn was oversized → conservative: assume prefix invalidation.
-            Self::Snip { .. } => Some(0), // Conservative: may affect any message including early ones.
+            Self::Snip => Some(0), // Conservative: may affect any message including early ones.
             // TimeDecayMicro: excerpts large tool results to placeholders. Tool results are always
             // interleaved (after their call), so they're typically mid/late history. Assuming the
             // system prompt + first few user messages are untouched → prefix-safe for most sessions.
@@ -467,7 +468,7 @@ impl EvictionOp {
             // → prefix invalidation at the drop point.
             Self::Collapse { .. } => Some(0),
             // AutoCompact: drops all but last K turns → even more aggressive prefix invalidation.
-            Self::AutoCompact { .. } => Some(0),
+            Self::AutoCompact => Some(0),
         }
     }
 }
@@ -497,19 +498,13 @@ impl EvictionPlan {
 
     /// Map a pressure recommendation to one specific eviction operation.
     /// The old `recommend()` returns one of 5 actions; we map them 1:1 onto the new ops.
-    pub fn from_pressure_action(
-        action: PressureAction,
-        target_tokens: u32,
-        preserve_turns: usize,
-    ) -> Self {
+    pub fn from_pressure_action(action: PressureAction, target_tokens: u32) -> Self {
         let ops = match action {
             PressureAction::None => vec![],
-            PressureAction::SnipCompact => vec![EvictionOp::Snip {
-                per_msg_ratio: 0.10,
-            }],
+            PressureAction::SnipCompact => vec![EvictionOp::Snip],
             PressureAction::MicroCompact => vec![EvictionOp::TimeDecayMicro],
             PressureAction::ContextCollapse => vec![EvictionOp::Collapse { target_tokens }],
-            PressureAction::AutoCompact => vec![EvictionOp::AutoCompact { preserve_turns }],
+            PressureAction::AutoCompact => vec![EvictionOp::AutoCompact],
         };
         Self { ops }
     }
@@ -522,18 +517,14 @@ impl EvictionPlan {
 /// what the state machine already computed (`ContextManager::should_time_decay_compact` and
 /// `PressureMonitor::recommend`); this only centralizes their ordering and makes the plan testable.
 ///
-/// W1-1 收口: `target_tokens` / `preserve_turns` are the **real** config-derived values supplied by
-/// the caller (`ContextManager::plan_compaction_params`), so the emitted ops carry truthful params
-/// instead of the old magic-number placeholders. The plan is now the single decision point for *what*
+/// W1-1 收口: `target_tokens` is the **real** config-derived value supplied by the caller
+/// (`ContextManager::compaction_target_tokens`). The plan is the single decision point for *what*
 /// to compact and *to what target*; the executor honors `Collapse { target_tokens }` verbatim rather
-/// than re-deriving it. (The richer `(rho, idle_ms, &HandleTable, &cfg)` signature with explicit
-/// cache-cost ordering remains a future refinement; the `invalidates_prefix_at` metadata is already
-/// carried per op.)
+/// than re-deriving it.
 pub fn plan_eviction(
     recommended: PressureAction,
     idle_decay: bool,
     target_tokens: u32,
-    preserve_turns: usize,
 ) -> EvictionPlan {
     let mut ops = Vec::new();
     if idle_decay {
@@ -541,9 +532,7 @@ pub fn plan_eviction(
     }
     // Map the pressure recommendation to a specific op; `None` yields an empty plan (no op appended).
     if recommended != PressureAction::None {
-        ops.extend(
-            EvictionPlan::from_pressure_action(recommended, target_tokens, preserve_turns).ops,
-        );
+        ops.extend(EvictionPlan::from_pressure_action(recommended, target_tokens).ops);
     }
     EvictionPlan { ops }
 }
@@ -636,24 +625,20 @@ mod tests {
 
     #[test]
     fn plan_eviction_empty_when_no_pressure_and_no_idle() {
-        assert!(plan_eviction(PressureAction::None, false, 50_000, 2).is_empty());
+        assert!(plan_eviction(PressureAction::None, false, 50_000).is_empty());
     }
 
     #[test]
     fn plan_eviction_emits_specific_op_for_recommended_action() {
-        let plan = plan_eviction(PressureAction::AutoCompact, false, 50_000, 3);
-        // The op carries the real preserve_turns the caller passed, not a placeholder.
-        assert!(matches!(
-            &plan.ops[..],
-            [EvictionOp::AutoCompact { preserve_turns: 3 }]
-        ));
+        let plan = plan_eviction(PressureAction::AutoCompact, false, 50_000);
+        assert!(matches!(&plan.ops[..], [EvictionOp::AutoCompact]));
     }
 
     #[test]
     fn plan_eviction_collapse_carries_caller_target_tokens() {
         // W1-1 收口: the planner stamps the caller's real target into the Collapse op (no placeholder),
         // and the executor honors it verbatim.
-        let plan = plan_eviction(PressureAction::ContextCollapse, false, 12_345, 2);
+        let plan = plan_eviction(PressureAction::ContextCollapse, false, 12_345);
         assert!(matches!(
             &plan.ops[..],
             [EvictionOp::Collapse {
@@ -666,7 +651,7 @@ mod tests {
     fn plan_eviction_orders_time_decay_before_pressure() {
         // Idle + rho both fire: time-decay micro runs first, then the specific op — matching
         // the canonical checkpoint order exactly.
-        let plan = plan_eviction(PressureAction::ContextCollapse, true, 50_000, 2);
+        let plan = plan_eviction(PressureAction::ContextCollapse, true, 50_000);
         assert_eq!(plan.ops.len(), 2);
         assert!(matches!(plan.ops[0], EvictionOp::TimeDecayMicro));
         assert!(matches!(plan.ops[1], EvictionOp::Collapse { .. }));
@@ -674,7 +659,7 @@ mod tests {
 
     #[test]
     fn plan_eviction_time_decay_only() {
-        let plan = plan_eviction(PressureAction::None, true, 50_000, 2);
+        let plan = plan_eviction(PressureAction::None, true, 50_000);
         assert_eq!(plan.ops.len(), 1);
         assert!(matches!(plan.ops[0], EvictionOp::TimeDecayMicro));
     }
@@ -685,7 +670,7 @@ mod tests {
         // idle-decay flag. So `has_time_decay()` can be true while `idle_decay` is false — the state
         // machine's compaction checkpoint must assert the implication (`idle_decay ⇒ has_time_decay`),
         // NOT equality (the old `debug_assert_eq!(has_time_decay, idle_decay)` wrongly aborted here).
-        let plan = plan_eviction(PressureAction::MicroCompact, false, 50_000, 2);
+        let plan = plan_eviction(PressureAction::MicroCompact, false, 50_000);
         assert!(
             plan.has_time_decay(),
             "MicroCompact yields a time-decay op even when not idle"
@@ -698,7 +683,7 @@ mod tests {
             PressureAction::ContextCollapse,
         ] {
             for idle in [false, true] {
-                let p = plan_eviction(recommended, idle, 50_000, 2);
+                let p = plan_eviction(recommended, idle, 50_000);
                 assert!(
                     !idle || p.has_time_decay(),
                     "idle_decay must imply a time-decay op"
@@ -709,7 +694,7 @@ mod tests {
 
     #[test]
     fn eviction_op_labels() {
-        assert_eq!(EvictionOp::Snip { per_msg_ratio: 0.1 }.label(), "snip");
+        assert_eq!(EvictionOp::Snip.label(), "snip");
         assert_eq!(EvictionOp::TimeDecayMicro.label(), "time_decay_micro");
         assert_eq!(
             EvictionOp::Collapse {
@@ -718,10 +703,7 @@ mod tests {
             .label(),
             "collapse"
         );
-        assert_eq!(
-            EvictionOp::AutoCompact { preserve_turns: 2 }.label(),
-            "auto_compact"
-        );
+        assert_eq!(EvictionOp::AutoCompact.label(), "auto_compact");
     }
 
     #[test]

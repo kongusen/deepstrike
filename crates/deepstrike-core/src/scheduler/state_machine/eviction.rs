@@ -154,7 +154,7 @@ impl LoopStateMachine {
     pub(super) fn execute_eviction_op(&mut self, op: &crate::mm::EvictionOp) {
         use crate::mm::EvictionOp;
         match op {
-            EvictionOp::Snip { per_msg_ratio: _ } => {
+            EvictionOp::Snip => {
                 // Layer 2: route to SnipCompact via the pipeline (behavior-preserving shim).
                 // Use the public `compress_with_time` which already wires target_tokens from config.
                 let (saved, summary, archived, cache_at) = self
@@ -202,12 +202,9 @@ impl LoopStateMachine {
                     );
                 }
             }
-            EvictionOp::AutoCompact { preserve_turns: _ } => {
-                // Layer 5: auto-compact down to the preserve floor (target 0). The op carries the
-                // truthful `preserve_turns` (= `config.preserve_recent_turns`, stamped by the planner);
-                // the pipeline applies that same value at the compactor, so honoring the op and the
-                // config path are byte-identical here. Per-op preserve plumbing into the pipeline is a
-                // minor follow-up; the headline target placeholder is already gone (see Collapse).
+            EvictionOp::AutoCompact => {
+                // Layer 5: auto-compact down to the preserve floor (target 0); the pipeline applies
+                // `config.preserve_recent_turns` at the compactor.
                 let (saved, summary, archived, cache_at) = self.ctx.force_compress();
                 if saved > 0 || summary.is_some() {
                     self.push_compression_observations(

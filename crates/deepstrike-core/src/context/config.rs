@@ -54,16 +54,12 @@ pub struct ContextConfig {
     pub preserve_recent_units: usize,
 
     /// Number of most-recent turns (user+assistant pairs) preserved by
-    /// CollapseCompactor and AutoCompactor. Each turn = 2 messages, so
+    /// the archive stages (ContextCollapse and AutoCompact). Each turn = 2 messages, so
     /// the actual message count kept is `preserve_recent_turns * 2`.
     /// Must be ≥ 1. Default: 2 (= 4 messages).
     pub preserve_recent_turns: usize,
 
     // ── Noise reduction ──────────────────────────────────────────────────────
-    /// Use verbose internal control notes (e.g. "[SYSTEM] Transaction rollback: …").
-    /// Defaults to false; uses concise natural-language notes instead.
-    pub verbose_control_notes: bool,
-
     /// Collapse the *narration* text of OLD assistant turns (those past the
     /// `preserve_recent_units` window that also carry tool calls) to a short stub at render time —
     /// non-destructively (the full text stays in `partitions.history`). The model's user-facing
@@ -80,12 +76,6 @@ pub struct ContextConfig {
 
     /// Number of recent tool results to preserve during Micro-Compact.
     pub preserved_tool_results: usize,
-
-    // ── Layer 5: Auto-Compact buffer ─────────────────────────────────────
-    /// Buffer size for Auto-Compact trigger (Layer 5).
-    /// Trigger threshold = max_tokens - autocompact_buffer.
-    /// Defaults to 13K tokens (p99.99 of summarizer output length + safety margin).
-    pub autocompact_buffer: u32,
 
     // ── K2: knowledge budget ─────────────────────────────────────────────
     /// Max share of `max_tokens` the knowledge partition may occupy. Exceeding it emits a
@@ -123,15 +113,13 @@ impl Default for ContextConfig {
             recovery_content_ratio: 0.25,
             preserve_recent_units: 2,
             preserve_recent_turns: 2,
-            verbose_control_notes: false,
             collapse_assistant_narration: true,
             micro_compact_idle_minutes: 60,
             preserved_tool_results: 5,
-            autocompact_buffer: 13_000,
             knowledge_budget_ratio: 0.25,
             delegate_tool_result_clearing: false,
             delegate_compaction: false,
-            notes_budget_tokens: 0,
+            notes_budget_tokens: super::notes::DEFAULT_NOTES_BUDGET_TOKENS,
         }
     }
 }
@@ -157,26 +145,11 @@ impl ContextConfig {
     pub fn recovery_content_tokens(&self, max_tokens: u32) -> u32 {
         (max_tokens as f64 * self.recovery_content_ratio) as u32
     }
-
-    /// Auto-Compact trigger threshold (Layer 5).
-    /// Returns `max_tokens - autocompact_buffer` (absolute value).
-    pub fn autocompact_threshold(&self, max_tokens: u32) -> u32 {
-        max_tokens.saturating_sub(self.autocompact_buffer)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn noise_reduction_defaults_to_quiet() {
-        let c = ContextConfig::default();
-        assert!(
-            !c.verbose_control_notes,
-            "verbose notes should be off by default"
-        );
-    }
 
     #[test]
     fn default_thresholds_strictly_increasing() {

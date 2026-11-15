@@ -1426,10 +1426,7 @@ impl LoopStateMachine {
                     .iter()
                     .find_map(|result| self.rollback_reason_for_tool_result(result))
                 {
-                    let note = CoreMessage::user(super::rollback::build_rollback_note(
-                        &reason,
-                        self.ctx.config.verbose_control_notes,
-                    ));
+                    let note = CoreMessage::user(super::rollback::build_rollback_note(&reason));
                     self.rollback(reason);
                     self.ctx
                         .push_signal(note.content.as_text().unwrap_or_default().to_string());
@@ -1495,12 +1492,10 @@ impl LoopStateMachine {
                 // Layers 2/4/5: execute the pressure-driven ops from the plan (skip TimeDecayMicro
                 // if already executed). The plan carries specific ops stamped with real config-derived
                 // params (W1-1 収口 — no magic-number placeholders), not the umbrella `Pressure` wrapper.
-                let (target_tokens, preserve_turns) = self.ctx.plan_compaction_params();
                 let plan = crate::mm::plan_eviction(
                     self.ctx.should_compress(),
                     idle_decay,
-                    target_tokens,
-                    preserve_turns,
+                    self.ctx.compaction_target_tokens(),
                 );
                 // `idle_decay` ⇒ the plan carries a `TimeDecayMicro` (so the skip-on-already-executed
                 // below is meaningful). The converse does NOT hold: a pressure-driven `MicroCompact`
@@ -1630,10 +1625,7 @@ impl LoopStateMachine {
                     }
                 }
                 let reason = RollbackReason::Timeout;
-                let note = CoreMessage::user(super::rollback::build_rollback_note(
-                    &reason,
-                    self.ctx.config.verbose_control_notes,
-                ));
+                let note = CoreMessage::user(super::rollback::build_rollback_note(&reason));
                 self.rollback(reason);
                 self.ctx
                     .push_signal(note.content.as_text().unwrap_or_default().to_string());
@@ -1686,11 +1678,7 @@ impl LoopStateMachine {
                 // Malformed proposal: governance-style directive note + fresh reason turn.
                 let rejection_reason =
                     format!("invalid pace next={other:?} (expected continue|sleep|stop)");
-                let note = super::rollback::build_control_rejection_note(
-                    "pace",
-                    &rejection_reason,
-                    self.ctx.config.verbose_control_notes,
-                );
+                let note = super::rollback::build_control_rejection_note("pace", &rejection_reason);
                 self.push_synthetic_tool_result(
                     &call.id,
                     "pace rejected: next must be continue|sleep|stop",

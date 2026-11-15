@@ -876,6 +876,8 @@ fn top_level_run_capability_filter_gates_exposed_tools() {
 #[test]
 fn top_level_run_without_spec_exposes_no_task_tools() {
     let mut sm = sm();
+    // Task-tool exposure only: the `note` meta tool is out of scope here.
+    sm.ctx.config.notes_budget_tokens = 0;
     sm.tools = vec![
         make_tool_schema("read"),
         make_tool_schema("write"),
@@ -1217,6 +1219,8 @@ fn exposure_baseline_empty_and_none_are_both_minimal() {
 fn exposure_baseline_narrows_even_without_a_ceiling() {
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
     let mut sm = sm();
+    // Task-tool exposure only: the `note` meta tool is out of scope here.
+    sm.ctx.config.notes_budget_tokens = 0;
     sm.tools = vec![
         make_tool_schema("read"),
         make_tool_schema("write"),
@@ -2318,7 +2322,7 @@ fn rollback_note_is_concise_by_default() {
         tool_name: "run_tests".to_string(),
         error: "exit code 1".to_string(),
     };
-    let note = crate::scheduler::rollback::build_rollback_note(&reason, false);
+    let note = crate::scheduler::rollback::build_rollback_note(&reason);
     assert!(
         !note.contains("[SYSTEM]"),
         "default note must not contain [SYSTEM]: {note}"
@@ -2330,32 +2334,13 @@ fn rollback_note_is_concise_by_default() {
 }
 
 #[test]
-fn rollback_note_is_verbose_when_opted_in() {
-    let reason = RollbackReason::Timeout;
-    let note = crate::scheduler::rollback::build_rollback_note(&reason, true);
-    assert!(
-        note.starts_with("[SYSTEM] Transaction rollback:"),
-        "verbose note must use internal format: {note}"
-    );
-}
-
-#[test]
 fn control_rejection_note_never_claims_a_transaction_rollback() {
     let concise = crate::scheduler::rollback::build_control_rejection_note(
         "start_workflow",
         "quota exhausted",
-        false,
     );
     assert!(concise.contains("start_workflow"));
     assert!(!concise.to_ascii_lowercase().contains("rollback"));
-
-    let verbose = crate::scheduler::rollback::build_control_rejection_note(
-        "start_workflow",
-        "quota exhausted",
-        true,
-    );
-    assert!(verbose.starts_with("[SYSTEM] Control request rejected:"));
-    assert!(!verbose.contains("Transaction rollback"));
 }
 
 // ─── Governance denial commits as a visible error result ─────────────────────────────

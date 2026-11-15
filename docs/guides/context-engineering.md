@@ -207,7 +207,7 @@ Rust：`RuntimeOptions.notes_budget_tokens = Some(0)` 关闭。
 
 ## 运行时行为摘要
 
-1. **压缩**：Snip 截断过长消息，Micro 缩减旧工具结果，Collapse / Auto 归档较低价值的旧对话，并由内核 `RuleSummarizer` 生成确定性摘要。无需配置 LLM 摘要器；Node 的 `asyncSummarizer` 可在后台升级摘要。
+1. **压缩**：Snip 截断过长消息，Micro 缩减旧工具结果，Collapse / Auto 归档较低价值的旧对话，并由内核 `RuleSummarizer` 生成确定性摘要。无需也不支持配置 LLM 摘要器。
 2. **Renewal**：分级压缩后仍超过续期阈值，才重建 history。按 carryover 预算保留近期完整对话事务，避免拆开工具调用与结果；单个事务放不进预算时不会保留半个事务。系统、Knowledge 与任务状态继续保留。
 3. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入 progress footer
 
