@@ -268,7 +268,7 @@ async function drain(runner, sessionId, goal = "go") {
       agentId: "p1-15", memoryScope: scope, memoryStore: fixture.memoryStore, preQueryMemory: () => [],
     })
     await drain(runner, "p1-15-fetch")
-    assert.match(JSON.stringify(provider.contexts[1]), /\[MEMORY record_ref=crossing kind=reference\] crossing body/)
+    assert.match(JSON.stringify(provider.contexts[1]), /\[MEMORY record_ref=crossing name=crossing kind=reference\] crossing body/)
     assert.match(JSON.stringify(provider.contexts[2]), /\[MEMORY record_ref=elsewhere\] not found/)
     assert.doesNotMatch(JSON.stringify(provider.contexts[2]), /elsewhere body/)
   }

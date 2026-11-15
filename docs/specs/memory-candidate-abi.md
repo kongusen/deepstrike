@@ -259,14 +259,14 @@ DEC-3 只允许一个未结算的 PersistMemory。模型提案撞上时不再报
 
 ## 16. 召回改为索引推送 + 按需拉取（2026-10-30）
 
-宿主预取（首轮 history 与 renewal 的 keyed knowledge）不再注入记录正文，每个命中只推一行索引：`[MEMORY record_id=<id> kind=<kind> trust=<trust>] <summary>`，summary 取 `description`，为空时取 `name`。四端共享两条固定向量：带 description 的 record-v 得 `… how briefs are laid out`，description 为空白时得 `… fact`。
+宿主预取（首轮 history 与 renewal 的 keyed knowledge）不再注入记录正文，每个命中只推一行索引：`[MEMORY record_id=<id> name=<name> kind=<kind> trust=<trust>] <summary>`，summary 取 `description`，为空时取 `name`。四端共享两条固定向量：带 description 的 record-v 得 `… how briefs are laid out`，description 为空白时得 `… fact`。
 
 模型用 `memory` 工具的新参数 `record_id` 读取全文：
 
 - 工具 schema 不再要求 `query`；`query` 与 `record_id` 必须且只能给一个，否则作为普通工具拒绝返回，不中止本轮。
 - `CanonicalMemoryQuery` 新增可选 `record_id`（`MemoryRecordRef`），`requested_k` 固定为 1，`text` 为空。checkpoint 的 `AuthoredMemoryQueryState` 同步新增可选 `record_id`，旧 checkpoint 仍可恢复。DEC-3 的复用判断把 `record_id` 计入。
 - 宿主用 `MemoryStore.get` 点查，再经共享 helper（Node/WASM `memoryFetchRecall`，Python `memory_fetch_recall`，Rust `memory_fetch_recall`）过滤：记录不存在、scope 不符、不在请求的 kinds 内或 TTL 过期，一律按未找到返回空；与检索共用同一个 retrieval 开关。
-- 内核只接受恰为所点记录的一条或零条结果；其他记录或多条结果按 `UnexpectedEffectOutcome` 拒绝，不改动状态，effect 仍待结算。命中以 `[MEMORY record_ref=<id> kind=<kind>] <content>` 写入 history，与检索命中相同，并照常推导 recall lifecycle；零条时写入 `[MEMORY record_ref=<id>] not found: …`，让模型知道索引已失效。
+- 内核只接受恰为所点记录的一条或零条结果；其他记录或多条结果按 `UnexpectedEffectOutcome` 拒绝，不改动状态，effect 仍待结算。命中以 `[MEMORY record_ref=<id> name=<name> kind=<kind>] <content>` 写入 history，与检索命中相同，并照常推导 recall lifecycle；零条时写入 `[MEMORY record_ref=<id>] not found: …`，让模型知道索引已失效。
 - `memory_queried` 观察的 `query` 字段对点查记为 `record_id=<id>`，未新增事件字段。
 
 模型主动的 `memory(query)` 检索仍返回全文，索引化只针对宿主推送。

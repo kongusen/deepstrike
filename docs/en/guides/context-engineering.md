@@ -146,7 +146,7 @@ and after every sprint renewal, the kernel issues a `query_memory` effect for th
 (causation `kernel_recall`). The host only runs the search. The `pre_query_memory` hook may
 rewrite it into several scoped queries (`phase` is `"initial"` or `"renewal"`); hits are merged per
 record. The kernel lands each hit in knowledge as the index line
-`[MEMORY record_id=… kind=… trust=…] <description>` under the key `memory:<record_id>`, and skips
+`[MEMORY record_id=… name=… kind=… trust=…] <description>` under the key `memory:<record_id>`, and skips
 a record already there. The model reads a record in full with `memory(record_id=…)`.
 
 ```python

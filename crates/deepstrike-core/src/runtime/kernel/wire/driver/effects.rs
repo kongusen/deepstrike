@@ -220,8 +220,9 @@ impl CanonicalOperationDriver {
                     // rendered into history as content the model reads, and nothing about it
                     // rewrites this operation's binding, trust or provenance.
                     let content = format!(
-                        "[MEMORY record_ref={} kind={}] {}",
+                        "[MEMORY record_ref={}{} kind={}] {}",
                         recall.record_ref,
+                        crate::context::manager::ContextManager::memory_name_field(&recall.name),
                         wire_memory_kind_label(recall.kind),
                         recall.content
                     );

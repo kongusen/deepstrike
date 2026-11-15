@@ -15,7 +15,7 @@ const { LocalExecutionPlane } = await import("../dist/runtime/execution-plane.js
 const { tool } = await import("../dist/tools/index.js")
 
 const RECALL = "LONGTERM_FACT_FOR_SPRINT"
-const RECALL_TURN = `[MEMORY record_id=record-renewal kind=reference trust=host_verified] ${RECALL}`
+const RECALL_TURN = `[MEMORY record_id=record-renewal name=renewal-fact kind=reference trust=host_verified] ${RECALL}`
 const scope = { tenant_id: "agent-k4", namespace: "renewal" }
 const phases = []
 let sawRenewal = false

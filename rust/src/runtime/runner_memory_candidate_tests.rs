@@ -611,7 +611,7 @@ async fn the_initial_prefetch_lands_each_hit_as_canonical_keyed_knowledge() {
         .collect();
     assert_eq!(
         recall_lines,
-        vec!["[MEMORY record_id=record-a kind=reference trust=host_verified] proposed by a child agent"]
+        vec!["[MEMORY record_id=record-a name=child-proposal kind=reference trust=host_verified] proposed by a child agent"]
     );
     let first = h.seen_turns.lock().unwrap()[0].clone();
     assert!(first

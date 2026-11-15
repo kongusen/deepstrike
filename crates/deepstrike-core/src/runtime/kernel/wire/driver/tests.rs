@@ -3004,7 +3004,7 @@ fn a_memory_fetch_by_record_id_reads_that_record_in_full() {
     assert!(
         history_text(&runtime)
             .iter()
-            .any(|line| line.contains("[MEMORY record_ref=rec-1 kind=project] prefers numbered sections"))
+            .any(|line| line.contains("[MEMORY record_ref=rec-1 name=brief-style kind=project] prefers numbered sections"))
     );
 }
 
@@ -12057,7 +12057,7 @@ fn a_recall_policy_recalls_the_goal_before_the_first_provider_call() {
         panic!("expected the first provider call, got {:?}", call.tag());
     };
     assert!(call.context.system_knowledge.contains(
-        "[MEMORY record_id=rec-1 kind=project trust=host_verified] prefers numbered sections"
+        "[MEMORY record_id=rec-1 name=brief-style kind=project trust=host_verified] prefers numbered sections"
     ));
     assert!(!call.context.system_knowledge.contains("full record body"), "an index line, not the record");
     assert!(history_text(&runtime).iter().all(|line| !line.contains("rec-1")));

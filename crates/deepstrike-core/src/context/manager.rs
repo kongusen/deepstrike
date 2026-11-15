@@ -1291,13 +1291,22 @@ impl ContextManager {
         (!goal.is_empty()).then(|| (goal.to_string(), top_k))
     }
 
-    /// The index line one recalled record becomes. The header names the record, its kind and trust;
-    /// the body is its one-line description (its name when it has none). The model reads the
-    /// record in full with `memory(record_id)`.
+    /// The index line one recalled record becomes. The header names the record, its name, kind and
+    /// trust; the body is its one-line description (its name when it has none). The model reads
+    /// the record in full with `memory(record_id)`.
     pub fn recall_index_line(record_id: &str, kind: &str, trust: &str, description: &str, name: &str) -> String {
         let summary = if description.trim().is_empty() { name.trim() } else { description.trim() };
         let trust = if trust.is_empty() { String::new() } else { format!(" trust={trust}") };
-        format!("[MEMORY record_id={record_id} kind={kind}{trust}] {summary}")
+        let name = Self::memory_name_field(name);
+        format!("[MEMORY record_id={record_id}{name} kind={kind}{trust}] {summary}")
+    }
+
+    /// ` name=<slug>` for a memory header, or nothing for a record without a name. The name is
+    /// what `propose_memory` asks the model to reuse to update a record: without it in view the
+    /// model could not, and every correction became a second record beside the first
+    /// (kernel-distillation plan task 4.4: records overwritten 19% → 82% of proposals).
+    pub fn memory_name_field(name: &str) -> String {
+        if name.trim().is_empty() { String::new() } else { format!(" name={}", name.trim()) }
     }
 
     /// Land recalled records as keyed `memory_recall` items `memory:<record_id>`. The key dedupes a
@@ -1366,7 +1375,7 @@ impl ContextManager {
         }
     }
 
-    /// The record a kernel-written memory hit (`[MEMORY record_ref=<id> kind=…] <content>`) carries.
+    /// The record a kernel-written memory hit (`[MEMORY record_ref=<id> name=… kind=…] <content>`) carries.
     fn memory_hit_record(message: &CoreMessage) -> Option<&str> {
         if message.role != crate::types::message::Role::User {
             return None;
@@ -2175,7 +2184,7 @@ impl ContextManager {
             name: CompactString::new(MEMORY_TOOL_NAME),
             description: "Read your long-term memory. Pass `query` to search it for relevant past \
 experiences and knowledge, or `record_id` to read one record in full. Recalled memories arrive as \
-index lines `[MEMORY record_id=… kind=… trust=…] <description>`: when one looks relevant to the \
+index lines `[MEMORY record_id=… name=… kind=… trust=…] <description>`: when one looks relevant to the \
 task, read it by its record_id before relying on it."
                 .to_string(),
             parameters: serde_json::json!({
@@ -2800,11 +2809,11 @@ mod tests {
     fn the_recall_index_line_matches_the_shared_vector() {
         assert_eq!(
             ContextManager::recall_index_line("record-v", "project", "untrusted", "how briefs are laid out", "fact"),
-            "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
+            "[MEMORY record_id=record-v name=fact kind=project trust=untrusted] how briefs are laid out"
         );
         assert_eq!(
             ContextManager::recall_index_line("record-v", "project", "untrusted", " ", "fact"),
-            "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
+            "[MEMORY record_id=record-v name=fact kind=project trust=untrusted] fact"
         );
     }
 

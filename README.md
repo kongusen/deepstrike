@@ -108,7 +108,7 @@ The system knowledge block renders ahead of the turns; change one byte of it and
 
 | Content | Resident form | Expanded on demand |
 | --- | --- | --- |
-| Memory | one index line `[MEMORY record_id=… kind=… trust=…] description` | `memory(record_id=…)` point lookup of the full record |
+| Memory | one index line `[MEMORY record_id=… name=… kind=… trust=…] description` | `memory(record_id=…)` point lookup of the full record |
 | Dependency output | a 600-character preview | `read_result("dep:<node>")`, answered by the kernel itself |
 | Tool result | collapsed to a preview under pressure, or paged out | `read_result(call_id)` pages it back in |
 | Skill | catalog metadata only | the body loads on activation, and the toolset narrows with it |

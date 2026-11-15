@@ -108,7 +108,7 @@ system 知识块渲染在对话之前，改它一个字节就让身后已缓存�
 
 | 内容 | 常驻形态 | 按需展开 |
 | --- | --- | --- |
-| 记忆 | 一行索引 `[MEMORY record_id=… kind=… trust=…] 描述` | `memory(record_id=…)` 点查全文 |
+| 记忆 | 一行索引 `[MEMORY record_id=… name=… kind=… trust=…] 描述` | `memory(record_id=…)` 点查全文 |
 | 依赖输出 | 600 字符预览 | `read_result("dep:<node>")`，kernel 直接作答 |
 | 工具结果 | 压力升高时折叠为预览、或换页出窗 | `read_result(call_id)` 换页回读 |
 | 技能 | 目录里只有元数据 | 激活时才载入正文，工具集随之收窄 |

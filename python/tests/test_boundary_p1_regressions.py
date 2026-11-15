@@ -416,7 +416,7 @@ async def test_p1_15_reads_one_record_in_full_by_record_id_and_reports_when_it_i
   await _drain(runner, "p1-15-fetch", goal="recall")
 
   assert gets == ["crossing", "elsewhere"]
-  assert "[MEMORY record_ref=crossing kind=reference] crossing body" in _text(provider.contexts[1])
+  assert "[MEMORY record_ref=crossing name=crossing kind=reference] crossing body" in _text(provider.contexts[1])
   # a record outside this agent's memory scope is not found, not leaked
   assert "[MEMORY record_ref=elsewhere] not found" in _text(provider.contexts[2])
   assert "elsewhere body" not in _text(provider.contexts[2])

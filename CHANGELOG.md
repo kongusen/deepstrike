@@ -6,8 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Kernel distillation, phase 0 (`docs/plans/kernel-distillation.md`). No change to what the model
-sees in a default run; kernel golden fixtures are unchanged.
+Kernel distillation (`docs/plans/kernel-distillation.md`): phase 0, and the first results of
+stage 4. Phase 0 changes nothing the model sees; the memory header change below does.
 
 ### Added
 
@@ -49,6 +49,16 @@ sees in a default run; kernel golden fixtures are unchanged.
 
 ### Changed
 
+- **Memory headers carry the record's name** (kernel-distillation plan task 4.4; see
+  `MIGRATION-0.2.83-to-0.2.84.md`). A recalled index line is now
+  `[MEMORY record_id=… name=… kind=… trust=…] <summary>`, and a search hit or a record read with
+  `memory(record_id)` is `[MEMORY record_ref=… name=… kind=…] <content>`. `propose_memory` asks the
+  model to reuse an existing name to update a record, and the name was never in view, so a
+  correction became a second record beside the first. Measured on DeepSeek, paired by session:
+  with one rule replaced mid-sequence (`multi-session --drift 4`, 80 sessions) proposals that
+  updated a record went from 19% to 82%, records per sequence from 4.9 to 1.3, correct sessions
+  from 30 to 37 and price-weighted cost down 11%; without drift (48 sessions) correct 33 → 33 and
+  cost down 10%.
 - `ContextConfig::default().notes_budget_tokens` is `DEFAULT_NOTES_BUDGET_TOKENS` (600), matching
   the wire default. Code that builds a `ContextManager` directly now gets the `note` tool; set the
   field to `0` to turn it off.

@@ -18,7 +18,7 @@ from deepstrike.tools.registry import tool
 from deepstrike.memory.protocols import MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope
 
 RECALL = "LONGTERM_FACT_FOR_SPRINT"
-RECALL_TURN = f"[MEMORY record_id=record-renewal kind=reference trust=host_verified] {RECALL}"
+RECALL_TURN = f"[MEMORY record_id=record-renewal name=renewal kind=reference trust=host_verified] {RECALL}"
 SCOPE = MemoryScope("agent-k4", "renewal")
 RECALL_HIT = MemoryRecall(MemoryRecord(
     record_id="record-renewal", scope=SCOPE, name="renewal", kind="reference", content="full renewal record",

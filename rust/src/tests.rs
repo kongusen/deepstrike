@@ -3252,7 +3252,7 @@ mod tests {
             let contexts = contexts.lock().unwrap();
             assert!(contexts.len() >= 3, "{contexts:?}");
             assert!(
-                contexts[1].contains("[MEMORY record_ref=crossing kind=feedback] crossing body"),
+                contexts[1].contains("[MEMORY record_ref=crossing name=crossing kind=feedback] crossing body"),
                 "{}",
                 contexts[1]
             );

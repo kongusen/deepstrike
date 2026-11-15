@@ -118,7 +118,7 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 
 **Skill 卸载 / 租约（K3）**：`deactivate_skill(name)`（仅宿主驱动，无模型侧 unload）—— 工具集在下一次 provider 调用回宽，knowledge 钉在下一个边界摘除；`skill_lease_turns=N` 让每次激活 N 轮后自动走同一条路径。多阶段长任务不再单调累积早期阶段的 skill。
 
-**记忆召回（计划任务 2.1）**：召回由 kernel 发起。配置了 memory store、agentId 和 memoryScope 时，SDK 打开 `memory_policy.recall`，kernel 在第一次 provider 调用前和每次 sprint renewal 后，以当前目标为查询词发出 `query_memory` effect（causation 为 `kernel_recall`）。宿主只执行检索；`pre_query_memory` 钩子可以把这次查询改写成多条带 scope 的查询（`phase` 为 `"initial"` 或 `"renewal"`），命中按 record ID 合并。kernel 把每个命中写成 `memory:<record_id>` 键的 knowledge 索引行 `[MEMORY record_id=… kind=… trust=…] <description>`（没有 description 时用 name），不含记录正文；已在 knowledge 中的记录不重复写入。模型判断相关时用 `memory(record_id=…)` 读取全文。召回计数和 promotion 建议与模型查询走同一条 kernel 路径，每次召回写一个 `memory_retrieval_result` 审计事件。
+**记忆召回（计划任务 2.1）**：召回由 kernel 发起。配置了 memory store、agentId 和 memoryScope 时，SDK 打开 `memory_policy.recall`，kernel 在第一次 provider 调用前和每次 sprint renewal 后，以当前目标为查询词发出 `query_memory` effect（causation 为 `kernel_recall`）。宿主只执行检索；`pre_query_memory` 钩子可以把这次查询改写成多条带 scope 的查询（`phase` 为 `"initial"` 或 `"renewal"`），命中按 record ID 合并。kernel 把每个命中写成 `memory:<record_id>` 键的 knowledge 索引行 `[MEMORY record_id=… name=… kind=… trust=…] <description>`（没有 description 时用 name），不含记录正文；已在 knowledge 中的记录不重复写入。模型判断相关时用 `memory(record_id=…)` 读取全文。召回计数和 promotion 建议与模型查询走同一条 kernel 路径，每次召回写一个 `memory_retrieval_result` 审计事件。
 
 ```python
 RuntimeOptions(

@@ -452,7 +452,7 @@ describe("P1-15: memory has one authority — the kernel", () => {
     for await (const _ of runner.run({ sessionId: "p1-15-fetch", goal: "recall" })) void _
 
     expect(gets).toEqual(["crossing", "elsewhere"])
-    expect(contextText(provider.contexts[1]!)).toContain("[MEMORY record_ref=crossing kind=reference] crossing body")
+    expect(contextText(provider.contexts[1]!)).toContain("[MEMORY record_ref=crossing name=crossing kind=reference] crossing body")
     // a record outside this agent's memory scope is not found, not leaked
     expect(contextText(provider.contexts[2]!)).toContain("[MEMORY record_ref=elsewhere] not found")
     expect(contextText(provider.contexts[2]!)).not.toContain("elsewhere body")
