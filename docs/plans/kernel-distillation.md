@@ -393,7 +393,11 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 
 1. **两个缺陷。**
    - [x] 重复熔断与 `memory` 同轮（2026-11-16，`dfcb62fb`）。根因：熔断或门禁用合成结果回答本轮宿主调用时，引擎立刻调用 provider，不管同一轮的 syscall 是否已发布内核工作（记忆查询或写入）；一个 step 同时发布 `QueryMemory` 与 `CallProvider`，下一次请求与查询赛跑，渲染时没有查询结果。修复：这种情况下合成提交返回 `AwaitingResume`，工作结清后经 `resume_after_preload` 继续，与未熔断的轮次一致（`state_machine/mod.rs` 的 `turn_awaits_kernel_work` / `defer_provider_call`，`gate.rs` 的 `commit_synthetic_results`）。内核回归测试 `a_fused_turn_waits_for_the_memory_query_it_made`，去掉修复即失败。
-   - [ ] **未暴露的内核工具终止运行，待用户裁决。** `scripts/kernel-tool-batches.mjs` 剩下的 9 个失败用例全是这一类：终止档（同一调用重复 8 次）强制一轮"不带工具的总结"，脚本里的模型在这一轮仍调用 `memory`，`derive_provider_syscalls`（`driver/provider.rs`）以 `invalid_authority` 终止运行。实测中那次 `read_result` 也是同一处。对比：调用当轮未暴露的宿主工具，引擎的 `gate_exposed_tool_calls` 回一条错误结果，运行继续。候选改法：未暴露的内核工具同样回一条"不可用"错误结果、不执行，运行继续。不执行这一点不变，§7.6 防伪造的目的仍然成立；但它改变模型可见内容，也改了 §7.6 写明的"dies here"语义，需要用户决定。
+   - [x] **未暴露的内核工具终止运行**（2026-11-16，`dd6d11e4`）。用户的裁决："先问为何没有暴露对应的内核工具，这才是核心；调用没有的工具应返回错误，让模型去找真实的工具，多次无果进入总结。"
+     - **为何没有暴露。** `read_result` 只在有工具结果离开上下文时才提供。page-in 让结果回到上下文，压缩或 renewal 时 `reset_collapse_generation` 也让折叠的结果回来；最后一个离开的结果回来后，工具就从下一轮的工具表里消失，而模型的历史里刚刚用过它，工具说明还让它用 `offset` 分页读大结果。golden `golden_lifecycle_external_payload` 原本就记录了这一点：page-in 之后的请求里没有 `read_result`。修复：提供过一次就一直提供（`ContextManager::read_result_offered`，进 checkpoint）。工具表不再缩小，也少了一类缓存前缀断点。
+     - **调用没有的工具。** 驱动不再以 `invalid_authority` 终止，而是像未暴露的宿主工具一样回错误结果（"Tool '…' is not available on this turn. Choose from the tools listed in your tools schema."），不执行。这类调用计入重复熔断，元工具名也不豁免：重复 5 次拒绝，8 次进入总结轮后以 `NoProgress` 结束。终止档的总结轮本身不提供工具，模型在这一轮调用工具，运行照常以 `NoProgress` 结束。
+     - 测试：`a_tool_the_turn_never_exposed_has_no_caller_to_derive`（submit 路径）、`repeated_calls_to_an_unexposed_kernel_tool_burn_the_repeat_fuse`、重新生成的 golden，去掉修复均失败。`scripts/kernel-tool-batches.mjs` 117/117，三个随机种子各 40 次运行零失败。四端全量测试通过。
+     - 这两项改变了模型在出错路径上看到的内容，按缺陷修复处理，没有过 DEC-13 的 gate；写进了 CHANGELOG 与 MIGRATION。
 2. **补上一轮留下的缺口。**
    - [x] Node runner 的回退补了回归测试（`b97c9c13`），去掉修复即失败。
    - [x] WASM、Python、Rust 的 runner 有同样的问题，已用同一种回退修复，各加一个回归测试，去掉修复即失败（`b3f012b0`）。
