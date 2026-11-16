@@ -458,6 +458,39 @@ describe("P1-15: memory has one authority — the kernel", () => {
     expect(contextText(provider.contexts[2]!)).not.toContain("elsewhere body")
   })
 
+  it("runs a memory query and a proposal the model made in one turn, then calls the provider once", async () => {
+    // The kernel publishes both effects in one step. The runner used to run the first and then
+    // fail the run ("must return one host action") when the step that settled it published nothing.
+    const { memoryStore, puts } = store([stored("crossing", 0)])
+    const submitted: string[] = []
+    const memoryCandidateSink = {
+      async submit(agentId: string, candidate: { candidate_id: string; record: ReturnType<typeof stored> }) {
+        submitted.push(candidate.record.name)
+        await memoryStore.put(agentId, candidate.record as never)
+        return { status: "accepted", candidate_id: candidate.candidate_id, receipt_id: "r-1", record_ref: candidate.record.record_id, digest: "d-1" }
+      },
+    }
+    const provider = new ScriptedProvider([[
+      { type: "tool_call", id: "call_q", name: "memory", arguments: { query: "prefs" } } as StreamEvent,
+      { type: "tool_call", id: "call_p", name: "propose_memory", arguments: { name: "brief-style", kind: "project", content: "numbered sections" } } as StreamEvent,
+    ]])
+    const events: { type: string; message?: string }[] = []
+    const runner = new RuntimeRunner({
+      provider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(),
+      maxTokens: 8000, maxTurns: 4, agentId: "p1-15", memoryScope: scope, memoryStore, preQueryMemory: () => [],
+      memoryCandidateSink, memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+    } as never)
+    for await (const event of runner.run({ sessionId: "p1-15-both", goal: "recall and remember" })) events.push(event as never)
+
+    expect(events.filter(event => event.type === "error")).toEqual([])
+    expect(submitted).toEqual(["brief-style"])
+    expect(puts.length).toBe(1)
+    expect(provider.contexts).toHaveLength(2)
+    const second = contextText(provider.contexts[1]!)
+    expect(second).toContain("[MEMORY record_ref=crossing name=crossing kind=reference] crossing body")
+    expect(second).toContain("[MEMORY PROPOSAL name=brief-style]")
+  })
+
   it("admits a host write inside a live run by the kernel's rolling write quota", async () => {
     const { memoryStore, puts } = store()
     const verdicts: boolean[] = []
