@@ -11,6 +11,12 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 
 ### Added
 
+- `context_lifecycle_reported.kernel_text_tokens` (plan task 1.7): tokens of text the kernel
+  itself put in front of the model — signals, counted once when the request that carried them
+  committed, and every result the kernel answered a call with (acknowledgements, refusals, denials,
+  timeouts). Checkpointed; reported by `deepstrike-lab` as `kernel_text_tokens`. Every such text is
+  now built in one module, `context::voice`, so it can be read, counted and swapped as a whole;
+  nothing the model sees changed.
 - `deepstrike-lab` reports what a model spends keeping its own memory (kernel-distillation plan
   task 4.2): `recall_tokens` (the memory index lines recall injected), `memory_calls` (`note`,
   `propose_memory` and `memory` calls per trial), `memory_turn_share` (turns that called nothing

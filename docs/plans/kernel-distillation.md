@@ -191,8 +191,11 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
   - 验收：一个表驱动测试枚举 origin × writer × op 的全部组合并固定结果。现有行为与表冲突的地方逐条列在 PR 里，由用户裁决，不自行改行为。
   - **执行记录。** `context/authority.rs`：item 表 `admit_write(origin, writer, op)`（内核什么都能写；宿主能创建一切，能替换、删除的不包括内核或 provider 写的；模型和 provider 只写自己作者的 origin），task state 字段表 `TaskField::writable_by` 与 `admit_task_update`（整条接受或整条拒绝）。两张表各有一个固定全部格子的测试。宿主写 knowledge 的检查（`check_host_knowledge_write`）改为问这张表，行为不变；"技能激活期间不能删正文"取决于运行时状态，不是表格，留在原处。
   - **发现的冲突（用户 2026-11-16 裁决）。** 模型的 `update_plan` schema 只给 4 个字段，内核却接受全部 7 个：已验证一次调用就能写入 `directives`（用户的长期指令，紧跟 goal 渲染）、`preserved_refs`（让结果免于压缩）和 `scratchpad`，并报告成功。用户选择"模型只能写 schema 里的 4 个"：其余字段整条拒绝、回错误结果、不应用，运行继续；宿主仍可写全部 7 个。回归测试 `update_plan_cannot_write_fields_its_schema_hides`。写入 CHANGELOG 与 MIGRATION。
-- [ ] 1.7 **内核文本集中。** 新建 `context/voice.rs`（名字可改），所有内核写给模型的字符串常量与格式函数迁入；lifecycle report 增加 `kernel_text_tokens`。
+- [~] 1.7 **内核文本集中。**（第一片 2026-11-16） 新建 `context/voice.rs`（名字可改），所有内核写给模型的字符串常量与格式函数迁入；lifecycle report 增加 `kernel_text_tokens`。
   - 验收：渲染逐字节不变；`grep` 在该模块之外找不到面向模型的字面量（测试除外）。
+  - **执行记录（第一片）。** 按"文本进入模型上下文的出口"盘点，约 180 处，分三片做。第一片是内核主动对模型说的话：signal 与提示（知识移除、技能租约到期、里程碑、中断与 signal、子 agent 结果、重复熔断、输出截断、criteria 自检、回滚与控制拒绝说明）、内核替调用回答的结果（执行器失败、超时、pace、权限拒绝、未在工具表、未在本轮提供、重复拒绝）、内核工具的确认语（`syscall_ack`）。全部移入 `context/voice.rs`，每个函数返回与原调用点逐字节相同的文本；所有 golden 不变。
+    - `kernel_text_tokens`：signal 在携带它的请求结清时计一次，内核替调用回答的每条结果在产生处计入；宿主工具输出不计。进 checkpoint（为零时不写）与 lifecycle report，contract、四端类型与 `deepstrike-lab` 同步。测试 `kernel_text_tokens_count_signals_once_and_kernel_answers`。
+    - 剩下两片：写进 history 的内核提示（记忆头部、`[PAYLOAD …]`、`[MEMORY PROPOSAL …]`、依赖简报等）与状态块的骨架文字；元工具说明与发给模型的拒绝理由。验收里"模块外找不到面向模型的字面量"要等三片都做完才成立。
 - [ ] 1.8 **`ContextManager` 按职责拆开。** 1.1–1.7 之后再做，届时字段已减少。按现有字段的自然分组拆为：item 存储、预算与压力（含估算校准）、缓存账本、能力与工具暴露（skills、capabilities、meta-tool schema）、报告。只移动，不改逻辑。
 - [ ] 1.9 表里仍无生产者或消费者的值，删除。
 

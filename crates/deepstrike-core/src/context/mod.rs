@@ -18,4 +18,5 @@ pub mod skill_catalog;
 pub mod task_state;
 pub mod text;
 pub mod token_engine;
+pub mod voice;
 pub mod units;

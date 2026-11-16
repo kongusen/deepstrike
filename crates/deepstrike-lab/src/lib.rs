@@ -220,6 +220,9 @@ pub struct LifecycleReport {
     pub recalled: u64,
     #[serde(default)]
     pub recall_expanded: u64,
+    /// Plan task 1.7 · tokens of kernel-written text the model was shown.
+    #[serde(default)]
+    pub kernel_text_tokens: u64,
     /// The run's knowledge items; the lab reads their origin and size.
     #[serde(default)]
     pub items: Vec<KnowledgeItem>,
@@ -324,6 +327,8 @@ pub struct Summary {
     /// Kernel-distillation plan task 4.2 · tokens of the memory index lines recall injected, per
     /// trial ([`recall_tokens`]).
     pub recall_tokens: f64,
+    /// Plan task 1.7 · tokens of kernel-written text per trial (signals, kernel answers).
+    pub kernel_text_tokens: f64,
     /// `note` / `propose_memory` / `memory` calls per trial, over the trials that count them.
     pub memory_calls: Option<f64>,
     /// Share of model turns that called nothing but those tools.
@@ -363,6 +368,7 @@ impl Summary {
             "cache_loss_error" => return self.cache_loss_error,
             "recall_hit_rate" => return self.recall_hit_rate,
             "recall_tokens" => self.recall_tokens,
+            "kernel_text_tokens" => self.kernel_text_tokens,
             "memory_calls" => return self.memory_calls,
             "memory_turn_share" => return self.memory_turn_share,
             "memory_output_share" => return self.memory_output_share,
@@ -399,6 +405,7 @@ pub const REPORT_METRICS: &[&str] = &[
     "cache_loss_error",
     "recall_hit_rate",
     "recall_tokens",
+    "kernel_text_tokens",
     "memory_calls",
     "memory_turn_share",
     "memory_output_share",
@@ -504,6 +511,7 @@ fn summarize_group(scenario: &str, variant: &str, trials: &[&Trial], prices: &Pr
         cache_loss_by_cause: by_cause,
         recall_hit_rate: (recalled > 0).then(|| expanded as f64 / recalled as f64),
         recall_tokens: mean(&|t| recall_tokens(t)),
+        kernel_text_tokens: sum_reports(&|r| r.kernel_text_tokens),
         memory_calls: (!kept.is_empty()).then(|| kept_sum(&|m| m.calls) / kept.len() as f64),
         memory_turn_share: share(kept_sum(&|m| m.solo_turns), kept_sum(&|m| m.turns)),
         memory_output_share: share(kept_sum(&|m| m.chars), kept_sum(&|m| m.output_chars)),
@@ -613,6 +621,7 @@ pub fn trial_metric(trial: &Trial, metric: &str, prices: &PriceTable) -> Option<
         "cache_loss_tokens" => sum(&|r| r.cache_loss_tokens),
         "observed_cache_loss_tokens" => observed_cache_loss(trial)? as f64,
         "recall_tokens" => recall_tokens(trial) as f64,
+        "kernel_text_tokens" => sum(&|r| r.kernel_text_tokens),
         "memory_calls" => trial.memory_tools.as_ref()?.calls as f64,
         name => return name.strip_prefix("oracle.").and_then(|key| trial.oracle.get(key).copied()),
     })

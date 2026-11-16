@@ -445,6 +445,8 @@ class _ContextLifecycleItems(TypedDict, total=False):
     cache_tail_tokens: int
     notes_written: int
     notes_active: int
+    #: Plan task 1.7 · tokens of kernel-written text the model was shown.
+    kernel_text_tokens: int
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

@@ -283,6 +283,10 @@ pub enum SessionEvent {
         notes_written: u32,
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
         notes_active: u32,
+        /// Plan task 1.7 · tokens of kernel-written text the model was shown: signals and the
+        /// results the kernel answered calls with.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
+        kernel_text_tokens: u64,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

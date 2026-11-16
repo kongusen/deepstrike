@@ -121,13 +121,11 @@ impl LoopStateMachine {
             .workflow
             .as_ref()
             .is_some_and(|w| w.is_agent_quarantined(result.agent_id.as_str()));
-        let marker = if quarantined {
-            "quarantined sub-agent"
-        } else {
-            "sub-agent"
-        };
-        self.ctx
-            .push_signal(format!("[{marker} {}] {}", result.agent_id, summary));
+        self.ctx.push_signal(crate::context::voice::sub_agent_result(
+            quarantined,
+            result.agent_id.as_str(),
+            &summary,
+        ));
 
         // W0: if a workflow owns this agent, advance its DAG (feed completion, drain the batch,
         // spawn the next gated batch or finish) instead of the single-spawn barrier below.

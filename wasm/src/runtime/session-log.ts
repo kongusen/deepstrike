@@ -188,6 +188,8 @@ export type SessionEvent =
       /** Plan task 9.1 · notes the model wrote (rewrites count again) and notes it holds now. */
       notes_written?: number
       notes_active?: number
+      /** Plan task 1.7 · tokens of kernel-written text the model was shown: signals and the results the kernel answered calls with. */
+      kernel_text_tokens?: number
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

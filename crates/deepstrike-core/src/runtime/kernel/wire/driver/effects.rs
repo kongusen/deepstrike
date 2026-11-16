@@ -426,15 +426,13 @@ impl CanonicalOperationDriver {
             EffectKindTag::ExecuteTools => {
                 let root_kind = self.require_root_kind()?;
                 let engine = self.engine_mut()?;
-                let results = engine
+                let results: Vec<ToolResult> = engine
                     .dispatched_tool_calls()
                     .iter()
                     .map(|call| ToolResult {
                         call_id: call.id.clone(),
-                        output: Content::Text(format!(
-                            "not executed: the executor could not run this batch ({}). The call \
-                             did not take effect — try a different approach or a smaller step.",
-                            failure.kind.as_str()
+                        output: Content::Text(crate::context::voice::executor_failed(
+                            failure.kind.as_str(),
                         )),
                         durable_content: None,
                         is_error: true,
@@ -442,6 +440,7 @@ impl CanonicalOperationDriver {
                         error_kind: Some(ToolErrorKind::Fatal),
                     })
                     .collect();
+                engine.ctx.note_kernel_results(&results);
                 let action = engine.feed(LoopEvent::ToolResults { results });
                 self.continue_after(context, action, root_kind)
             }

@@ -237,6 +237,7 @@ impl CanonicalOperationDriver {
             recall_due: ctx.recall_due,
             dependency_bodies: ctx.dependency_bodies.clone(),
             read_result_offered: ctx.read_result_offered,
+            kernel_text_tokens: ctx.kernel_text_tokens,
             handles: ctx
                 .handles
                 .all()

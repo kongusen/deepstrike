@@ -102,6 +102,10 @@ pub enum KernelObservation {
         notes_written: u32,
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
         notes_active: u32,
+        /// Plan task 1.7 · tokens of kernel-written text the model was shown: signals and the
+        /// results the kernel answered calls with.
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u64")]
+        kernel_text_tokens: u64,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in

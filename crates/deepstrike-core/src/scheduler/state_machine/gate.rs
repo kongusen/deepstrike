@@ -433,12 +433,10 @@ impl LoopStateMachine {
             // Close every pair with a visible not-executed error result (trained convention;
             // also keeps the committed assistant tool_use wire-valid), then force one final
             // no-tools report turn.
-            self.ctx.push_signal(format!(
-                "[NO-PROGRESS] `{sig}` was re-issued {count}x consecutively with no new outcome. \
-                 The run is terminating. Report what was accomplished and what remains, in plain text."
-            ));
+            self.ctx.push_signal(crate::context::voice::no_progress(&sig, count));
             self.pending_termination = Some(crate::types::result::TerminationReason::NoProgress);
             let results = fuse_denied_results(calls, count);
+            self.ctx.note_kernel_results(&results);
             return Some(self.commit_synthetic_results(results));
         }
 
@@ -453,6 +451,7 @@ impl LoopStateMachine {
             // The directive rides IN the error result — the model sees its own repeated attempt
             // and the refusal in one place, exactly the shape it is trained to adapt to.
             let results = fuse_denied_results(calls, count);
+            self.ctx.note_kernel_results(&results);
             return Some(self.commit_synthetic_results(results));
         }
 
@@ -501,21 +500,19 @@ impl LoopStateMachine {
         if denied.is_empty() {
             return ExposureGateOutcome::Proceed(allowed);
         }
+        let start = self.pending_denied_results.len();
         for call in &denied {
             self.pending_denied_results.push(ToolResult {
                 call_id: call.id.clone(),
                 // 下一请求信息最大化: name what was refused AND where the valid choices are.
-                output: Content::Text(format!(
-                    "Tool '{}' is not part of this run's toolset. Choose from the tools listed in \
-                     your tools schema.",
-                    call.name
-                )),
+                output: Content::Text(crate::context::voice::tool_not_in_toolset(&call.name)),
                 durable_content: None,
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::GovernanceDenied),
             });
         }
+        self.ctx.note_kernel_results(&self.pending_denied_results[start..]);
         if allowed.is_empty() {
             let results = std::mem::take(&mut self.pending_denied_results);
             return ExposureGateOutcome::Blocked(self.commit_synthetic_results(results));
@@ -556,16 +553,18 @@ impl LoopStateMachine {
         // operates on, so an AskUser suspend can never resurrect a denied call.
         let denied_ids: std::collections::HashSet<compact_str::CompactString> =
             denied.iter().map(|(id, _)| id.clone()).collect();
+        let start = self.pending_denied_results.len();
         for (call_id, reason) in denied {
             self.pending_denied_results.push(ToolResult {
                 call_id,
-                output: Content::Text(format!("permission denied: {reason}")),
+                output: Content::Text(crate::context::voice::permission_denied(&reason)),
                 durable_content: None,
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::GovernanceDenied),
             });
         }
+        self.ctx.note_kernel_results(&self.pending_denied_results[start..]);
         let remaining: Vec<ToolCall> = if denied_ids.is_empty() {
             calls.to_vec()
         } else {
@@ -683,7 +682,7 @@ impl LoopStateMachine {
                 } else if denied_set.contains(&id) || !approved_set.contains(&id) {
                     synthetic_results.push(ToolResult {
                         call_id: call.id.clone(),
-                        output: Content::Text(format!("permission denied: {reason}")),
+                        output: Content::Text(crate::context::voice::permission_denied(&reason)),
                         durable_content: None,
                         is_error: true,
                         is_fatal: false,
@@ -694,6 +693,7 @@ impl LoopStateMachine {
                 to_execute.push(call.clone());
             }
         }
+        self.ctx.note_kernel_results(&synthetic_results);
 
         // Extend, never overwrite: a batch can carry denials from EARLIER stages of the same turn
         // (a fail-closed dispatch denial, a governance deny) whose gated siblings then suspended
@@ -756,11 +756,7 @@ fn fuse_denied_results(calls: &[ToolCall], count: u32) -> Vec<ToolResult> {
         .iter()
         .map(|call| ToolResult {
             call_id: call.id.clone(),
-            output: Content::Text(format!(
-                "not executed: this exact call (same tool, same arguments) has been issued \
-                 {count}x consecutively with no new outcome — do something DIFFERENT: change \
-                 the arguments, use another tool, or report the task state as it stands"
-            )),
+            output: Content::Text(crate::context::voice::repeat_denied(count)),
             durable_content: None,
             is_error: true,
             is_fatal: false,

@@ -653,6 +653,9 @@ pub struct ContextVmState {
     /// `read_result` was offered in this run and stays offered after a restore.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_result_offered: bool,
+    /// Plan task 1.7 · kernel-written tokens shown so far, so the report survives a restore.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub kernel_text_tokens: u64,
     /// **The** home of P3 handle identity and residency.
     #[serde(default)]
     pub handles: Vec<HandleState>,

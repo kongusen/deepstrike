@@ -1310,6 +1310,7 @@ fn restore_context_vm(
     ctx.recall_due = state.recall_due;
     ctx.dependency_bodies = state.dependency_bodies.clone();
     ctx.read_result_offered = state.read_result_offered;
+    ctx.kernel_text_tokens = state.kernel_text_tokens;
     ctx.partitions.signals = state
         .signals
         .iter()
@@ -2810,32 +2811,6 @@ fn loop_action_label(action: &LoopAction) -> &'static str {
 ///
 /// 下一请求信息最大化: each says what happened *and* where the consequence will show up, so the
 /// model's next turn does not have to guess whether a control-plane call took effect.
-fn syscall_ack(name: &str) -> &'static str {
-    match name {
-        "start_workflow" => {
-            "workflow accepted: its ready nodes are scheduled; each result arrives as that node \
-             completes"
-        }
-        "submit_workflow_nodes" => {
-            "nodes appended to the running workflow; each result arrives as that node completes"
-        }
-        "skill" => "skill activated: its guidance and tools are in this turn's context",
-        "update_plan" => "plan updated: the new state renders in [TASK STATE] from here on",
-        crate::context::notes::NOTE_TOOL_NAME => "note saved: it renders in [TASK STATE] from here on",
-        crate::context::manager::MEMORY_TOOL_NAME => {
-            "memory search issued: matching records are added to this conversation before your \
-             next turn"
-        }
-        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
-            "memory proposal submitted for review: it is not stored until the host accepts it, \
-             and its outcome is added to this conversation before your next turn"
-        }
-        crate::context::manager::READ_RESULT_TOOL_NAME => "page-in requested",
-        "send_message" | "publish_channel" => "local handle routed",
-        "receive_mailbox" | "receive_channel" | "read_object" => "local state returned",
-        _ => "accepted",
-    }
-}
 
 fn validate_ipc_labels(message_id: &str, kind: &str) -> Result<(), SyscallRefusal> {
     if message_id.is_empty() || kind.is_empty() || message_id.len() > 256 || kind.len() > 256 {

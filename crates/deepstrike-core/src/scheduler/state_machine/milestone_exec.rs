@@ -67,17 +67,11 @@ impl LoopStateMachine {
             }
 
             // Prompt the LLM with the next phase context.
-            if let Some(criteria) = self.milestone.current_phase().map(|p| {
-                if p.criteria.is_empty() {
-                    format!("[NEXT MILESTONE PHASE: {}]", p.id)
-                } else {
-                    format!(
-                        "[NEXT MILESTONE PHASE: {} — Criteria: {}]",
-                        p.id,
-                        p.criteria.join("; ")
-                    )
-                }
-            }) {
+            if let Some(criteria) = self
+                .milestone
+                .current_phase()
+                .map(|p| crate::context::voice::next_milestone_phase(&p.id, &p.criteria))
+            {
                 self.ctx.push_signal(criteria);
             }
             self.phase = LoopPhase::Reason;
@@ -137,10 +131,8 @@ impl LoopStateMachine {
             }
 
             // Normal blocked: inject message and retry.
-            self.ctx.push_signal(format!(
-                "[MILESTONE BLOCKED: {} — {}. Address the criteria and try again.]",
-                result.phase_id, reason
-            ));
+            self.ctx
+                .push_signal(crate::context::voice::milestone_blocked(&result.phase_id, &reason));
             self.observations.push(KernelObservation::MilestoneBlocked {
                 turn: self.turn,
                 phase_id: result.phase_id,

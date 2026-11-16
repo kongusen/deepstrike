@@ -132,11 +132,7 @@ impl CanonicalOperationDriver {
         for call in &unexposed {
             answered.push(AnsweredCall {
                 call_id: call.call_id.as_str().into(),
-                output: format!(
-                    "Tool '{}' is not available on this turn. Choose from the tools listed in \
-                     your tools schema.",
-                    call.name
-                ),
+                output: crate::context::voice::tool_not_available_this_turn(&call.name),
                 is_error: true,
                 unexposed: true,
             });
@@ -156,7 +152,7 @@ impl CanonicalOperationDriver {
                         output: outcome
                             .ack
                             .clone()
-                            .unwrap_or_else(|| syscall_ack(&call.name).to_string()),
+                            .unwrap_or_else(|| crate::context::voice::syscall_ack(&call.name).to_string()),
                         is_error: false,
                         unexposed: false,
                     });

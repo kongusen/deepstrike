@@ -122,6 +122,8 @@ pub struct LifecycleMetrics {
     /// Plan task 9.1 · notes written (rewrites count again) and notes held now.
     pub notes_written: u32,
     pub notes_active: u32,
+    /// Plan task 1.7 · tokens of kernel-written text the model was shown (see `voice`).
+    pub kernel_text_tokens: u64,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -213,6 +215,9 @@ pub struct ContextManager {
     /// last evicted result came back (a page-in, a compaction boundary) left the model calling a
     /// tool its own history shows it using — and broke the cache prefix besides.
     pub read_result_offered: bool,
+    /// Plan task 1.7 · tokens of text the kernel itself put in front of the model: signals, once
+    /// the request that carried them committed, and the results it answered calls with.
+    pub kernel_text_tokens: u64,
     /// Plan task 1.1b · the last item id handed out, to a history message or (plan task 7.1) a
     /// knowledge entry: one allocator for both.
     pub(crate) last_item_id: ItemId,
@@ -317,6 +322,7 @@ impl ContextManager {
             recall_due: false,
             dependency_bodies: std::collections::BTreeMap::new(),
             read_result_offered: false,
+            kernel_text_tokens: 0,
             cache_invalidated_tokens: 0,
             cache_ledger: super::cache_ledger::CacheLedger::default(),
             last_item_id: 0,
@@ -1496,6 +1502,7 @@ impl ContextManager {
             cache_tail_tokens: self.cache_ledger.tail_tokens,
             notes_written: self.partitions.task_state.notes_written,
             notes_active: self.partitions.task_state.notes.len() as u32,
+            kernel_text_tokens: self.kernel_text_tokens,
             recalled,
             recall_expanded,
             items,
@@ -1675,10 +1682,9 @@ impl ContextManager {
             // already broke the prompt-cache prefix, so a one-line ephemeral tail note is
             // cache-free; keyed removals name what left and how to get it back.
             if !sweep.removed_keys.is_empty() {
-                self.partitions.signals.push(SignalItem::new(format!(
-                    "[KNOWLEDGE] entries removed at this boundary: {} — re-fetch via the memory tool if still needed.",
-                    sweep.removed_keys.join(", ")
-                )));
+                self.partitions
+                    .signals
+                    .push(SignalItem::new(super::voice::knowledge_removed(&sweep.removed_keys)));
             }
             self.pending_knowledge_sweeps.push(sweep);
         }
@@ -1764,6 +1770,34 @@ impl ContextManager {
     /// Push a runtime signal into the current turn's State slot.
     /// Rendering does not consume signals. The state machine clears only the prefix acknowledged by
     /// a correlated provider result, so provider failures and retries see the same signal payload.
+    /// Plan task 1.7 · count text the kernel wrote for the model (a result it answered a call
+    /// with); signals are counted by [`Self::commit_delivered_signals`].
+    pub fn note_kernel_text(&mut self, text: &str) {
+        self.kernel_text_tokens = self.kernel_text_tokens.saturating_add(u64::from(self.engine.count(text)));
+    }
+
+    /// Count the results the kernel answered calls with.
+    pub fn note_kernel_results(&mut self, results: &[crate::types::message::ToolResult]) {
+        for result in results {
+            if let Some(text) = result.output.as_text() {
+                self.note_kernel_text(text);
+            }
+        }
+    }
+
+    /// The request that carried the delivered signals committed: count them, then let them go.
+    pub fn commit_delivered_signals(&mut self) {
+        let tokens: u64 = self
+            .partitions
+            .signals
+            .iter()
+            .filter(|signal| signal.delivered)
+            .map(|signal| u64::from(self.engine.count(&signal.text)))
+            .sum();
+        self.kernel_text_tokens = self.kernel_text_tokens.saturating_add(tokens);
+        self.partitions.drop_delivered_signals();
+    }
+
     pub fn push_signal(&mut self, text: String) {
         self.partitions.signals.push(SignalItem::new(text));
     }
@@ -1865,9 +1899,9 @@ impl ContextManager {
         for name in expired {
             self.deactivate_skill(&name);
             // P9: lease expiry re-widens the toolset invisibly otherwise — tell the model.
-                self.partitions.signals.push(SignalItem::new(format!(
-                "[SKILL] lease expired: {name} unloaded; the full toolset is restored."
-            )));
+            self.partitions
+                .signals
+                .push(SignalItem::new(super::voice::skill_lease_expired(&name)));
         }
     }
 

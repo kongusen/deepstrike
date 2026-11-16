@@ -1206,7 +1206,7 @@ impl LoopStateMachine {
                 let adjudicated = self.adjudicated_turn.take().unwrap_or_default();
                 // The request that carried the delivered signals committed; signals that arrived
                 // while it was in flight stay for the next request.
-                self.ctx.partitions.drop_delivered_signals();
+                self.ctx.commit_delivered_signals();
                 // Signals admitted while the provider was in flight were not in the completed
                 // request. Promote queued items at this boundary and keep a no-tool response from
                 // terminating before the model receives them in a follow-up request.
@@ -1220,7 +1220,7 @@ impl LoopStateMachine {
                 // Max-output-tokens recovery (mirrors query.ts): a response cut off at the output
                 // cap reports stop_reason = max_tokens (Anthropic) / length (OpenAI). A clean finish
                 // resets the ladder.
-                const OUTPUT_TRUNCATION_NUDGE: &str = "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.";
+                use crate::context::voice::OUTPUT_TRUNCATION_NUDGE;
                 let truncated = std::mem::take(&mut self.pending_output_truncated);
                 if !truncated {
                     self.output_recovery_attempts = 0;
@@ -1276,12 +1276,8 @@ impl LoopStateMachine {
                         self.criteria_gate_fired = true;
                         let criteria = self.ctx.partitions.task_state.criteria.clone();
                         self.ctx.push_history(message, tokens);
-                        self.ctx.push_signal(format!(
-                            "[CRITERIA CHECK] You are about to finish. Verify each acceptance \
-                             criterion first: {}. If any is NOT met, continue working on it now. \
-                             If all are met, give the final answer.",
-                            criteria.join(" | ")
-                        ));
+                        self.ctx
+                            .push_signal(crate::context::voice::criteria_check_finish(&criteria));
                         self.observations
                             .push(KernelObservation::CriteriaGateFired {
                                 turn: self.turn,
@@ -1375,7 +1371,7 @@ impl LoopStateMachine {
                         for sibling in calls.iter().filter(|c| c.id != call.id) {
                             self.push_synthetic_tool_result(
                                 &sibling.id,
-                                "not executed: superseded by pace — the round is ending",
+                                crate::context::voice::SUPERSEDED_BY_PACE,
                                 false,
                             );
                         }
@@ -1594,11 +1590,8 @@ impl LoopStateMachine {
                             .iter()
                             .map(|call| ToolResult {
                                 call_id: call.id.clone(),
-                                output: Content::Text(format!(
-                                    "Tool call `{}` timed out before completing. The operation \
-                                     may or may not have taken effect — verify before assuming, \
-                                     then retry with a smaller step or a faster approach.",
-                                    call.name
+                                output: Content::Text(crate::context::voice::tool_timed_out(
+                                    &call.name,
                                 )),
                                 durable_content: None,
                                 is_error: true,
@@ -1606,6 +1599,7 @@ impl LoopStateMachine {
                                 error_kind: Some(ToolErrorKind::Timeout),
                             })
                             .collect();
+                        self.ctx.note_kernel_results(&results);
                         return self.feed(LoopEvent::ToolResults { results });
                     }
                 }
@@ -1666,7 +1660,7 @@ impl LoopStateMachine {
                 let note = super::rollback::build_control_rejection_note("pace", &rejection_reason);
                 self.push_synthetic_tool_result(
                     &call.id,
-                    "pace rejected: next must be continue|sleep|stop",
+                    crate::context::voice::PACE_REJECTED,
                     false,
                 );
                 self.ctx.push_signal(note);
@@ -1703,15 +1697,10 @@ impl LoopStateMachine {
             let criteria = self.ctx.partitions.task_state.criteria.clone();
             self.push_synthetic_tool_result(
                 &call.id,
-                "pace(stop) noted — verify the acceptance criteria first, then pace again.",
+                crate::context::voice::PACE_STOP_VERIFY,
                 false,
             );
-            self.ctx.push_signal(format!(
-                "[CRITERIA CHECK] You proposed stopping the loop. Verify each acceptance \
-                 criterion first: {}. If any is NOT met, continue working (or pace(continue)). \
-                 If all are met, call pace(stop) again.",
-                criteria.join(" | ")
-            ));
+            self.ctx.push_signal(crate::context::voice::criteria_check_pace(&criteria));
             self.observations
                 .push(KernelObservation::CriteriaGateFired {
                     turn: self.turn,
@@ -1753,14 +1742,7 @@ impl LoopStateMachine {
         });
         self.push_synthetic_tool_result(
             &call.id,
-            &format!(
-                "pace acknowledged: {}{} — wrap up with a brief round report.",
-                decision.action.label(),
-                decision
-                    .delay_ms
-                    .map(|d| format!(" {d}ms"))
-                    .unwrap_or_default()
-            ),
+            &crate::context::voice::pace_acknowledged(decision.action.label(), decision.delay_ms),
             false,
         );
         self.pending_pace = Some(decision);
@@ -1772,6 +1754,7 @@ impl LoopStateMachine {
     /// Close a kernel-handled tool call's transcript pair with a synthetic result so
     /// providers always see call → result.
     fn push_synthetic_tool_result(&mut self, call_id: &str, output: &str, is_error: bool) {
+        self.ctx.note_kernel_text(output);
         let msg = CoreMessage::tool(vec![crate::types::message::ContentPart::ToolResult {
             call_id: call_id.into(),
             output: output.to_string(),
@@ -1817,6 +1800,7 @@ impl LoopStateMachine {
             cache_tail_tokens: metrics.cache_tail_tokens,
             notes_written: metrics.notes_written,
             notes_active: metrics.notes_active,
+            kernel_text_tokens: metrics.kernel_text_tokens,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,

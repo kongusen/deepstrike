@@ -12528,3 +12528,40 @@ fn update_plan_cannot_write_fields_its_schema_hides() {
     let (output, is_error) = tool_result_for(&runtime, "u1").expect("the call is answered");
     assert!(is_error && output.contains("may not set preserved_refs, directives"), "{output}");
 }
+
+/// Plan task 1.7 · `kernel_text_tokens` counts what the kernel itself put in front of the model:
+/// a signal once, when the request that carried it commits, and every result the kernel answered
+/// a call with. Host tool output is not kernel text.
+#[test]
+fn kernel_text_tokens_count_signals_once_and_kernel_answers() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let count = |runtime: &Runtime, text: &str| u64::from(runtime.driver.engine().unwrap().ctx.engine.count(text));
+    let tokens = |runtime: &Runtime| runtime.driver.engine().unwrap().ctx.kernel_text_tokens;
+    runtime.driver.engine_mut().unwrap().ctx.push_signal("[NOTICE] counted once".to_string());
+
+    // The signal rides the next request; the host's search result is not kernel text.
+    let acted = runtime.submit(&provider_result(
+        "in-1",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("s1", "search", json!({"q": "a"}))],
+    ));
+    let tools = sole_effect(&acted).effect_id.clone();
+    let asked = runtime.submit(&tools_resolved("in-2", 1_700_000_003_000, &tools, &[("s1", "host output", false)]));
+    assert_eq!(tokens(&runtime), 0, "not committed yet, and host output does not count");
+    let next = sole_effect(&asked).effect_id.clone();
+
+    // That request commits (the signal counts once) and its call is refused by the kernel.
+    runtime.submit(&provider_result(
+        "in-3",
+        1_700_000_004_000,
+        &next,
+        vec![tool_call("u1", "update_plan", json!({"directives": ["x"]}))],
+    ));
+    let (refusal, _) = tool_result_for(&runtime, "u1").expect("answered");
+    let expected = count(&runtime, "[NOTICE] counted once") + count(&runtime, &refusal);
+    assert_eq!(tokens(&runtime), expected);
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+    assert_eq!(tokens(&restored), expected, "the count survives a restore");
+}

@@ -131,7 +131,7 @@ impl LoopStateMachine {
             // `preempt_running_for_interrupt` aborts them (emits `AgentPreempted`) and clears the
             // suspend before we force the turn; otherwise it's a plain forced reason turn.
             SignalDisposition::InterruptNow => {
-                self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
+                self.ctx.push_signal(crate::context::voice::interrupt(&summary));
                 self.phase = LoopPhase::Reason;
                 match self.request_preempt_for_interrupt(&summary) {
                     // Preempting running children is a host action and is legal either way — it is
@@ -152,18 +152,18 @@ impl LoopStateMachine {
             // running children complete and the root resumes). Does NOT force a turn or abort
             // in-flight work — that distinction is `InterruptNow`'s alone.
             SignalDisposition::Interrupt => {
-                self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+                self.ctx.push_signal(crate::context::voice::signal(&summary));
                 None
             }
             SignalDisposition::Run => {
-                self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+                self.ctx.push_signal(crate::context::voice::signal(&summary));
                 self.phase = LoopPhase::Reason;
                 Some(self.emit_call_llm())
             }
             // Observe (Low urgency): ephemeral note only — no forced turn. Urgency controls
             // scheduling/preemption only, never persistence.
             SignalDisposition::Observe => {
-                self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+                self.ctx.push_signal(crate::context::voice::signal(&summary));
                 None
             }
             // Queued in the kernel (drained at the next turn boundary), or
@@ -295,7 +295,7 @@ impl LoopStateMachine {
             out.push(signal_summary(&sig));
         }
         for summary in out {
-            self.ctx.push_signal(format!("[SIGNAL] {summary}"));
+            self.ctx.push_signal(crate::context::voice::signal(&summary));
         }
     }
 }
