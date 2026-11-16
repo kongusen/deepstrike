@@ -33,6 +33,9 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
   `proposal:<call id>` for the proposing call. Node and WASM records now carry
   `provenance.session_id`. Code that treats `evidence_refs` as the model's text only should skip
   entries with these prefixes.
+- A model `update_plan` call that sets `directives`, `preserved_refs` or `scratchpad` is refused
+  with an error result instead of being applied. Hosts that relied on the model writing these
+  should write them with a host task update instead.
 - A `propose_memory` outcome (`[MEMORY PROPOSAL name=…] …`) is written into history after the
   tool results of the turn that proposed it, no longer between them. Runs that ended with
   "assistant tool_calls with no tool result" on OpenAI-compatible providers no longer do.

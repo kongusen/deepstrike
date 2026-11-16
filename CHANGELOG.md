@@ -23,6 +23,12 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 
 ### Fixed
 
+- The model could set task-state fields its `update_plan` schema does not show: `directives` (the
+  user's standing commands, rendered right after the goal), `preserved_refs` (results shielded from
+  compaction) and `scratchpad`. A call naming any of them is now refused whole with an error result
+  naming the fields the model may set (`plan`, `current_step`, `progress`, `blocked_on`); nothing is
+  applied and the run goes on. Host task updates still set every field. One write-authority table
+  (`context::authority`, plan task 1.6) now decides this and the host's knowledge writes.
 - `read_result` disappeared from the toolset while the model still had reason to call it. It was
   offered only while some tool result was out of context, so paging a result back in, or a
   compaction or renewal that made collapsed results resident again, withdrew it — even though its

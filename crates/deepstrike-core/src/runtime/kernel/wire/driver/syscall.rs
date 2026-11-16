@@ -104,8 +104,15 @@ impl CanonicalOperationDriver {
                 refusal
             }
             SyscallRequest::UpdateTask(update) => {
+                // Plan task 1.6 · the model sets only the fields its `update_plan` shows.
+                let update = core_task_update(&update.update);
+                crate::context::authority::admit_task_update(
+                    &update,
+                    crate::context::item::Authority::Model,
+                )
+                .map_err(|why| SyscallRefusal::Rejected(SyscallRejection::new("update_plan", why)))?;
                 let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
-                engine.ctx.update_task(core_task_update(&update.update));
+                engine.ctx.update_task(update);
                 Ok(SyscallOutcome::default())
             }
             SyscallRequest::WriteNote(note) => {

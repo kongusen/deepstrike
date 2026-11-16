@@ -328,13 +328,27 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
   `sweep_expired_item_leases` (called in a row at the top of `feed` in `state_machine/mod.rs`)
   become one table-driven sweep. `active_skills` expiry turns fold into the skill item's lease.
   `CapabilityLease` belongs to effect admission, stays separate, and is documented as such.
-- [ ] 1.6 **One write authority.** Add `admit_write(origin, writer, op)`, with a table stating for
+- [x] 1.6 **One write authority.** (2026-11-16) Add `admit_write(origin, writer, op)`, with a table stating for
   each origin who may create, replace and delete. The three checks in `push_knowledge_item` move
   into it; each of `TaskUpdate`'s 7 fields names its writer, and a model write through
   `update_plan` to a field not on its list is refused.
   - Acceptance: one table-driven test enumerates every origin × writer × op and pins the result.
     Every place where today's behavior conflicts with the table is listed in the PR for the user
     to decide; behavior is not changed unilaterally.
+  - **Record.** `context/authority.rs`: the item table `admit_write(origin, writer, op)` (the kernel
+    writes anything; the host creates anything and replaces or removes anything but what the
+    kernel or the provider wrote; the model and the provider write only the origins they author),
+    and the task-state field table `TaskField::writable_by` with `admit_task_update` (admitted or
+    refused whole). Each table has a test pinning every cell. The host's knowledge-write check
+    (`check_host_knowledge_write`) asks the table, with unchanged behavior; "an active skill's
+    body may not be removed" depends on runtime state, is not a table cell, and stays where it was.
+  - **Conflict found (user decision, 2026-11-16).** The model's `update_plan` schema shows 4 fields
+    but the kernel accepted all 7: one call was verified to write `directives` (the user's standing
+    commands, rendered right after the goal), `preserved_refs` (shielding results from compaction)
+    and `scratchpad`, and to report success. The user chose "the model writes only the 4 fields in
+    its schema": the rest is refused whole with an error result, nothing applied, and the run goes
+    on; the host still sets all 7. Regression test `update_plan_cannot_write_fields_its_schema_hides`.
+    Recorded in the CHANGELOG and MIGRATION.
 - [ ] 1.7 **Kernel text in one place.** A new `context/voice.rs` (name negotiable) holds every
   string constant and format function the kernel writes to the model; the lifecycle report gains
   `kernel_text_tokens`.

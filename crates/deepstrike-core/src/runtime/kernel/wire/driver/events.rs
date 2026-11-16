@@ -721,8 +721,15 @@ impl CanonicalOperationDriver {
         &mut self,
         update: &UpdateTaskCommand,
     ) -> Result<PlannedStep, KernelFault> {
+        let update = core_task_update(&update.update);
+        // Plan task 1.6 · the host sets every field; asked here so the table is the one rule.
+        debug_assert!(crate::context::authority::admit_task_update(
+            &update,
+            crate::context::item::Authority::Host
+        )
+        .is_ok());
         let engine = self.engine_mut()?;
-        engine.ctx.update_task(core_task_update(&update.update));
+        engine.ctx.update_task(update);
         Ok(self.quiet_step())
     }
 

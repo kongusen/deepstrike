@@ -1,6 +1,7 @@
 pub mod cache_ledger;
 pub mod compression;
 pub mod archive;
+pub mod authority;
 pub mod config;
 pub mod fault;
 pub mod graph;

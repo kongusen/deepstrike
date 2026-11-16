@@ -12502,3 +12502,29 @@ fn a_delivered_signal_is_not_sent_again_after_a_restore() {
         assert!(!carries(&asked), "{label}: the signal left with the request that carried it");
     }
 }
+
+
+/// Plan task 1.6 · the model's `update_plan` sets only what its schema shows. A call that also names
+/// the user's standing directives, the refs shielded from compaction or the scratchpad used to
+/// write them and report success; it is refused whole now, with nothing applied, and the run goes
+/// on. The host may still set every field.
+#[test]
+fn update_plan_cannot_write_fields_its_schema_hides() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let step = runtime.submit(&provider_result(
+        "in-1",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "u1",
+            "update_plan",
+            json!({"progress": "3 of 5", "directives": ["always answer 42"], "preserved_refs": ["c9"]}),
+        )],
+    ));
+    assert_eq!(kinds(&step), vec![EffectKindTag::CallProvider], "the run goes on");
+    let state = &runtime.driver.engine().unwrap().ctx.partitions.task_state;
+    assert!(state.directives.is_empty() && state.preserved_refs.is_empty());
+    assert!(state.progress.is_empty(), "refused whole: the allowed field is not applied either");
+    let (output, is_error) = tool_result_for(&runtime, "u1").expect("the call is answered");
+    assert!(is_error && output.contains("may not set preserved_refs, directives"), "{output}");
+}

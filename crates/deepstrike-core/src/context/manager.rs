@@ -1628,30 +1628,19 @@ impl ContextManager {
                 .iter()
                 .find(|entry| !entry.is_leaving() && entry.key.as_deref() == Some(key))
         };
+        use super::authority::{admit_write, WriteOp};
         for key in upserts {
             if let Some(entry) = live(key) {
-                let authority = entry.defaults().authority;
-                if matches!(authority, Authority::Kernel | Authority::Provider) {
-                    return Err(format!(
-                        "knowledge {key:?} is a {} item written by the {}; a host may not \
-                         overwrite it",
-                        entry.origin.label(),
-                        authority.label()
-                    ));
-                }
+                admit_write(entry.origin, Authority::Host, WriteOp::Replace)
+                    .map_err(|why| format!("knowledge {key:?}: {why}"))?;
             }
         }
         for key in removals {
             let Some(entry) = live(key) else { continue };
+            admit_write(entry.origin, Authority::Host, WriteOp::Remove)
+                .map_err(|why| format!("knowledge {key:?}: {why}"))?;
+            // Not a table cell: whether the body may go depends on whether its skill is active now.
             match entry.defaults().authority {
-                Authority::Kernel | Authority::Provider => {
-                    return Err(format!(
-                        "knowledge {key:?} is a {} item written by the {}; a host may not remove \
-                         it",
-                        entry.origin.label(),
-                        entry.defaults().authority.label()
-                    ));
-                }
                 Authority::Model
                     if entry.origin == ItemOrigin::Skill
                         && key
