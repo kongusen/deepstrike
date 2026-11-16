@@ -384,3 +384,156 @@ pub fn task_state_block(state: &TaskState) -> String {
     }
     lines.join("\n")
 }
+
+// ── Kernel tools: what each says it does ───────────────────────────────────────────────────────
+
+pub fn read_result_tool_description() -> String {
+    "Re-read the full content of a tool result that was truncated to save \
+                          context (marked '[Output truncated: … call the read_result tool …]'), \
+                          or of a dependency output (call_id \"dep:<agent_id>\"). Pass that \
+                          call_id; use offset/max_bytes to page through large content.".to_string()
+}
+
+pub fn read_result_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "call_id": { "type": "string" },
+                    "offset": { "type": "integer", "description": "Byte offset to start from (default 0)." },
+                    "max_bytes": { "type": "integer", "description": "Max bytes to return (default 4000)." }
+                },
+                "required": ["call_id"]
+            })
+}
+
+pub fn update_plan_tool_description() -> String {
+    "Update your task plan and progress. Call this after completing a step or when the plan changes.".to_string()
+}
+
+pub fn update_plan_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "plan": { "type": "array", "items": { "type": "string" } },
+                    "current_step": { "type": "integer" },
+                    "progress": { "type": "string" },
+                    "blocked_on": { "type": "array", "items": { "type": "string" } }
+                }
+            })
+}
+
+pub fn memory_tool_description() -> String {
+    "Read your long-term memory. Pass `query` to search it for relevant past \
+experiences and knowledge, or `record_id` to read one record in full. Recalled memories arrive as \
+index lines `[MEMORY record_id=… name=… kind=… trust=…] <description>`: when one looks relevant to the \
+task, read it by its record_id before relying on it.".to_string()
+}
+
+pub fn memory_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "What to search for. Omit when passing record_id." },
+                    "record_id": { "type": "string", "description": "Read this one record in full, as named by a recalled index line. Omit when passing query." },
+                    "top_k": { "type": "integer" }
+                }
+            })
+}
+
+pub fn propose_memory_tool_description() -> String {
+    "Propose one fact for long-term memory, so it is available in future sessions. \
+Propose when you learn something that will still matter later and cannot be recovered from the code, files, or this conversation's history: \
+who the user is and how they like to work, a correction or confirmed approach they gave you (with why), \
+a project goal, constraint, or decision, or a pointer to an external resource. \
+Do not propose what the workspace already records, temporary task state, or guesses. \
+Search memory first and reuse an existing name to update a fact rather than duplicating it. \
+The proposal is reviewed before it is stored; its outcome arrives in this conversation before your next turn. \
+Propose one fact per call and wait for the outcome before proposing another. \
+Scope, identity, provenance, and timestamps are derived for you.".to_string()
+}
+
+pub fn propose_memory_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "name": { "type": "string", "description": "Short stable kebab-case slug for this fact; reuse an existing name to update it." },
+                    "kind": { "type": "string", "enum": ["user", "feedback", "project", "reference"], "description": "user: who the user is and their preferences. feedback: guidance on how to work. project: goals, constraints, decisions. reference: pointers to external resources." },
+                    "content": { "type": "string", "description": "The fact itself, self-contained and stated so a future session can act on it without this conversation." },
+                    "description": { "type": "string", "description": "One-line summary used to decide relevance at recall time." },
+                    "evidence_refs": { "type": "array", "items": { "type": "string" }, "description": "Optional references (call ids, record ids, paths) supporting the fact." }
+                },
+                "required": ["name", "kind", "content"]
+            })
+}
+
+pub fn knowledge_tool_description() -> String {
+    "Search the external knowledge base for facts, documentation, or reference data.".to_string()
+}
+
+pub fn knowledge_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "top_k": { "type": "integer" }
+                },
+                "required": ["query"]
+            })
+}
+
+pub fn note_tool_description(propose_memory_enabled: bool) -> String {
+    let mut description = "Keep notes that survive compaction. As the conversation grows, older \
+tool results and turns are archived; your notes stay in [TASK STATE] word for word. Write down \
+what you work out and could not simply read again: running counts and totals, lists of what is \
+done and what is left, conclusions, rules you learned. When it changes, write the same title \
+again to update it. `evidence` names what it came from (call ids, file paths or arguments); \
+without it the note is linked to the results you received since your last note. Retire a note \
+you no longer need."
+        .to_string();
+    // Plan task 9.4 · notes end with the session; what outlives it is the model's call, made
+    // through the memory proposal it already has. No promotion happens behind its back.
+    if propose_memory_enabled {
+        description.push_str(
+            " Notes end with this task: a rule or index worth keeping for later tasks can be \
+proposed for long-term memory with `propose_memory`.",
+        );
+    }
+    description
+}
+
+pub fn note_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["write", "retire"], "description": "Default: write." },
+                    "title": { "type": "string", "description": "The note's name; writing an existing title updates it." },
+                    "kind": { "type": "string", "enum": ["state", "rule", "question", "index"], "description": "state: progress of this task (counts, done-lists); rule: a lesson or rule; question: something still open; index: where things are." },
+                    "body": { "type": "string" },
+                    "evidence": { "type": "array", "items": { "type": "string" } },
+                    "links": { "type": "array", "items": { "type": "string" }, "description": "Titles of related notes." },
+                    "replaced_by": { "type": "string", "description": "On retire: the note that replaces this one." }
+                },
+                "required": ["title"]
+            })
+}
+
+pub fn skill_tool_description(available_skills: &str) -> String {
+    let xml = available_skills;
+    format!(
+                "Load a skill into your context to access specialized instructions for a task.\n\n{xml}"
+            )
+}
+
+pub fn skill_tool_parameters() -> serde_json::Value {
+    serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The name of the skill to load."
+                    }
+                },
+                "required": ["name"]
+            })
+}

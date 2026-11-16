@@ -349,7 +349,7 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
     its schema": the rest is refused whole with an error result, nothing applied, and the run goes
     on; the host still sets all 7. Regression test `update_plan_cannot_write_fields_its_schema_hides`.
     Recorded in the CHANGELOG and MIGRATION.
-- [~] 1.7 **Kernel text in one place.** (first slice 2026-11-16) A new `context/voice.rs` (name negotiable) holds every
+- [~] 1.7 **Kernel text in one place.** (two and a half of three slices, 2026-11-16 to 17) A new `context/voice.rs` (name negotiable) holds every
   string constant and format function the kernel writes to the model; the lifecycle report gains
   `kernel_text_tokens`.
   - Acceptance: renders unchanged byte for byte; grep finds no model-facing literal outside that
@@ -367,10 +367,20 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
       Checkpointed (omitted when zero) and reported in the lifecycle report, with the contract, the
       four SDKs' types and `deepstrike-lab` updated. Test
       `kernel_text_tokens_count_signals_once_and_kernel_answers`.
-    - Two slices left: kernel notices written into history (memory headers, `[PAYLOAD …]`,
-      `[MEMORY PROPOSAL …]`, dependency briefs, …) and the state block's scaffolding; meta-tool
-      descriptions and the refusal reasons sent to the model. The acceptance "no model-facing
-      literal outside the module" holds only once all three are done.
+    - **Second slice (`7c8bb05e`):** kernel notices written into history (recall index lines,
+      hits, not-found, proposal outcomes, `[PAYLOAD …]`, dependency briefs), the output-truncation
+      marker, `[context resumed]`, the `Proceed.` anchor, and the whole `[TASK STATE]` block with
+      the notes block. Also drops the always-false M9 flag the stage 2 experiment left behind.
+      Goldens unchanged.
+    - **First half of the third slice:** the descriptions and parameter schemas of the kernel's own
+      seven tools (`read_result`, `update_plan`, `memory`, `propose_memory`, `knowledge`, `note`,
+      `skill`) moved into `voice`, and the dead branch the experiment left in `update_plan`'s
+      schema is gone. Goldens unchanged. Workflow tool schemas (`start_workflow`, …) come from the
+      host's configuration and are not kernel text.
+    - **Not done: the refusal reasons of rejected kernel-tool calls** (`SyscallRejection::new`, about
+      40 sites and 30 distinct texts, mostly protocol and authority errors, several embedding a
+      fault's or the host's message). Until it is, the acceptance "no model-facing literal outside
+      the module" does not hold.
 - [ ] 1.8 **Split `ContextManager` by responsibility.** After 1.1–1.7, when it has fewer fields.
   Split along the natural groups of the existing fields: item store, budget and pressure (estimate
   calibration included), cache ledger, capabilities and tool exposure (skills, capabilities,

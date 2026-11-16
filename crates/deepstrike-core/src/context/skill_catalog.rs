@@ -109,19 +109,8 @@ impl SkillCatalog {
 
         Some(ToolSchema {
             name: CompactString::new(SKILL_TOOL_NAME),
-            description: format!(
-                "Load a skill into your context to access specialized instructions for a task.\n\n{xml}"
-            ),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "The name of the skill to load."
-                    }
-                },
-                "required": ["name"]
-            }),
+            description: super::voice::skill_tool_description(&xml),
+            parameters: super::voice::skill_tool_parameters(),
         })
     }
 }

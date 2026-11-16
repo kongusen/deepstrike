@@ -2060,20 +2060,8 @@ impl ContextManager {
         }
         Some(ToolSchema {
             name: CompactString::new(READ_RESULT_TOOL_NAME),
-            description: "Re-read the full content of a tool result that was truncated to save \
-                          context (marked '[Output truncated: … call the read_result tool …]'), \
-                          or of a dependency output (call_id \"dep:<agent_id>\"). Pass that \
-                          call_id; use offset/max_bytes to page through large content."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "call_id": { "type": "string" },
-                    "offset": { "type": "integer", "description": "Byte offset to start from (default 0)." },
-                    "max_bytes": { "type": "integer", "description": "Max bytes to return (default 4000)." }
-                },
-                "required": ["call_id"]
-            }),
+            description: super::voice::read_result_tool_description(),
+            parameters: super::voice::read_result_tool_parameters(),
         })
     }
 
@@ -2083,27 +2071,8 @@ impl ContextManager {
         }
         Some(ToolSchema {
             name: CompactString::new("update_plan"),
-            description: "Update your task plan and progress. Call this after completing a step or when the plan changes.".to_string(),
-            parameters: if false {
-                // EXP m9 · minimal: no progress / blocked_on fields.
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "plan": { "type": "array", "items": { "type": "string" } },
-                        "current_step": { "type": "integer" }
-                    }
-                })
-            } else {
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "plan": { "type": "array", "items": { "type": "string" } },
-                        "current_step": { "type": "integer" },
-                        "progress": { "type": "string" },
-                        "blocked_on": { "type": "array", "items": { "type": "string" } }
-                    }
-                })
-            },
+            description: super::voice::update_plan_tool_description(),
+            parameters: super::voice::update_plan_tool_parameters(),
         })
     }
 
@@ -2113,19 +2082,8 @@ impl ContextManager {
         }
         Some(ToolSchema {
             name: CompactString::new(MEMORY_TOOL_NAME),
-            description: "Read your long-term memory. Pass `query` to search it for relevant past \
-experiences and knowledge, or `record_id` to read one record in full. Recalled memories arrive as \
-index lines `[MEMORY record_id=… name=… kind=… trust=…] <description>`: when one looks relevant to the \
-task, read it by its record_id before relying on it."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "What to search for. Omit when passing record_id." },
-                    "record_id": { "type": "string", "description": "Read this one record in full, as named by a recalled index line. Omit when passing query." },
-                    "top_k": { "type": "integer" }
-                }
-            }),
+            description: super::voice::memory_tool_description(),
+            parameters: super::voice::memory_tool_parameters(),
         })
     }
 
@@ -2133,27 +2091,8 @@ task, read it by its record_id before relying on it."
         if !self.propose_memory_enabled { return None; }
         Some(ToolSchema {
             name: CompactString::new(PROPOSE_MEMORY_TOOL_NAME),
-            description: "Propose one fact for long-term memory, so it is available in future sessions. \
-Propose when you learn something that will still matter later and cannot be recovered from the code, files, or this conversation's history: \
-who the user is and how they like to work, a correction or confirmed approach they gave you (with why), \
-a project goal, constraint, or decision, or a pointer to an external resource. \
-Do not propose what the workspace already records, temporary task state, or guesses. \
-Search memory first and reuse an existing name to update a fact rather than duplicating it. \
-The proposal is reviewed before it is stored; its outcome arrives in this conversation before your next turn. \
-Propose one fact per call and wait for the outcome before proposing another. \
-Scope, identity, provenance, and timestamps are derived for you.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "name": { "type": "string", "description": "Short stable kebab-case slug for this fact; reuse an existing name to update it." },
-                    "kind": { "type": "string", "enum": ["user", "feedback", "project", "reference"], "description": "user: who the user is and their preferences. feedback: guidance on how to work. project: goals, constraints, decisions. reference: pointers to external resources." },
-                    "content": { "type": "string", "description": "The fact itself, self-contained and stated so a future session can act on it without this conversation." },
-                    "description": { "type": "string", "description": "One-line summary used to decide relevance at recall time." },
-                    "evidence_refs": { "type": "array", "items": { "type": "string" }, "description": "Optional references (call ids, record ids, paths) supporting the fact." }
-                },
-                "required": ["name", "kind", "content"]
-            }),
+            description: super::voice::propose_memory_tool_description(),
+            parameters: super::voice::propose_memory_tool_parameters(),
         })
     }
 
@@ -2163,17 +2102,8 @@ Scope, identity, provenance, and timestamps are derived for you.".to_string(),
         }
         Some(ToolSchema {
             name: CompactString::new(KNOWLEDGE_TOOL_NAME),
-            description:
-                "Search the external knowledge base for facts, documentation, or reference data."
-                    .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string" },
-                    "top_k": { "type": "integer" }
-                },
-                "required": ["query"]
-            }),
+            description: super::voice::knowledge_tool_description(),
+            parameters: super::voice::knowledge_tool_parameters(),
         })
     }
 }

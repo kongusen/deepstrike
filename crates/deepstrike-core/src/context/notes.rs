@@ -65,38 +65,10 @@ impl ContextManager {
         if !self.notes_enabled() {
             return None;
         }
-        let mut description = "Keep notes that survive compaction. As the conversation grows, older \
-tool results and turns are archived; your notes stay in [TASK STATE] word for word. Write down \
-what you work out and could not simply read again: running counts and totals, lists of what is \
-done and what is left, conclusions, rules you learned. When it changes, write the same title \
-again to update it. `evidence` names what it came from (call ids, file paths or arguments); \
-without it the note is linked to the results you received since your last note. Retire a note \
-you no longer need."
-            .to_string();
-        // Plan task 9.4 · notes end with the session; what outlives it is the model's call, made
-        // through the memory proposal it already has. No promotion happens behind its back.
-        if self.propose_memory_enabled {
-            description.push_str(
-                " Notes end with this task: a rule or index worth keeping for later tasks can be \
-proposed for long-term memory with `propose_memory`.",
-            );
-        }
         Some(ToolSchema {
             name: CompactString::new(NOTE_TOOL_NAME),
-            description,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "action": { "type": "string", "enum": ["write", "retire"], "description": "Default: write." },
-                    "title": { "type": "string", "description": "The note's name; writing an existing title updates it." },
-                    "kind": { "type": "string", "enum": ["state", "rule", "question", "index"], "description": "state: progress of this task (counts, done-lists); rule: a lesson or rule; question: something still open; index: where things are." },
-                    "body": { "type": "string" },
-                    "evidence": { "type": "array", "items": { "type": "string" } },
-                    "links": { "type": "array", "items": { "type": "string" }, "description": "Titles of related notes." },
-                    "replaced_by": { "type": "string", "description": "On retire: the note that replaces this one." }
-                },
-                "required": ["title"]
-            }),
+            description: super::voice::note_tool_description(self.propose_memory_enabled),
+            parameters: super::voice::note_tool_parameters(),
         })
     }
 
