@@ -117,23 +117,16 @@ pub struct Note {
 impl Note {
     /// The note's line in the state turn.
     pub fn render(&self) -> String {
-        format!("  - [{}] {}: {}", self.kind.label(), self.title, self.body)
+        super::voice::note_line(self)
     }
 }
 
-/// The heading of the notes block in the state turn.
-pub const NOTES_HEADING: &str =
-    "notes (yours, kept verbatim through compaction; rewrite a note by its title as it changes):";
+pub use super::voice::NOTES_HEADING;
 
 impl TaskState {
     /// The notes block as rendered in the state turn, or empty without notes.
     pub fn render_notes(&self) -> String {
-        if self.notes.is_empty() {
-            return String::new();
-        }
-        let mut lines = vec![NOTES_HEADING.to_string()];
-        lines.extend(self.notes.iter().map(Note::render));
-        lines.join("\n")
+        super::voice::notes_block(&self.notes)
     }
 
     /// The index of the note titled `title` (case and surrounding space ignored).
@@ -185,80 +178,7 @@ impl TaskState {
     /// Compact text block for embedding in `system_text`.
     /// Returns an empty string when the task has not been initialised.
     pub fn format_compact(&self) -> String {
-        if self.goal.is_empty() && self.plan.is_empty() && self.progress.is_empty() {
-            return String::new();
-        }
-
-        let mut lines = Vec::new();
-        lines.push(format!("[TASK STATE] goal: {}", self.goal));
-
-        if !self.criteria.is_empty() {
-            lines.push(format!("criteria: {}", self.criteria.join(" | ")));
-        }
-
-        // Active directives render right after the goal — highest salience after the objective, so
-        // a recent user command keeps its imperative force across compaction/renewal.
-        if !self.directives.is_empty() {
-            lines.push("active_directives (most recent last):".to_string());
-            for d in &self.directives {
-                lines.push(format!("  - {d}"));
-            }
-        }
-
-        if !self.plan.is_empty() {
-            lines.push("plan:".to_string());
-            for (i, step) in self.plan.iter().enumerate() {
-                let marker = if step.done {
-                    "done"
-                } else if Some(i) == self.current_step {
-                    "active"
-                } else {
-                    "todo"
-                };
-                lines.push(format!("  [{}] {}. {}", marker, i + 1, step.label));
-            }
-        }
-
-        // EXP m9 · minimal: notes are where the model records progress; no second place for it.
-        let m9 = false;
-        if !self.progress.is_empty() && !m9 {
-            lines.push(format!("progress: {}", self.progress));
-        }
-
-        if !self.blocked_on.is_empty() && !m9 {
-            lines.push(format!("blocked_on: {}", self.blocked_on.join(", ")));
-        }
-
-        let notes = self.render_notes();
-        if !notes.is_empty() {
-            lines.push(notes);
-        }
-
-        if !self.scratchpad.is_empty() && !m9 {
-            lines.push(format!("scratchpad: {}", self.scratchpad));
-        }
-
-        // Render only the most recent compression events (fixed cap of 3). A wider budgeted
-        // window was tried and withdrawn: live A/B at n≤4 (12-PR review @ 2048, DeepSeek)
-        // could not distinguish it from provider drift — a control run on the unmodified
-        // kernel showed the same failures — and a window full of old `tool X args` digest
-        // lines is plausible re-execution bait. Absent replay-lab evidence FOR widening, the
-        // proven shape stays. Older digests remain in `compression_log` (bounded at
-        // [`MAX_COMPRESSION_LOG`]); making their *content* durably useful to the model is
-        // semantic-summary (P2) territory, not a bigger raw window.
-        if !self.compression_log.is_empty() {
-            lines.push("compression_history:".to_string());
-            let start = self.compression_log.len().saturating_sub(3);
-            for entry in &self.compression_log[start..] {
-                if entry.summary.is_empty() {
-                    lines.push(format!("  [{}]", entry.action));
-                } else {
-                    lines.push(format!("  [{}] {}", entry.action, entry.summary));
-                }
-            }
-        }
-
-        lines.join("\n")
+        super::voice::task_state_block(self)
     }
 
     /// Record a durable user directive (deduped against the most recent, recency-capped at

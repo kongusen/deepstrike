@@ -197,14 +197,14 @@ fn build_state_turn(partitions: &ContextPartitions) -> Option<CoreMessage> {
         parts.push(signals_text);
     }
     let body = parts.join("\n\n");
-    Some(CoreMessage::user(format!("{body}\n\nProceed.")))
+    Some(CoreMessage::user(super::voice::state_turn(&body)))
 }
 
 /// Ensure turns start with a user message.
 /// After AutoCompact the preserved tail may be all assistant/tool — insert an anchor.
 fn normalize_turn_prefix(turns: &mut Vec<CoreMessage>) {
     if !turns.is_empty() && matches!(turns[0].role, Role::Assistant | Role::Tool) {
-        turns.insert(0, CoreMessage::user("[context resumed]"));
+        turns.insert(0, CoreMessage::user(super::voice::CONTEXT_RESUMED));
     }
 }
 
@@ -217,9 +217,7 @@ fn normalize_turn_prefix(turns: &mut Vec<CoreMessage>) {
 /// ("projected out of view") the model has never seen in training.
 pub(crate) fn collapse_preview(output: &str, call_id: &str) -> String {
     const PREVIEW_BYTES: usize = 160;
-    let retrieval = format!(
-        "Call the read_result tool with call_id \"{call_id}\" to re-read the full result.]"
-    );
+    let retrieval = super::voice::read_result_hint(call_id);
     if output
         .lines()
         .last()
@@ -232,10 +230,7 @@ pub(crate) fn collapse_preview(output: &str, call_id: &str) -> String {
         end -= 1;
     }
     let dropped = output.len().saturating_sub(end);
-    format!(
-        "{}…\n[Output truncated: {dropped} bytes omitted. Call the read_result tool with call_id \"{call_id}\" to re-read the full result.]",
-        &output[..end]
-    )
+    super::voice::truncated_output(&output[..end], dropped, call_id)
 }
 
 /// If any tool-result body is not resident in working context (`Collapsed` or `PagedOut`), return

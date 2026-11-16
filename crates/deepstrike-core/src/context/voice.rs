@@ -6,6 +6,7 @@
 //! counted (`kernel_text_tokens` in the lifecycle report) and swapped as a whole from this file.
 //! Each function returns exactly the bytes that used to be written at its call site.
 
+use super::task_state::{Note, TaskState};
 use crate::runtime::session::RollbackReason;
 
 // ── Signals: notices rendered once in the state turn ─────────────────────────────────────────────
@@ -209,4 +210,177 @@ pub fn syscall_ack(name: &str) -> &'static str {
         "receive_mailbox" | "receive_channel" | "read_object" => "local state returned",
         _ => "accepted",
     }
+}
+
+// ── Kernel notices written into history ─────────────────────────────────────────────────────────
+
+/// The index line one recalled record becomes. The header names the record, its name, kind and
+/// trust; the body is its one-line description (its name when it has none). The model reads the
+/// record in full with `memory(record_id)`.
+pub fn recall_index_line(record_id: &str, kind: &str, trust: &str, description: &str, name: &str) -> String {
+    let summary = if description.trim().is_empty() { name.trim() } else { description.trim() };
+    let trust = if trust.is_empty() { String::new() } else { format!(" trust={trust}") };
+    let name = memory_name_field(name);
+    format!("[MEMORY record_id={record_id}{name} kind={kind}{trust}] {summary}")
+}
+
+/// ` name=<slug>` for a memory header, or nothing for a record without a name. The name is what
+/// `propose_memory` asks the model to reuse to update a record (plan task 4.4).
+pub fn memory_name_field(name: &str) -> String {
+    if name.trim().is_empty() { String::new() } else { format!(" name={}", name.trim()) }
+}
+
+/// A record a search or a `memory(record_id)` read returned, in full.
+pub fn memory_hit(record_ref: &str, name: &str, kind: &str, content: &str) -> String {
+    format!("[MEMORY record_ref={record_ref}{} kind={kind}] {content}", memory_name_field(name))
+}
+
+/// A `memory(record_id)` read that found nothing.
+pub fn memory_not_found(record_id: &str) -> String {
+    format!(
+        "[MEMORY record_ref={record_id}] not found: it was deleted, expired, or is \
+         outside this memory scope."
+    )
+}
+
+/// The outcome of the model's own `propose_memory`.
+pub fn memory_proposal_outcome(name: &str, outcome: &str) -> String {
+    format!("[MEMORY PROPOSAL name={name}] {outcome}")
+}
+
+/// A proposal the host stored.
+pub fn proposal_stored(record_ref: &str) -> String {
+    format!("stored as record {record_ref}.")
+}
+
+/// A proposal the host could not store.
+pub fn proposal_not_stored(error: &str) -> String {
+    format!("not stored: {error}")
+}
+
+/// A proposal waiting for review.
+pub fn proposal_pending(candidate_id: &str) -> String {
+    format!("pending review as candidate {candidate_id}; it is not stored until the host accepts it.")
+}
+
+/// A body `read_result` paged back in.
+pub fn payload(handle_id: impl std::fmt::Display, content: &str) -> String {
+    format!("[PAYLOAD handle_id={handle_id}]\n{content}")
+}
+
+/// What a dependent workflow node's goal is followed by, per dependency.
+pub fn dependency_references(ids: &[&str]) -> String {
+    format!("[dependency references]\n{}", ids.join(", "))
+}
+
+/// A dependency output clipped to its preview.
+pub fn dependency_output_clipped(id: &str, chars: usize, preview: &str) -> String {
+    format!(
+        "[dependency {id} output, {chars} characters]\n{preview}\n…[read_result(call_id=\"dep:{id}\") reads it in full]"
+    )
+}
+
+/// A dependency output shown whole.
+pub fn dependency_output(id: &str, output: &str) -> String {
+    format!("[dependency {id} output]\n{output}")
+}
+
+// ── The rendered request ────────────────────────────────────────────────────────────────────────
+
+/// The first user turn when a rendered history would otherwise start mid-exchange.
+pub const CONTEXT_RESUMED: &str = "[context resumed]";
+
+/// The state turn's closing anchor.
+pub fn state_turn(body: &str) -> String {
+    format!("{body}\n\nProceed.")
+}
+
+/// The marker that ends a tool result's preview, and says how to read the rest.
+pub fn read_result_hint(call_id: &str) -> String {
+    format!("Call the read_result tool with call_id \"{call_id}\" to re-read the full result.]")
+}
+
+/// A tool result shown as its preview.
+pub fn truncated_output(preview: &str, dropped: usize, call_id: &str) -> String {
+    format!(
+        "{preview}…\n[Output truncated: {dropped} bytes omitted. Call the read_result tool with call_id \"{call_id}\" to re-read the full result.]"
+    )
+}
+
+/// The heading of the notes block in the state turn.
+pub const NOTES_HEADING: &str =
+    "notes (yours, kept verbatim through compaction; rewrite a note by its title as it changes):";
+
+/// One note's line in the state turn.
+pub fn note_line(note: &Note) -> String {
+    format!("  - [{}] {}: {}", note.kind.label(), note.title, note.body)
+}
+
+/// The notes block; empty without notes.
+pub fn notes_block(notes: &[Note]) -> String {
+    if notes.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![NOTES_HEADING.to_string()];
+    lines.extend(notes.iter().map(note_line));
+    lines.join("\n")
+}
+
+/// The `[TASK STATE]` block of the state turn; empty before a task is set.
+pub fn task_state_block(state: &TaskState) -> String {
+    if state.goal.is_empty() && state.plan.is_empty() && state.progress.is_empty() {
+        return String::new();
+    }
+    let mut lines = Vec::new();
+    lines.push(format!("[TASK STATE] goal: {}", state.goal));
+    if !state.criteria.is_empty() {
+        lines.push(format!("criteria: {}", state.criteria.join(" | ")));
+    }
+    // Directives right after the goal: a recent user command keeps its imperative force across
+    // compaction and renewal.
+    if !state.directives.is_empty() {
+        lines.push("active_directives (most recent last):".to_string());
+        for d in &state.directives {
+            lines.push(format!("  - {d}"));
+        }
+    }
+    if !state.plan.is_empty() {
+        lines.push("plan:".to_string());
+        for (i, step) in state.plan.iter().enumerate() {
+            let marker = if step.done {
+                "done"
+            } else if Some(i) == state.current_step {
+                "active"
+            } else {
+                "todo"
+            };
+            lines.push(format!("  [{}] {}. {}", marker, i + 1, step.label));
+        }
+    }
+    if !state.progress.is_empty() {
+        lines.push(format!("progress: {}", state.progress));
+    }
+    if !state.blocked_on.is_empty() {
+        lines.push(format!("blocked_on: {}", state.blocked_on.join(", ")));
+    }
+    let notes = notes_block(&state.notes);
+    if !notes.is_empty() {
+        lines.push(notes);
+    }
+    if !state.scratchpad.is_empty() {
+        lines.push(format!("scratchpad: {}", state.scratchpad));
+    }
+    // Only the latest three compaction records; older ones stay in `compression_log`.
+    if !state.compression_log.is_empty() {
+        lines.push("compression_history:".to_string());
+        let start = state.compression_log.len().saturating_sub(3);
+        for entry in &state.compression_log[start..] {
+            if entry.summary.is_empty() {
+                lines.push(format!("  [{}]", entry.action));
+            } else {
+                lines.push(format!("  [{}] {}", entry.action, entry.summary));
+            }
+        }
+    }
+    lines.join("\n")
 }

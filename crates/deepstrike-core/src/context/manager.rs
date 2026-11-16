@@ -1215,18 +1215,11 @@ impl ContextManager {
     /// trust; the body is its one-line description (its name when it has none). The model reads
     /// the record in full with `memory(record_id)`.
     pub fn recall_index_line(record_id: &str, kind: &str, trust: &str, description: &str, name: &str) -> String {
-        let summary = if description.trim().is_empty() { name.trim() } else { description.trim() };
-        let trust = if trust.is_empty() { String::new() } else { format!(" trust={trust}") };
-        let name = Self::memory_name_field(name);
-        format!("[MEMORY record_id={record_id}{name} kind={kind}{trust}] {summary}")
+        super::voice::recall_index_line(record_id, kind, trust, description, name)
     }
 
-    /// ` name=<slug>` for a memory header, or nothing for a record without a name. The name is
-    /// what `propose_memory` asks the model to reuse to update a record: without it in view the
-    /// model could not, and every correction became a second record beside the first
-    /// (kernel-distillation plan task 4.4: records overwritten 19% → 82% of proposals).
     pub fn memory_name_field(name: &str) -> String {
-        if name.trim().is_empty() { String::new() } else { format!(" name={}", name.trim()) }
+        super::voice::memory_name_field(name)
     }
 
     /// Land recalled records as keyed `memory_recall` items `memory:<record_id>`. The key dedupes a

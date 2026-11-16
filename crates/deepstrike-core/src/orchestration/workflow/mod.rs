@@ -126,19 +126,19 @@ impl DependencyContext {
                 if ids.is_empty() {
                     String::new()
                 } else {
-                    format!("[dependency references]\n{}", ids.join(", "))
+                    crate::context::voice::dependency_references(&ids)
                 }
             }
             DependencyMode::Full | DependencyMode::Handle => {
                 let max_chars = self.shown_chars().unwrap_or_default();
                 produced
                     .map(|(id, output)| match output.char_indices().nth(max_chars) {
-                        Some((cut, _)) => format!(
-                            "[dependency {id} output, {} characters]\n{}\n…[read_result(call_id=\"dep:{id}\") reads it in full]",
+                        Some((cut, _)) => crate::context::voice::dependency_output_clipped(
+                            id,
                             output.chars().count(),
-                            &output[..cut]
+                            &output[..cut],
                         ),
-                        None => format!("[dependency {id} output]\n{output}"),
+                        None => crate::context::voice::dependency_output(id, output),
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n")
