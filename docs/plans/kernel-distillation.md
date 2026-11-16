@@ -299,7 +299,7 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
     6. **作废的 oracle。** 原设计的 `stale_records` 与 `records_conflicting` 靠关键词判断记录是否提到某条规则。实测中几乎每条记录都提到每条规则（"canary 行**要**计入"），关键词分不清肯定与否定，数值无意义，已从基准删除；结果文件里这两个字段不要读。
     7. **基准自身的问题。** `retry` 规则（req 以 0 结尾）在 10 个序列里从未被任何一条记录提到过：模型从三行示例里看不出它。以它为初始规则的 SEQ#6 八个会话全错；以它为漂移后新规则的 5 个序列，漂移后 15 个会话对了 4 个，其余 5 个序列对了 5 个。样本太小，不能说 `retry` 拖累了恢复，但后续实验应记下这一点。
     8. **协议层错误 2 / 80**：`OpenAI-compatible replay has assistant tool_calls with no tool result`（SEQ#2@1、SEQ#3@5）。0.2.82 的 `notes` 结果里也有 1 / 48，不是阶段 0 引入的。与 0.2.80 修过的"记忆命中插进工具批次"是同一类报错，需要单独查。
-- [x] 4.4 **按 4.3 的结果决定（G）。** name 进入头部，已成为默认；两个缺陷留给交接（见 §10）。
+- [x] 4.4 **按 4.3 的结果决定（G）。** name 进入头部，已成为默认；排查出的缺陷都已修复（见 §10.2）。
   - 4.3 的结论落在"不能自己修复"一侧，但原定的候选机制（让模型退役一条记忆）不是第一步：模型连已有的更新途径都用不上，因为它看不到 name。
   - **候选改动：让模型看到 name。** recall 索引行、搜索结果、点读结果的头部都带上 `name=<slug>`。不加工具、不加动作、不加 effect。它改变模型看到的内容，按 DEC-13 走 gate：放在默认关闭的实验开关后，对"没有它的配置"实测。
     - 场景：multi-session `--drift 4`（目标场景，看正确率、`overwrites` 占比、记录数）与不带漂移的 multi-session（不能变差）。先各 10 个序列看方向，再补到 30 对以上。
@@ -328,12 +328,12 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
       4. 候选组的 4 个运行错误里有 4 个是已修复的那条协议层错误，都计入了候选组的失败，结论因此偏保守。
     - **结论：通过，已成为默认（用户 2026-11-16 确认）。** 环境变量开关已删除；三处头部固定带 `name=`（`ContextManager::memory_name_field`，记录没有 name 时不带）；`memory` 工具说明里的头部格式同步更新。四端 SDK 都不自己拼这三种头部，只改了断言旧格式的测试（内核 3 处、Rust SDK 2 处、Node 3 个文件、WASM 2 个、Python 3 个）。kernel golden 没有变化。写入 CHANGELOG 与 `MIGRATION-0.2.83-to-0.2.84.md`。验证：`cargo test --workspace`、Node 1421 个测试、WASM `test:canonical-binding` 全部通过；Python 的 venv 失效，三个改过断言的测试文件没有跑过。
   - 只有在模型看得到 name 之后记录仍然只增不改，才考虑退役动作；离线整理排在其后，且必须在漂移变体上实测。
-  - **协议层错误的排查结果（2026-11-16）。** 用脚本化 provider 离线复现（随机批次 80 次运行 + 约 40 个定向用例）：
-    - **已修复，实测里的那条报错。** `propose_memory` 与宿主工具同一轮时，提案的结果消息（`[MEMORY PROPOSAL …]`）在宿主工具返回之前写入历史，夹在 assistant 的调用和它的结果之间。改为与记忆命中相同的 `push_history_after_tool_results`（`driver/effects.rs` 的 `settle_memory_write`）。内核回归测试 `a_proposal_settled_before_a_sibling_tool_waits_behind_the_tool_results`，去掉修复即失败。
-    - **已修复（仅 Node）。** `memory` 与 `propose_memory` 同一轮时，内核在一个 step 里发布两个 effect，runner 执行完第一个后拿不到 action，报 "must return one host action"。`canonicalKernelAction` 现在回退到内核仍未结清的下一个 effect。没有补 Node 侧回归测试；Python / WASM / Rust 的 runner 是否有同样的问题没有查。
-    - **未修复，已复现。** 同一个 `read_file` 调用连续重复到第 5 次（重复熔断）且同轮带 `memory` 时，运行以 `invalid_authority … exposed no tool named "memory"` 终止。
-    - **未修复，实测中出现 1 次。** 模型调用了当轮没有暴露的 `read_result`，运行以 `invalid_authority` 终止。调用一个不存在的宿主工具只会得到一条错误结果，调用一个未暴露的内核工具却终止整个运行，两者不一致。
-  - 另记两个不属于本项、但被这次数据指出的问题：上面第 5 点（空存储上的反复搜索）与第 8 点（协议层错误）。前者先看 name 改动之后的数字再说；后者是缺陷，应单独修。
+  - **协议层错误的排查结果（2026-11-16）。** 用脚本化 provider 离线复现（随机批次 80 次运行 + 约 40 个定向用例），四个问题都已修复，见 §10.2：
+    - `propose_memory` 的结果消息夹在 assistant 的调用和它的结果之间（实测里的那条报错）；
+    - `memory` 与 `propose_memory` 同一轮，四端 runner 都会让运行失败；
+    - 重复熔断在同一轮的记忆查询未结清时就调用 provider；
+    - 调用未暴露的内核工具以 `invalid_authority` 终止运行。
+  - 另记一个不属于本项、但被这次数据指出的问题：上面第 5 点（空存储上的反复搜索）。先看 name 改动之后的数字再说。
 - [ ] 4.5 **候选实验，不排期：原始记录检索作为模型工具。** `transcript_search` 只作为整理 run 的一部分测过，没有单独测过"模型在会话里自己查过去的日志"。等 4.3 的基准就绪后再决定是否值得一测。
 
 ## 6. 顺序与版本
@@ -402,7 +402,7 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
    - [x] Node runner 的回退补了回归测试（`b97c9c13`），去掉修复即失败。
    - [x] WASM、Python、Rust 的 runner 有同样的问题，已用同一种回退修复，各加一个回归测试，去掉修复即失败（`b3f012b0`）。
    - [x] Python：旧 venv 指向已不存在的 Python 3.11。在临时目录用 Python 3.12 新建 venv、`maturin develop --release` 后全量 pytest 通过（913 passed）。本机 shell 设了 SOCKS 代理，跑 pytest 要先清掉 `ALL_PROXY` / `HTTP(S)_PROXY`，否则 httpx 报缺 `socksio`。
-   - [ ] 本文没有英文版，`node scripts/check-docs-drift.mjs` 因此失败。开 PR 前补上。
+   - [x] 英文版 `docs/en/plans/kernel-distillation.md`（`check-docs-drift` 要求中英文成对）。中文版是工作副本，先改中文再同步英文。
 3. **阶段 1（1.1–1.9）**，然后 **4.1**（排在 1.2 之后，wire 可选字段已获放行）。
 4. **阶段 2 的 DEC-13 审计。** 预算上限未定（§8 第 1 条），开跑前问用户。
 5. **阶段 3 文档。**
