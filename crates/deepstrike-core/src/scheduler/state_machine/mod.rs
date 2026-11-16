@@ -372,6 +372,14 @@ pub struct LoopStateMachine {
     pub(super) suspend_state: Option<SuspendState>,
     /// Denied tool results to merge into the next `ToolResults` feed after resume.
     pub(super) pending_denied_results: Vec<ToolResult>,
+    /// The provider turn being fed published kernel-owned work of its own (a memory query, a
+    /// memory write) while its syscalls were adjudicated. Set for that turn before the fuse and
+    /// the gates run; read only by [`Self::commit_synthetic_results`]. Never checkpointed: it is
+    /// written and consumed inside one `feed`.
+    pub(super) turn_awaits_kernel_work: bool,
+    /// A synthetic tool-result commit must not call the provider: the turn resumes when its
+    /// kernel-owned work resolves. Consumed by the tool-results arm.
+    pub(super) defer_provider_call: bool,
     /// Host-provided tool accounting keyed by call id. Measurements stay outside canonical
     /// `ToolResult` state and are consumed exactly once at the tool-result boundary.
     pub(super) pending_tool_measurements: HashMap<CompactString, u32>,
@@ -483,6 +491,8 @@ impl LoopStateMachine {
             last_now_ms: None,
             suspend_state: None,
             pending_denied_results: Vec::new(),
+            turn_awaits_kernel_work: false,
+            defer_provider_call: false,
             pending_tool_measurements: HashMap::new(),
             workflow: None,
             root_workflow: false,
@@ -1390,6 +1400,11 @@ impl LoopStateMachine {
                 // gate and independent of whether a policy is loaded — a batteries-included kernel
                 // protection, not a policy feature. Deny commits a visible synthetic error result;
                 // the terminate rung ends the run `NoProgress` after one final no-tools report turn.
+                // A fuse or gate that answers this batch with synthetic results must not call the
+                // provider while work the turn's syscalls published is still outstanding: that
+                // call would race the work, and its result would be rendered without it.
+                self.turn_awaits_kernel_work =
+                    adjudicated.idle_continuation == IdleContinuation::Await;
                 if let Some(action) = self.check_repeat_fuse(&calls) {
                     return action;
                 }
@@ -1431,6 +1446,9 @@ impl LoopStateMachine {
                     self.ctx
                         .push_signal(note.content.as_text().unwrap_or_default().to_string());
                     self.phase = LoopPhase::Reason;
+                    if std::mem::take(&mut self.defer_provider_call) {
+                        return LoopAction::AwaitingResume;
+                    }
                     return self.emit_call_llm();
                 }
                 // Tool errors are committed to history so the LLM can see them and self-correct
@@ -1589,6 +1607,11 @@ impl LoopStateMachine {
                 self.drain_queued_signals();
 
                 self.phase = LoopPhase::Reason;
+                if std::mem::take(&mut self.defer_provider_call) {
+                    // The turn's kernel-owned work resolves later and resumes it
+                    // (`resume_after_preload`), with that work's outcome in context.
+                    return LoopAction::AwaitingResume;
+                }
                 self.emit_call_llm()
             }
 

@@ -12301,3 +12301,60 @@ fn a_note_over_the_budget_is_answered_with_the_refusal() {
     assert!(is_error);
     assert!(output.contains("notes are full"), "{output}");
 }
+
+
+/// The repeat fuse answers a repeated host call with a synthetic refusal. When the same turn also
+/// asked memory, the provider must not be called until that query resolves: the step used to
+/// publish the query and the next provider call together, and the next request then raced the
+/// query and was rendered without its hits (on Node the run ended with `invalid_authority`).
+#[test]
+fn a_fused_turn_waits_for_the_memory_query_it_made() {
+    let (mut runtime, mut provider) = agent_awaiting_provider();
+    let deny_after = crate::governance::repeat_fuse::RepeatFuseConfig::default().deny_after as u64;
+    for turn in 0..=deny_after {
+        let at = 1_700_000_002_000 + turn * 10_000;
+        let step = runtime.submit(&provider_result(
+            &format!("in-turn-{turn}"),
+            at,
+            &provider,
+            vec![
+                tool_call(&format!("m{turn}"), crate::context::manager::MEMORY_TOOL_NAME, json!({"query": "rules"})),
+                tool_call(&format!("s{turn}"), "search", json!({"q": "same"})),
+            ],
+        ));
+        assert_eq!(
+            kinds(&step),
+            vec![EffectKindTag::QueryMemory],
+            "turn {turn}: the memory query goes out alone, fused or not"
+        );
+        let query = sole_effect(&step).effect_id.clone();
+        let mut next = runtime.submit(&resolved(
+            &format!("in-q-{turn}"),
+            at + 1,
+            &query,
+            EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls: vec![] }),
+        ));
+        if turn + 1 < deny_after {
+            let EffectKind::ExecuteTools(exec) = &sole_effect(&next).effect else {
+                panic!("turn {turn}: expected the search to run, got {:?}", kinds(&next));
+            };
+            assert_eq!(exec.calls.len(), 1);
+            let tools = sole_effect(&next).effect_id.clone();
+            next = runtime.submit(&tools_resolved(&format!("in-t-{turn}"), at + 2, &tools, &[(&format!("s{turn}"), "same body", false)]));
+        } else {
+            assert!(
+                tool_result_for(&runtime, &format!("s{turn}"))
+                    .is_some_and(|(output, is_error)| is_error && output.starts_with("not executed")),
+                "turn {turn}: the fuse refused the repeated search"
+            );
+        }
+        assert_eq!(
+            kinds(&next),
+            vec![EffectKindTag::CallProvider],
+            "turn {turn}: one provider call, after the query resolved"
+        );
+        provider = sole_effect(&next).effect_id.clone();
+    }
+    let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
+    assert!(crate::context::units::strict_tool_pairing_is_valid(history.messages()));
+}

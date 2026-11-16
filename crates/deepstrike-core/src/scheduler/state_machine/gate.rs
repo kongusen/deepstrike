@@ -454,8 +454,10 @@ impl LoopStateMachine {
     /// preserving observations already collected this step (the recursive feed clears them).
     pub(super) fn commit_synthetic_results(&mut self, results: Vec<ToolResult>) -> LoopAction {
         self.phase = LoopPhase::Reason;
+        self.defer_provider_call = std::mem::take(&mut self.turn_awaits_kernel_work);
         let kept = std::mem::take(&mut self.observations);
         let action = self.feed(LoopEvent::ToolResults { results });
+        self.defer_provider_call = false;
         let inner = std::mem::replace(&mut self.observations, kept);
         self.observations.extend(inner);
         action
