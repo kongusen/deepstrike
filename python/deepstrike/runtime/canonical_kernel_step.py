@@ -1031,6 +1031,15 @@ class CanonicalRunnerRuntime:
   def _current_action(self) -> KernelRunnerAction | None:
     return canonical_action_from_projection_json(self.host.kernel.projection_json())
 
+  def pending_action(self) -> KernelRunnerAction | None:
+    """The kernel's next outstanding effect, in publication order, whichever step published it.
+
+    A turn can publish two kernel-tool effects in one step (``memory`` beside ``propose_memory``);
+    the step that settles the first publishes nothing, and the second is still owed.
+    """
+    action = self._current_action()
+    return None if action is not None and action.kind == "unsupported_effect" else action
+
   def _pending_effects(self) -> list[dict[str, Any]]:
     raw = json.loads(self.host.kernel.pending_effects_json())
     return [_object(value) for value in raw] if isinstance(raw, list) else []
@@ -1503,6 +1512,8 @@ async def host_action(
   runtime: CanonicalRunnerRuntime, pending: list[dict[str, Any]], event: dict[str, Any],
 ) -> KernelRunnerAction:
   action = await maybe_host_action(runtime, pending, event)
+  if action is None:
+    action = runtime.pending_action()
   if action is None:
     raise RuntimeError("canonical kernel transition must return one host action")
   return action

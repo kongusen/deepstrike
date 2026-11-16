@@ -3264,6 +3264,63 @@ mod tests {
             assert!(!contexts[2].contains("elsewhere body"));
         }
 
+        /// A memory query and a proposal in one turn: the kernel publishes both effects in one
+        /// step, and the runner must run both before the next provider call. It used to stop
+        /// after the first ("kernel transition returned no action and no fault").
+        #[tokio::test]
+        async fn a_memory_query_and_a_proposal_in_one_turn_both_run() {
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![vec![
+                    StreamEvent::ToolCall {
+                        id: "call_q".into(),
+                        name: "memory".into(),
+                        arguments: serde_json::json!({ "query": "prefs" }),
+                    },
+                    StreamEvent::ToolCall {
+                        id: "call_p".into(),
+                        name: "propose_memory".into(),
+                        arguments: serde_json::json!({ "name": "brief-style", "kind": "project", "content": "numbered sections" }),
+                    },
+                ]],
+                contexts: contexts.clone(),
+            };
+            let mut opts = options(
+                provider,
+                crate::runtime::execution_plane::LocalExecutionPlane::new(),
+                &[],
+            );
+            opts.agent_id = Some("p1-15".into());
+            opts.memory_scope = Some(deepstrike_core::mm::memory::MemoryScope::new(
+                "agent-memory",
+                "rust-tests",
+            ));
+            let mut crossing = super::memory_record("crossing", "crossing body");
+            crossing.record_id = "crossing".into();
+            opts.memory_store = Some(Box::new(RecallStore {
+                hits: vec![crossing],
+                recalls: Arc::new(Mutex::new(Vec::new())),
+            }));
+            let sink = Arc::new(crate::memory::InMemoryMemoryCandidateSink::new());
+            opts.memory_candidate_sink =
+                Some(sink.clone() as Arc<dyn crate::memory::MemoryCandidateSink>);
+            opts.memory_runtime_policy = Some(crate::memory::MemoryRuntimePolicy {
+                retrieval: crate::memory::MemoryRetrievalPolicy::Host,
+                model_writes: crate::memory::MemoryWritePolicy::CandidateSink,
+            });
+            let runner = RuntimeRunner::new(opts);
+            let events = drain(&runner, "p1-15-both").await;
+            assert!(
+                !events.iter().any(|e| matches!(e, RunEvent::Error(_))),
+                "{events:?}"
+            );
+            assert_eq!(sink.candidates(Some("p1-15")).len(), 1);
+            let contexts = contexts.lock().unwrap();
+            assert_eq!(contexts.len(), 2, "{contexts:?}");
+            assert!(contexts[1].contains("[MEMORY record_ref=crossing name=crossing kind=feedback] crossing body"), "{}", contexts[1]);
+            assert!(contexts[1].contains("[MEMORY PROPOSAL name=brief-style]"), "{}", contexts[1]);
+        }
+
         /// Plan task 3.1 · a run holding a dependency output reads it in full with `read_result`.
         #[tokio::test]
         async fn a_dependency_output_is_read_through_read_result() {

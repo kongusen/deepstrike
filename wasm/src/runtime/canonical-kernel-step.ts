@@ -1659,6 +1659,14 @@ export class CanonicalRunnerRuntime {
     return canonicalActionFromProjectionJson(this.host.kernel.projectionJson())
   }
 
+  /** The kernel's next outstanding effect, in publication order, whichever step published it.
+   *  A turn can publish two kernel-tool effects in one step (`memory` beside `propose_memory`);
+   *  the step that settles the first publishes nothing, and the second is still owed. */
+  pendingAction(): KernelRunnerAction | null {
+    const action = this.currentAction()
+    return action?.kind === "unsupported_effect" ? null : action
+  }
+
   private pendingEffects(): Array<Record<string, unknown>> {
     return JSON.parse(this.host.kernel.pendingEffectsJson()) as Array<Record<string, unknown>>
   }
@@ -2009,7 +2017,7 @@ export async function canonicalKernelAction(
   pending: KernelObservationLike[],
   event: Record<string, unknown>,
 ): Promise<KernelRunnerAction> {
-  const action = await canonicalKernelMaybeAction(runtime, pending, event)
+  const action = await canonicalKernelMaybeAction(runtime, pending, event) ?? runtime.pendingAction()
   if (!action) throw new Error("canonical kernel transition must return one host action")
   return action
 }

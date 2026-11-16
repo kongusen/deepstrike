@@ -273,6 +273,34 @@ async function drain(runner, sessionId, goal = "go") {
     assert.doesNotMatch(JSON.stringify(provider.contexts[2]), /elsewhere body/)
   }
 
+  // a memory query and a proposal in one turn: both run, then one provider call
+  {
+    const fixture = store([stored("crossing", 0)])
+    const submitted = []
+    const memoryCandidateSink = {
+      async submit(agentId, candidate) {
+        submitted.push(candidate.record.name)
+        await fixture.memoryStore.put(agentId, candidate.record)
+        return { status: "accepted", candidate_id: candidate.candidate_id, receipt_id: "r-1", record_ref: candidate.record.record_id, digest: "d-1" }
+      },
+    }
+    const provider = scripted([[
+      { type: "tool_call", id: "q1", name: "memory", arguments: { query: "prefs" } },
+      { type: "tool_call", id: "p1", name: "propose_memory", arguments: { name: "brief-style", kind: "project", content: "numbered sections" } },
+    ]])
+    const runner = new RuntimeRunner({
+      provider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(), maxTokens: 8000, maxTurns: 4,
+      agentId: "p1-15", memoryScope: scope, memoryStore: fixture.memoryStore, preQueryMemory: () => [],
+      memoryCandidateSink, memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+    })
+    const events = await drain(runner, "p1-15-both")
+    assert.deepEqual(events.filter(event => event.type === "error").map(event => event.message), [])
+    assert.deepEqual(submitted, ["brief-style"])
+    assert.equal(provider.contexts.length, 2)
+    assert.match(JSON.stringify(provider.contexts[1]), /\[MEMORY record_ref=crossing name=crossing kind=reference\] crossing body/)
+    assert.match(JSON.stringify(provider.contexts[1]), /\[MEMORY PROPOSAL name=brief-style\]/)
+  }
+
   // a host write inside a live run answers to the kernel's rolling write quota
   {
     const fixture = store()
