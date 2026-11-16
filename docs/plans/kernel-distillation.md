@@ -391,14 +391,14 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 
 ### 10.2 待办，按顺序
 
-1. **两个未修复的缺陷**（4.4 的排查记录里有细节）。修之前先各写一个会失败的内核测试。
-   - 重复熔断与 `memory` 同轮：`node scripts/kernel-tool-batches.mjs` 里 `rep-read+mem x10`、`rep-mem+read x10`、`rep-fetch+read x10` 九个用例稳定失败，报 `invalid_authority … exposed no tool named "memory"`。同一个 `read_file` 调用重复到第 5 次时触发。脚本以非零退出，修好后应全部 `ok`。
-   - 模型调用当轮未暴露的内核工具（实测中是 `read_result`）时运行以 `invalid_authority` 终止。先确认这是有意的边界还是缺陷：调用不存在的宿主工具只得到一条错误结果，两者不一致。如果要改行为，这是模型可见的变化，先报用户。
+1. **两个缺陷。**
+   - [x] 重复熔断与 `memory` 同轮（2026-11-16，`dfcb62fb`）。根因：熔断或门禁用合成结果回答本轮宿主调用时，引擎立刻调用 provider，不管同一轮的 syscall 是否已发布内核工作（记忆查询或写入）；一个 step 同时发布 `QueryMemory` 与 `CallProvider`，下一次请求与查询赛跑，渲染时没有查询结果。修复：这种情况下合成提交返回 `AwaitingResume`，工作结清后经 `resume_after_preload` 继续，与未熔断的轮次一致（`state_machine/mod.rs` 的 `turn_awaits_kernel_work` / `defer_provider_call`，`gate.rs` 的 `commit_synthetic_results`）。内核回归测试 `a_fused_turn_waits_for_the_memory_query_it_made`，去掉修复即失败。
+   - [ ] **未暴露的内核工具终止运行，待用户裁决。** `scripts/kernel-tool-batches.mjs` 剩下的 9 个失败用例全是这一类：终止档（同一调用重复 8 次）强制一轮"不带工具的总结"，脚本里的模型在这一轮仍调用 `memory`，`derive_provider_syscalls`（`driver/provider.rs`）以 `invalid_authority` 终止运行。实测中那次 `read_result` 也是同一处。对比：调用当轮未暴露的宿主工具，引擎的 `gate_exposed_tool_calls` 回一条错误结果，运行继续。候选改法：未暴露的内核工具同样回一条"不可用"错误结果、不执行，运行继续。不执行这一点不变，§7.6 防伪造的目的仍然成立；但它改变模型可见内容，也改了 §7.6 写明的"dies here"语义，需要用户决定。
 2. **补上一轮留下的缺口。**
-   - Node runner 的回退（`canonicalKernelAction` → `pendingAction()`）没有回归测试。
-   - Python、WASM、Rust 的 runner 在 `memory` + `propose_memory` 同轮时是否同样失败，没有查。复现脚本只覆盖 Node。
-   - Python 的 venv 失效（解释器路径不存在）。重建后跑全量 pytest，尤其是 `test_renewal_memory_requery.py`、`test_memory_recall_lifecycle.py`、`test_boundary_p1_regressions.py`，这三个的断言是按 fixture 的 name 手改的，没有跑过。
-   - 本文没有英文版，`node scripts/check-docs-drift.mjs` 因此失败（`missing en: docs/en/plans/kernel-distillation.md`）。开 PR 前补上。
+   - [x] Node runner 的回退补了回归测试（`b97c9c13`），去掉修复即失败。
+   - [x] WASM、Python、Rust 的 runner 有同样的问题，已用同一种回退修复，各加一个回归测试，去掉修复即失败（`b3f012b0`）。
+   - [x] Python：旧 venv 指向已不存在的 Python 3.11。在临时目录用 Python 3.12 新建 venv、`maturin develop --release` 后全量 pytest 通过（913 passed）。本机 shell 设了 SOCKS 代理，跑 pytest 要先清掉 `ALL_PROXY` / `HTTP(S)_PROXY`，否则 httpx 报缺 `socksio`。
+   - [ ] 本文没有英文版，`node scripts/check-docs-drift.mjs` 因此失败。开 PR 前补上。
 3. **阶段 1（1.1–1.9）**，然后 **4.1**（排在 1.2 之后，wire 可选字段已获放行）。
 4. **阶段 2 的 DEC-13 审计。** 预算上限未定（§8 第 1 条），开跑前问用户。
 5. **阶段 3 文档。**
