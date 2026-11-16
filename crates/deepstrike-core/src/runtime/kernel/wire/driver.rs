@@ -1309,6 +1309,7 @@ fn restore_context_vm(
     ctx.recall_top_k = state.recall_top_k;
     ctx.recall_due = state.recall_due;
     ctx.dependency_bodies = state.dependency_bodies.clone();
+    ctx.read_result_offered = state.read_result_offered;
     ctx.partitions.signals = state.signals.clone();
     ctx.partitions.task_state = restore_task_state(&state.task_state);
     ctx.last_activity_ms = state.last_activity_ms.get();

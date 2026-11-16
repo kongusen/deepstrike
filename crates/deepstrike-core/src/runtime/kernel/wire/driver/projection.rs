@@ -236,6 +236,7 @@ impl CanonicalOperationDriver {
             recall_top_k: ctx.recall_top_k,
             recall_due: ctx.recall_due,
             dependency_bodies: ctx.dependency_bodies.clone(),
+            read_result_offered: ctx.read_result_offered,
             handles: ctx
                 .handles
                 .all()

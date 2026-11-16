@@ -218,6 +218,10 @@ pub struct ContextManager {
     /// Plan task 3.1 · dependency outputs by agent id, read in full with
     /// `read_result(call_id="dep:<agent_id>")`. Only previews are in the rendered context.
     pub dependency_bodies: std::collections::BTreeMap<String, String>,
+    /// `read_result` has been offered in this run, so it stays offered. Withdrawing it when the
+    /// last evicted result came back (a page-in, a compaction boundary) left the model calling a
+    /// tool its own history shows it using — and broke the cache prefix besides.
+    pub read_result_offered: bool,
     /// Plan task 1.1b · the last item id handed out, to a history message or (plan task 7.1) a
     /// knowledge entry: one allocator for both.
     pub(crate) last_item_id: ItemId,
@@ -323,6 +327,7 @@ impl ContextManager {
             recall_top_k: None,
             recall_due: false,
             dependency_bodies: std::collections::BTreeMap::new(),
+            read_result_offered: false,
             cache_invalidated_tokens: 0,
             cache_ledger: super::cache_ledger::CacheLedger::default(),
             last_item_id: 0,
@@ -2123,19 +2128,32 @@ impl ContextManager {
         tools
     }
 
-    /// O7: the `read_result` meta-tool — re-fetch a tool result the kernel evicted from context
-    /// (external / collapsed / paged out). Exposed DYNAMICALLY: only once at least one
-    /// handle has actually left residency, so runs that never evict see an unchanged toolset
-    /// (progressive disclosure; golden fixtures and cache prefixes stay byte-stable). Content is
-    /// host-resolved through the payload store — the kernel only advertises the capability.
-    pub fn read_result_tool_schema(&self) -> Option<ToolSchema> {
-        let any_evicted = !self.dependency_bodies.is_empty()
+    /// Whether a dependency output or an evicted tool result is there to be read back.
+    fn anything_to_read_back(&self) -> bool {
+        !self.dependency_bodies.is_empty()
             || self
                 .handles
                 .all()
                 .iter()
-                .any(|h| !h.residency.occupies_context());
-        if !any_evicted {
+                .any(|h| !h.residency.occupies_context())
+    }
+
+    /// Latch the `read_result` offer once there is something to read back. Called before every
+    /// provider toolset is built; from then on the tool stays for the rest of the run.
+    pub fn latch_read_result_offer(&mut self) {
+        if !self.read_result_offered && self.anything_to_read_back() {
+            self.read_result_offered = true;
+        }
+    }
+
+    /// O7: the `read_result` meta-tool — re-fetch a tool result the kernel evicted from context
+    /// (external / collapsed / paged out). Offered once at least one handle has left residency
+    /// (or a dependency output is held), so runs that never evict see an unchanged toolset
+    /// (golden fixtures and cache prefixes stay byte-stable); once offered it is never withdrawn
+    /// ([`Self::read_result_offered`]). Content is host-resolved through the payload store — the
+    /// kernel only advertises the capability.
+    pub fn read_result_tool_schema(&self) -> Option<ToolSchema> {
+        if !(self.read_result_offered || self.anything_to_read_back()) {
             return None;
         }
         Some(ToolSchema {

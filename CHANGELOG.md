@@ -23,6 +23,26 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 
 ### Fixed
 
+- `read_result` disappeared from the toolset while the model still had reason to call it. It was
+  offered only while some tool result was out of context, so paging a result back in, or a
+  compaction or renewal that made collapsed results resident again, withdrew it — even though its
+  own description tells the model to page through large content with `offset`. The model called it
+  again and the run ended with `invalid_authority`. Once offered in a run, `read_result` now stays
+  offered (checkpointed as `read_result_offered`); a toolset that no longer shrinks also stops
+  breaking the cache prefix.
+- A call to a kernel tool the turn did not expose (`memory`, `read_result`, `start_workflow`, …)
+  ended the run with `invalid_authority`. It is now refused like an unexposed host tool: an error
+  result "Tool '…' is not available on this turn. Choose from the tools listed in your tools
+  schema.", nothing executed, and the turn continues. Repeats of such a call count toward the
+  repeat fuse even for meta-tool names, so a model that keeps calling a tool it does not have is
+  denied and then ends `NoProgress` after a final report turn. The typical trigger was that final
+  report turn itself, which offers no tools.
+- When the repeat fuse or a gate answered a turn's host calls with synthetic results, the kernel
+  called the provider at once even if the same turn had issued a memory query or write; the next
+  request raced that work and was rendered without its result. The turn now waits for it.
+- WASM, Python and Rust: a turn that called `memory` and `propose_memory` together failed the run
+  ("must return one host action" / "kernel transition returned no action and no fault"), as Node
+  did. All four runners now take the kernel's next outstanding effect.
 - A `propose_memory` call in the same turn as a host tool could end the run on OpenAI-compatible
   providers with "assistant tool_calls with no tool result". The proposal's outcome was written
   into history as soon as the host settled it, ahead of the host tool's result; it now waits behind

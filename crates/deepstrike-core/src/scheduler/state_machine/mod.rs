@@ -234,6 +234,10 @@ pub struct AnsweredCall {
     pub call_id: CompactString,
     pub output: String,
     pub is_error: bool,
+    /// The call named a kernel tool the turn did not expose. It was refused without being
+    /// executed, and it counts toward the repeat fuse like any other call (a meta tool's name
+    /// does not exempt a call the model could not legally make).
+    pub unexposed: bool,
 }
 
 /// What a provider turn does when the kernel's own adjudication left nothing for a host to run.
@@ -1322,6 +1326,19 @@ impl LoopStateMachine {
                 // driver. The assistant message keeps every call the model made — it must see the
                 // turn it emitted — but a syscall is never dispatched: it is closed here with the
                 // kernel's own answer, before the fuse/gate, which meter host work only.
+                // Calls to kernel tools this turn did not expose: already refused by the driver,
+                // and still metered by the repeat fuse below.
+                let unexposed_ids: HashSet<CompactString> = adjudicated
+                    .answered_calls
+                    .iter()
+                    .filter(|answer| answer.unexposed)
+                    .map(|answer| answer.call_id.clone())
+                    .collect();
+                let unexposed_calls: Vec<ToolCall> = calls
+                    .iter()
+                    .filter(|call| unexposed_ids.contains(&call.id))
+                    .cloned()
+                    .collect();
                 let calls = if adjudicated.answered_calls.is_empty() {
                     calls
                 } else {
@@ -1342,6 +1359,13 @@ impl LoopStateMachine {
                         .filter(|call| !answered.contains(&call.id))
                         .collect()
                 };
+                self.turn_awaits_kernel_work =
+                    adjudicated.idle_continuation == IdleContinuation::Await;
+                if calls.is_empty() && !unexposed_calls.is_empty() {
+                    if let Some(action) = self.check_repeat_fuse(&calls, &unexposed_calls) {
+                        return action;
+                    }
+                }
                 if calls.is_empty() {
                     // §5k · a syscall-only batch leaves nothing for a host to execute. Either the
                     // adjudication already published kernel-owned work — and the turn resumes when
@@ -1403,9 +1427,7 @@ impl LoopStateMachine {
                 // A fuse or gate that answers this batch with synthetic results must not call the
                 // provider while work the turn's syscalls published is still outstanding: that
                 // call would race the work, and its result would be rendered without it.
-                self.turn_awaits_kernel_work =
-                    adjudicated.idle_continuation == IdleContinuation::Await;
-                if let Some(action) = self.check_repeat_fuse(&calls) {
+                if let Some(action) = self.check_repeat_fuse(&calls, &unexposed_calls) {
                     return action;
                 }
 
@@ -2001,6 +2023,7 @@ impl LoopStateMachine {
                 return self.terminate(TerminationReason::ContextOverflow, None);
             }
         }
+        self.ctx.latch_read_result_offer();
         let tools = if self.pending_termination.is_some() {
             Vec::new()
         } else {
@@ -2022,6 +2045,7 @@ impl LoopStateMachine {
         }
         self.sync_governance_surface_note();
         let context = self.ctx.render();
+        self.ctx.latch_read_result_offer();
         let tools = if self.pending_termination.is_some() {
             Vec::new()
         } else {

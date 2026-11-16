@@ -32,6 +32,16 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
   tool results of the turn that proposed it, no longer between them. Runs that ended with
   "assistant tool_calls with no tool result" on OpenAI-compatible providers no longer do.
 
+- **A call to an unexposed kernel tool no longer ends the run.** The model gets an error result
+  (`Tool '<name>' is not available on this turn. Choose from the tools listed in your tools
+  schema.`), nothing is executed, and the turn continues; repeats count toward the repeat fuse.
+  Hosts that treated an `invalid_authority` fault from such a call as a terminal outcome will no
+  longer see it.
+- **`read_result` stays offered once offered.** Before, it left the toolset when the last evicted
+  result came back into context. A test that asserts the exact toolset after a page-in, a
+  compaction or a renewal sees `read_result` where it did not before. Checkpoints gain an optional
+  `read_result_offered`; a checkpoint without it restores as `false`.
+
 ## Removed
 
 - Node `RunnerOptions.asyncSummarizer` and the `AsyncSummarizer` type. There is no replacement:

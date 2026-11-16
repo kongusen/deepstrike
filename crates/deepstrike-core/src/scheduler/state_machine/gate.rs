@@ -382,13 +382,22 @@ impl LoopStateMachine {
     /// signature and neither advances nor resets the streak (control-plane chatter must not
     /// launder a stall). The streak state remains independent from turn checkpoints so recovery
     /// cannot erase the evidence that tripped the fuse.
-    pub(super) fn check_repeat_fuse(&mut self, calls: &[ToolCall]) -> Option<LoopAction> {
+    ///
+    /// `unexposed` are calls to kernel tools the turn did not offer. The driver already refused
+    /// them; they join the signature whatever their name, so a model that keeps calling a tool it
+    /// does not have is stopped by the same ladder as any other repeat.
+    pub(super) fn check_repeat_fuse(
+        &mut self,
+        calls: &[ToolCall],
+        unexposed: &[ToolCall],
+    ) -> Option<LoopAction> {
         if !self.repeat_fuse.enabled {
             return None;
         }
         let sig = calls
             .iter()
             .filter(|c| !crate::context::manager::is_meta_tool(c.name.as_str()))
+            .chain(unexposed.iter())
             .map(|c| {
                 let args = super::compact_tool_args(&c.arguments);
                 if args.is_empty() {

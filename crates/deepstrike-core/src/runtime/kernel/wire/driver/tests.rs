@@ -2159,6 +2159,71 @@ fn a_tool_the_turn_never_exposed_has_no_caller_to_derive() {
         runtime.driver.focus().cloned(),
     );
     assert_eq!(before, after, "a forged causation moves nothing");
+
+    // Through the front door the same call is refused, not fatal: the driver derives no caller
+    // for it (above), answers it with a visible error, and the turn is re-asked. Nothing the call
+    // asked for happens. A model that calls a kernel tool it was not offered — the forced
+    // no-tools report turn, a tool its own history shows it using — keeps its run.
+    let forged = runtime.submit(&provider_result(
+        "in-forged-syscall",
+        1_700_000_003_000,
+        &next,
+        vec![tool_call("call-2", "start_workflow", json!({"nodes": []}))],
+    ));
+    assert_eq!(kinds(&forged), vec![EffectKindTag::CallProvider]);
+    let (output, is_error) = tool_result_for(&runtime, "call-2").expect("the call is answered");
+    assert!(is_error && output.contains("not available on this turn"), "{output}");
+    assert!(
+        !runtime.observations().iter().any(|observation| matches!(
+            observation,
+            KernelObservation::WorkflowNodesSubmitted { .. }
+        )),
+        "the unexposed syscall was not executed"
+    );
+}
+
+/// A model that keeps calling a kernel tool it was not offered is stopped by the repeat fuse,
+/// like any other repeat: refused each time, then denied, then the run ends `NoProgress` after a
+/// final report turn. Meta-tool names are otherwise exempt from the fuse; an unexposed one is not.
+#[test]
+fn repeated_calls_to_an_unexposed_kernel_tool_burn_the_repeat_fuse() {
+    let (mut runtime, mut provider) = agent_awaiting_provider();
+    let fuse = crate::governance::repeat_fuse::RepeatFuseConfig::default();
+    let mut tripped = Vec::new();
+    let mut last_tools = usize::MAX;
+    for turn in 0..u64::from(fuse.terminate_after) {
+        let next = provider.clone();
+        runtime
+            .driver
+            .provider_calls
+            .get_mut(&next)
+            .expect("the driver recorded the turn it published")
+            .exposed_tools
+            .remove(crate::context::manager::MEMORY_TOOL_NAME);
+        let step = runtime.submit(&provider_result(
+            &format!("in-phantom-{turn}"),
+            1_700_000_002_000 + turn * 10_000,
+            &next,
+            vec![tool_call(
+                &format!("call-{turn}"),
+                crate::context::manager::MEMORY_TOOL_NAME,
+                json!({"query": "rules"}),
+            )],
+        ));
+        assert_eq!(kinds(&step), vec![EffectKindTag::CallProvider], "turn {turn}");
+        tripped.extend(runtime.observations().iter().filter_map(|observation| match observation {
+            KernelObservation::RepeatFuseTripped { action, .. } => Some(action.clone()),
+            _ => None,
+        }));
+        let EffectKind::CallProvider(call) = &sole_effect(&step).effect else {
+            panic!("turn {turn}: expected a provider call");
+        };
+        last_tools = call.tools.len();
+        provider = sole_effect(&step).effect_id.clone();
+    }
+    assert!(tripped.contains(&"deny".to_string()), "{tripped:?}");
+    assert_eq!(tripped.last().map(String::as_str), Some("terminate"), "{tripped:?}");
+    assert_eq!(last_tools, 0, "the final report turn offers no tools");
 }
 
 #[test]
