@@ -12423,3 +12423,49 @@ fn a_fused_turn_waits_for_the_memory_query_it_made() {
     let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
     assert!(crate::context::units::strict_tool_pairing_is_valid(history.messages()));
 }
+
+
+/// A signal is said once: it leaves when the provider request that carried it commits. A kernel
+/// restored from a checkpoint taken while that request was in flight used to forget that the
+/// request carried it, and sent it again on the next request; the original kernel did not. Plan
+/// task 1.1: delivery is recorded on the signal and the checkpoint keeps it.
+#[test]
+fn a_delivered_signal_is_not_sent_again_after_a_restore() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    runtime
+        .driver
+        .engine_mut()
+        .unwrap()
+        .ctx
+        .push_signal("[NOTICE] said once".to_string());
+    let acted = runtime.submit(&provider_result(
+        "in-1",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("s1", "search", json!({"q": "a"}))],
+    ));
+    let tools = sole_effect(&acted).effect_id.clone();
+    let asked = runtime.submit(&tools_resolved("in-2", 1_700_000_003_000, &tools, &[("s1", "body", false)]));
+    let carries = |step: &CommittedTransition<PlannedStep>| {
+        let EffectKind::CallProvider(call) = &sole_effect(step).effect else {
+            panic!("expected a provider call, got {:?}", kinds(step));
+        };
+        serde_json::to_string(&call.context).unwrap().contains("said once")
+    };
+    assert!(carries(&asked), "the next request carries the signal");
+    let in_flight = sole_effect(&asked).effect_id.clone();
+
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+    for (label, runtime) in [("original", &mut runtime), ("restored", &mut restored)] {
+        let acted = runtime.submit(&provider_result(
+            "in-3",
+            1_700_000_004_000,
+            &in_flight,
+            vec![tool_call("s2", "search", json!({"q": "b"}))],
+        ));
+        let tools = sole_effect(&acted).effect_id.clone();
+        let asked = runtime.submit(&tools_resolved("in-4", 1_700_000_005_000, &tools, &[("s2", "body", false)]));
+        assert!(!carries(&asked), "{label}: the signal left with the request that carried it");
+    }
+}

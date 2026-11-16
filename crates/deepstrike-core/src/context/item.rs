@@ -234,7 +234,7 @@ impl ItemOrigin {
             Self::User => (S::Operation, F::Full, L::Permanent, A::Host),
             Self::Assistant => (S::Operation, F::Full, L::Permanent, A::Model),
             Self::TaskState => (S::Task, F::Structured, L::Permanent, A::Kernel),
-            Self::Signal => (S::Operation, F::Full, L::SingleUse, A::Host),
+            Self::Signal => (S::Operation, F::Full, L::UntilDelivered, A::Host),
             Self::ProviderSummary => (S::Operation, F::Full, L::Permanent, A::Provider),
             Self::Note => (S::Task, F::Full, L::Permanent, A::Model),
         };
@@ -315,8 +315,11 @@ pub enum Lease {
     UntilBoundary,
     /// Leaves once this many turns pass without the item being recalled or referenced.
     Turns(u32),
-    /// Leaves once it has been referenced.
-    SingleUse,
+    /// Leaves once the provider request that carried it commits: a signal is said once. Signals
+    /// are the only items with this lease; the state machine enforces it
+    /// ([`crate::context::partitions::SignalItem::delivered`]), so the knowledge sweep never
+    /// expires an item on it.
+    UntilDelivered,
     /// Leaves when the kernel sees `event` happen to the item (see [`LeaseEvent`]).
     Until(LeaseEvent),
 }
@@ -524,9 +527,10 @@ impl ContextItem {
     /// Whether the lease has run out at `current_turn`.
     pub fn lease_expired(&self, current_turn: u32) -> bool {
         match self.lease {
-            Lease::Permanent | Lease::UntilBoundary | Lease::Until(_) => false,
+            Lease::Permanent | Lease::UntilBoundary | Lease::Until(_) | Lease::UntilDelivered => {
+                false
+            }
             Lease::Turns(_) => self.lease_remaining_turns(current_turn) == Some(0),
-            Lease::SingleUse => self.value.ref_count > 0,
         }
     }
 
@@ -626,13 +630,6 @@ mod tests {
         assert_eq!(pinned.lease_remaining_turns(9), None);
     }
 
-    #[test]
-    fn a_single_use_item_expires_once_referenced() {
-        let mut signal = item(ItemOrigin::Signal, false);
-        assert!(!signal.lease_expired(100));
-        signal.value.ref_count = 1;
-        assert!(signal.lease_expired(3));
-    }
 
     #[test]
     fn permanent_and_until_boundary_leases_do_not_expire_by_turn() {

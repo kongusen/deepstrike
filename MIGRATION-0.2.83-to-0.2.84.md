@@ -54,6 +54,11 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
   `compaction_target_tokens`).
 - Rust: `CollapseCompactor` and `AutoCompactor` are one `ArchiveCompactor`.
 
+- Rust: `ContextPartitions.signals` is `Vec<SignalItem>` (`text`, `delivered`) instead of
+  `Vec<String>`; read `signal.text`. `Lease::SingleUse` is renamed `Lease::UntilDelivered`.
+- Checkpoints gain an optional `signals_delivered` (the signals the in-flight provider request
+  carries). A checkpoint without it restores as before.
+
 ## Changed defaults
 
 - `ContextConfig::default().notes_budget_tokens` is 600, the wire default. Code that builds a

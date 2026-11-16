@@ -168,11 +168,17 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 
 顺序按依赖排列。每个任务完成后 origin 表里少一个"只在表里出现的值"。
 
-- [ ] 1.1 **signal 与内核提示成为 item。**
+- [x] 1.1 **signal 与内核提示成为 item。**（2026-11-16）
   - `partitions.signals: Vec<String>` 改为 item 行（origin `Signal` 或 `System`）。
   - 新增一种 lease 表达"随携带它的请求提交而离开"，替换 `delivered_signals_len` 的前缀计数协议；`Lease::SingleUse` 若不再有别的用途就改名为它，而不是并存。
   - lifecycle report 的 `history` 汇总里出现 signal 的条数与 token。
   - 验收：状态块渲染逐字节不变；signal 相关的状态机测试全部通过；checkpoint 能恢复旧格式的 `signals`。
+  - **执行记录。** 动手前先验证了前缀计数协议有没有实际缺陷：有。`delivered_signals_len` 不进 checkpoint，在 provider 请求未结清时取的 checkpoint 恢复后，内核忘了这个请求已带过哪些 signal，下一次请求再发一遍；原内核不会。原内核与恢复后的内核因此分叉，违反回放确定性。
+    - 每条 signal 是 `SignalItem { text, delivered }`（`partitions.rs`），发出请求时整体标记、请求结清时移除已标记的、请求没发出去时取消标记；`delivered_signals_len` 删除。已标记的总是前缀，所以 checkpoint 只存个数 `signals_delivered`（缺省 0，旧 checkpoint 照旧恢复）。
+    - `Lease::SingleUse`（没有 item 用它，表里却说 signal 是它）改名为 `Lease::UntilDelivered`，表说的就是代码做的；知识侧的 sweep 不按它过期。删掉了只测那条无人路径的单测。
+    - 回归测试 `a_delivered_signal_is_not_sent_again_after_a_restore`，去掉改动即失败。golden 没有变化。
+    - **与原计划的两处偏差。** ① signal 没有从共享分配器取 item id：取了的话之后每个历史 item 的 id 都后移一位，渲染里带 `item_id`，golden 会变，违反本任务"渲染逐字节不变"的验收；等到 1.7 内核文本集中时与内核提示一起决定。② lifecycle report 没有加 signal 的条数与 token：`history` 汇总的语义是"进入历史的 item"，signal 不进历史，硬塞会混淆；改由 1.7 的 `kernel_text_tokens` 统一计数。
+    - `ContextPartitions.signals` 是公开字段，`tests/rust` 直接读它，这是 Rust 公开 API 的破坏式变更，已写入 CHANGELOG 与 MIGRATION。
 - [ ] 1.2 **note 成为 item。** `TaskState.notes` 的每条笔记是 origin `Note` 的 item，预算拒写、标题重写、图上的三种边保持不变。`notes_tokens()` 改为对 item 求和。
   - 验收：`context/notes.rs` 的 8 个测试不改断言通过；`notes:` 块逐字节不变。
 - [ ] 1.3 **依赖输出成为 item。** `dependency_bodies` 改为 origin `DependencyOutput`、scope `Edge`、fidelity `Handle` 的 item；`read_result("dep:<agent>")` 读 item。完成后 `survives_renewal` 才有真实的过滤对象，补一个测试证明 renewal 之后依赖输出的处理符合表的定义；如果现有行为是"renewal 后仍可读"，以现有行为为准并修正表。

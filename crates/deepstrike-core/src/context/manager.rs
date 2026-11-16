@@ -5,7 +5,7 @@ use super::item::{
     Authority, ExternalEdge, ExternalItem, HISTORY_ITEM_DETAIL_CAP, HistoryItemRecord, ItemEdge,
     ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, LeaseEvent, OriginTally, Relation,
 };
-use super::partitions::ContextPartitions;
+use super::partitions::{ContextPartitions, SignalItem};
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::InternalRenderedContext;
@@ -1778,10 +1778,10 @@ impl ContextManager {
             // already broke the prompt-cache prefix, so a one-line ephemeral tail note is
             // cache-free; keyed removals name what left and how to get it back.
             if !sweep.removed_keys.is_empty() {
-                self.partitions.signals.push(format!(
+                self.partitions.signals.push(SignalItem::new(format!(
                     "[KNOWLEDGE] entries removed at this boundary: {} — re-fetch via the memory tool if still needed.",
                     sweep.removed_keys.join(", ")
-                ));
+                )));
             }
             self.pending_knowledge_sweeps.push(sweep);
         }
@@ -1868,7 +1868,7 @@ impl ContextManager {
     /// Rendering does not consume signals. The state machine clears only the prefix acknowledged by
     /// a correlated provider result, so provider failures and retries see the same signal payload.
     pub fn push_signal(&mut self, text: String) {
-        self.partitions.signals.push(text);
+        self.partitions.signals.push(SignalItem::new(text));
     }
 
     /// Record a durable user directive in the (non-compressible, renewal-carried) task_state, so a
@@ -1990,9 +1990,9 @@ impl ContextManager {
         for name in expired {
             self.deactivate_skill(&name);
             // P9: lease expiry re-widens the toolset invisibly otherwise — tell the model.
-                self.partitions.signals.push(format!(
+                self.partitions.signals.push(SignalItem::new(format!(
                 "[SKILL] lease expired: {name} unloaded; the full toolset is restored."
-            ));
+            )));
         }
     }
 

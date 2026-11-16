@@ -273,7 +273,12 @@ fn build_state_turn(partitions: &ContextPartitions) -> Option<CoreMessage> {
     if !task.is_empty() {
         parts.push(task);
     }
-    let signals_text = partitions.signals.join("\n");
+    let signals_text = partitions
+        .signals
+        .iter()
+        .map(|signal| signal.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     if !signals_text.is_empty() {
         parts.push(signals_text);
     }
@@ -676,7 +681,7 @@ mod tests {
             goal: "g".to_string(),
             ..Default::default()
         };
-        c.signals.push("[ROLLBACK] tool failed".to_string());
+        c.signals.push(crate::context::partitions::SignalItem::new("[ROLLBACK] tool failed"));
         let rc = render(&c, 10_000, &engine(), 4);
         let state = rc.state_turn.as_ref().unwrap();
         assert!(
@@ -1014,7 +1019,7 @@ mod tests {
     #[test]
     fn no_salience_footer_without_a_goal() {
         let mut c = ctx();
-        c.signals.push("[ROLLBACK] tool failed".to_string());
+        c.signals.push(crate::context::partitions::SignalItem::new("[ROLLBACK] tool failed"));
         let rc = render(&c, 100_000, &engine(), 4);
         let text = rc
             .state_turn
@@ -1071,7 +1076,7 @@ mod tests {
             goal: "totally different goal".to_string(),
             ..Default::default()
         };
-        c.signals.push("[ROLLBACK] whatever".to_string());
+        c.signals.push(crate::context::partitions::SignalItem::new("[ROLLBACK] whatever"));
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         assert_eq!(

@@ -1310,7 +1310,15 @@ fn restore_context_vm(
     ctx.recall_due = state.recall_due;
     ctx.dependency_bodies = state.dependency_bodies.clone();
     ctx.read_result_offered = state.read_result_offered;
-    ctx.partitions.signals = state.signals.clone();
+    ctx.partitions.signals = state
+        .signals
+        .iter()
+        .enumerate()
+        .map(|(index, text)| crate::context::partitions::SignalItem {
+            text: text.clone(),
+            delivered: index < state.signals_delivered as usize,
+        })
+        .collect();
     ctx.partitions.task_state = restore_task_state(&state.task_state);
     ctx.last_activity_ms = state.last_activity_ms.get();
     ctx.last_compact_ms = state.last_compact_ms.map(WireU64::get);

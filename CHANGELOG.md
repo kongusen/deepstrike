@@ -37,6 +37,9 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
   repeat fuse even for meta-tool names, so a model that keeps calling a tool it does not have is
   denied and then ends `NoProgress` after a final report turn. The typical trigger was that final
   report turn itself, which offers no tools.
+- A kernel restored from a checkpoint taken while a provider request was in flight sent that
+  request's signals (rollback notes, kernel notices) again on the next request; the original kernel
+  did not. Delivery is now recorded on each signal and checkpointed (`signals_delivered`).
 - When the repeat fuse or a gate answered a turn's host calls with synthetic results, the kernel
   called the provider at once even if the same turn had issued a memory query or write; the next
   request raced that work and was rendered without its result. The turn now waits for it.
@@ -82,6 +85,9 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 - `ContextConfig::default().notes_budget_tokens` is `DEFAULT_NOTES_BUDGET_TOKENS` (600), matching
   the wire default. Code that builds a `ContextManager` directly now gets the `note` tool; set the
   field to `0` to turn it off.
+- Rust: `ContextPartitions.signals` holds `SignalItem { text, delivered }` instead of `String`
+  (plan task 1.1), and `Lease::SingleUse`, which no item used, is `Lease::UntilDelivered`: the
+  lease the origin table gives signals, enforced on delivery rather than on first reference.
 - `CollapseCompactor` and `AutoCompactor` (identical bodies) are one `ArchiveCompactor`; the
   pipeline still labels the two stages `context_collapse` and `auto_compact`.
 

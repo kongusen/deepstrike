@@ -129,7 +129,7 @@ mod tests {
     fn renewal_clears_signals() {
         let cfg = ContextConfig::default();
         let mut ctx = ContextPartitions::new(&cfg);
-        ctx.signals.push("[ROLLBACK] failed".to_string());
+        ctx.signals.push(crate::context::partitions::SignalItem::new("[ROLLBACK] failed"));
         let engine = ContextTokenEngine::fallback_estimator();
         let renewed = make_policy(0.05).renew(&ctx, 1_000, &engine);
         assert!(renewed.signals.is_empty());

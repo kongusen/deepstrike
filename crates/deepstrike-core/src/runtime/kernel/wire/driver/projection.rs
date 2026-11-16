@@ -367,7 +367,8 @@ impl CanonicalOperationDriver {
                     self.project_message(MessagePartition::History, message, *tokens)
                 })
                 .collect(),
-            signals: ctx.partitions.signals.clone(),
+            signals: ctx.partitions.signals.iter().map(|signal| signal.text.clone()).collect(),
+            signals_delivered: ctx.partitions.delivered_signals() as u32,
             messages: ctx
                 .partitions
                 .system

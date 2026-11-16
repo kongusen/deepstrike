@@ -271,7 +271,7 @@ Three kinds of task, with different rules:
 
 Ordered by dependency. Each task removes one "value that exists only in the table".
 
-- [ ] 1.1 **Signals and kernel notices become items.**
+- [x] 1.1 **Signals and kernel notices become items.** (2026-11-16)
   - `partitions.signals: Vec<String>` becomes item rows (origin `Signal` or `System`).
   - A new lease kind expresses "leaves when the request carrying it commits", replacing the
     `delivered_signals_len` prefix-count protocol. If `Lease::SingleUse` has no other use, rename it
@@ -279,6 +279,29 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
   - The lifecycle report's `history` tally shows signal counts and tokens.
   - Acceptance: the state block renders byte for byte the same; all signal-related state-machine
     tests pass; checkpoints with the old `signals` shape restore.
+  - **Record.** Before starting, checked whether the prefix-count protocol had a real defect: it
+    did. `delivered_signals_len` was not checkpointed, so a kernel restored from a checkpoint taken
+    while a provider request was in flight forgot which signals that request carried and sent them
+    again on the next request; the original kernel did not. The two diverged, which breaks replay
+    determinism.
+    - Each signal is a `SignalItem { text, delivered }` (`partitions.rs`): all are marked when a
+      request is emitted, the marked ones leave when it commits, and the marks are cleared if it
+      never goes out; `delivered_signals_len` is gone. Marked signals are always a prefix, so the
+      checkpoint stores their count, `signals_delivered` (default 0, so old checkpoints restore as
+      before).
+    - `Lease::SingleUse` (used by no item, though the table gave it to signals) is renamed
+      `Lease::UntilDelivered`, so the table says what the code does; the knowledge sweep does not
+      expire items on it. The unit test of that unused path is deleted.
+    - Regression test `a_delivered_signal_is_not_sent_again_after_a_restore`, failing without the
+      change. No golden changed.
+    - **Two deviations from the plan.** (1) Signals take no item id from the shared allocator:
+      doing so shifts every later history item's id by one, renders carry `item_id`, and goldens
+      would change, contrary to this task's "renders unchanged" acceptance; decide together with
+      kernel notices in 1.7. (2) The lifecycle report gains no signal count or tokens: the `history`
+      tally means "items that entered history" and signals never do; 1.7's `kernel_text_tokens`
+      counts them instead.
+    - `ContextPartitions.signals` is a public field read directly by `tests/rust`, so this is a
+      breaking change to the Rust public API, recorded in the CHANGELOG and MIGRATION.
 - [ ] 1.2 **Notes become items.** Each note in `TaskState.notes` is an item of origin `Note`;
   budget refusal, rewrite by title and the three graph relations are unchanged. `notes_tokens()`
   sums items.

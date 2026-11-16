@@ -252,7 +252,7 @@ fn critical_signal_goes_to_signals_not_history() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[INTERRUPT]"))
+            .any(|s| s.text.contains("[INTERRUPT]"))
     );
     assert!(
         !sm.ctx
@@ -433,7 +433,7 @@ fn coalesced_queue_entry_renders_its_deterministic_count() {
             .partitions
             .signals
             .iter()
-            .any(|summary| summary.contains("[x2] batched update"))
+            .any(|summary| summary.text.contains("[x2] batched update"))
     );
 }
 
@@ -589,7 +589,7 @@ fn high_urgency_interrupt_does_not_preempt() {
             .partitions
             .signals
             .iter()
-            .any(|signal| signal.contains("handle soon"))
+            .any(|signal| signal.text.contains("handle soon"))
     );
     assert!(
         !sm.ctx
@@ -3905,7 +3905,7 @@ fn quarantined_node_output_is_labeled_crossing_into_trusted_context() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[quarantined sub-agent wf-node0]")),
+            .any(|s| s.text.contains("[quarantined sub-agent wf-node0]")),
         "quarantined output is labeled untrusted-origin on crossing: {:?}",
         sm.ctx.partitions.signals
     );
@@ -4649,7 +4649,7 @@ fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
                 .partitions
                 .signals
                 .iter()
-                .any(|s| s.to_lowercase().contains("quarantine")),
+                .any(|s| s.text.to_lowercase().contains("quarantine")),
         "quarantine denial is surfaced"
     );
 }
@@ -5176,7 +5176,7 @@ fn criteria_gate_injects_one_self_check_before_completed() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[CRITERIA CHECK]") && s.contains("tests pass")),
+            .any(|s| s.text.contains("[CRITERIA CHECK]") && s.text.contains("tests pass")),
         "self-check must land in signals: {:?}",
         sm.ctx.partitions.signals
     );
@@ -5466,7 +5466,7 @@ fn pace_stop_routes_through_criteria_gate_then_honors_the_redecision() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[CRITERIA CHECK]"))
+            .any(|s| s.text.contains("[CRITERIA CHECK]"))
     );
     assert!(
         sm.take_observations()
@@ -5691,7 +5691,7 @@ fn entropy_watch_notify_model_routes_a_heartbeat_signal() {
                     .partitions
                     .signals
                     .iter()
-                    .any(|s| s.contains("[entropy]")),
+                    .any(|s| s.text.contains("[entropy]")),
                 "entropy directive must land in signals: {:?}",
                 sm.ctx.partitions.signals
             );

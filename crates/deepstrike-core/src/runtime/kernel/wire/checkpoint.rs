@@ -713,6 +713,11 @@ pub struct ContextVmState {
     pub held_history: Vec<StoredMessageState>,
     #[serde(default)]
     pub signals: Vec<String>,
+    /// How many of `signals`, from the front, the pending provider request carries. They leave
+    /// when that request's result commits; a checkpoint taken while it is in flight must say so,
+    /// or a restored kernel sends them again. Absent (0) in checkpoints from before 0.2.84.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub signals_delivered: u32,
     /// §5q-2 · the stored messages of the system and history partitions, in render order. **The**
     /// home of message bodies; the knowledge partition carries its own inside
     /// [`KnowledgeSlotState`], because a knowledge entry is an identified slot rather than a

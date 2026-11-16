@@ -363,10 +363,6 @@ pub struct LoopStateMachine {
     /// Kernel-owned signal routing: dedup set + attention policy + bounded queue.
     /// Always initialized; `set_attention` rebuilds it with a new queue size.
     pub(super) signal_router: SignalRouter,
-    /// Prefix of `ctx.partitions.signals` included in the currently pending provider request.
-    /// A correlated `ProviderResult` consumes exactly this prefix; signals arriving while the
-    /// provider is in flight remain for the next request.
-    pub(super) delivered_signals_len: usize,
     /// Accepted envelope time of the operation's first timed transition.
     /// Used by the wall-time budget axis in `SchedulerBudget::should_terminate`.
     pub(super) started_at_ms: Option<u64>,
@@ -490,7 +486,6 @@ impl LoopStateMachine {
             resource_quota: None,
             memory_write_times: Vec::new(),
             signal_router: SignalRouter::new(64),
-            delivered_signals_len: 0,
             started_at_ms: None,
             last_now_ms: None,
             suspend_state: None,
@@ -1218,11 +1213,9 @@ impl LoopStateMachine {
                 // §7.6 · taken unconditionally, so a staged adjudication can never survive into a
                 // later turn — a turn with no tool calls at all simply has nothing to apply it to.
                 let adjudicated = self.adjudicated_turn.take().unwrap_or_default();
-                let delivered = self
-                    .delivered_signals_len
-                    .min(self.ctx.partitions.signals.len());
-                self.ctx.partitions.signals.drain(..delivered);
-                self.delivered_signals_len = 0;
+                // The request that carried the delivered signals committed; signals that arrived
+                // while it was in flight stay for the next request.
+                self.ctx.partitions.drop_delivered_signals();
                 // Signals admitted while the provider was in flight were not in the completed
                 // request. Promote queued items at this boundary and keep a no-tool response from
                 // terminating before the model receives them in a follow-up request.
@@ -1992,7 +1985,7 @@ impl LoopStateMachine {
         self.checkpoint.history_len = self.ctx.partitions.history.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());
-        self.delivered_signals_len = self.ctx.partitions.signals.len();
+        self.ctx.partitions.mark_signals_delivered();
         self.observations.push(KernelObservation::CheckpointTaken {
             turn: self.turn,
             history_len: self.checkpoint.history_len as u32,
@@ -2019,7 +2012,7 @@ impl LoopStateMachine {
                 overflow.kind,
                 crate::context::renderer::ContextBudgetOverflowKind::FixedContext
             ) {
-                self.delivered_signals_len = 0;
+                self.ctx.partitions.unmark_signals_delivered();
                 return self.terminate(TerminationReason::ContextOverflow, None);
             }
         }
