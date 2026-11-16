@@ -261,11 +261,15 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 
 任务：
 
-- [ ] 4.1 **提升时带上证据（R）。** `plan_memory_write` 用 `note_evidence` 同一套解析处理 `evidence_refs`，在 `CanonicalMemoryWrite` 上新增一个可选字段，记录解析出的 item id 与提案所在的 turn；`memory_written` 事件带上同样的字段。解析不出的引用原样保留，不拒绝写入。
+- [x] 4.1 **提升时带上证据（R）。**（2026-11-16，提前到阶段 1 之前做：它只需要 `note_evidence` 这个方法，不依赖笔记成为 item） `plan_memory_write` 用 `note_evidence` 同一套解析处理 `evidence_refs`，在 `CanonicalMemoryWrite` 上新增一个可选字段，记录解析出的 item id 与提案所在的 turn；`memory_written` 事件带上同样的字段。解析不出的引用原样保留，不拒绝写入。
   - 模型可见内容不变：工具 schema、工具结果、渲染都不动。
   - 先核实：`llm_completed.tool_calls` 是否带完整参数；四端 SDK 的记忆存储是否原样保存 `provenance`（Node 的 `agent-facade.ts:202` 写入空的 `evidence_refs`）。
   - 验收：kernel golden 的渲染部分逐字节不变；一个测试从一条记忆出发，经 `memory_written` 找到提案的 `llm_completed`，再找到它引用的工具结果；旧 session log 与旧记忆记录仍可加载。
   - 这是对 wire 类型的增量修改，需要 §7 的例外，见 §8 第 5 条。
+  - **执行记录。** 核实结果：`llm_completed.tool_calls` 带完整参数；Python 与 Rust 已在记录上写 `provenance.session_id`，Node 与 WASM 没写，从一条存储的记忆连它出自哪个会话都找不到。
+    - 实际做法比原计划小：没有新增 wire 字段，也没有改 `memory_written` 事件。内核在 `plan_memory_write` 里把模型的 `evidence_refs` 换成完整列表：模型原样写的引用，接着每个解析到的工具结果 `call:<id>`（模型已直接写了该 call id 的不重复），最后是提案调用本身 `proposal:<call id>`（`ContextManager::memory_evidence_refs`，与 `note_evidence` 共用 `evidence_results`）。四端 SDK 本来就原样拷贝这个字段，所以只需要 Node 与 WASM 补上 `session_id`。解析不到的引用原样保留，不拒绝写入。
+    - 这样从一条记录出发：`session_id` → 该会话的日志；`proposal:` → 其中 `tool_calls` 含该 id 的 `llm_completed`；`call:` → `results` 含该 id 的 `tool_completed`。
+    - 测试：内核 `a_memory_proposal_carries_resolved_evidence_and_its_own_call`；Node 端到端 `leads from a stored memory back to the turn that proposed it and the result it rested on`（按 id 在会话日志里找到提案轮与证据结果）。模型可见内容不变，golden 没有变化。
 - [x] 4.2 **度量记忆维护的开销（只读）。** 不进默认 gate。
   - 基准 harness（`trial.mjs` 的 `memoryTools`）从 `llm_completed` 事件给每个 trial 记 `memory_tools`：`note` / `propose_memory` / `memory` 的调用数、模型轮数、只调用这三种工具的轮数、这些调用的参数字符数、模型写出的全部字符数。所有基准自动带上。
   - `deepstrike-lab` 新增四个指标：`recall_tokens`（recall 注入的索引行 token，取自 lifecycle 的 `items`，旧结果也能算）、`memory_calls`、`memory_turn_share`（整轮只做记忆维护的轮数占比）、`memory_output_share`（模型写出的字符里用于记忆调用的占比）。后三个在旧 trial 上显示为"–"，不是 0。

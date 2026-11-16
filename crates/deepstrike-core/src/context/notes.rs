@@ -230,9 +230,44 @@ proposed for long-term memory with `propose_memory`.",
     /// text found in a tool call's arguments (a path, a query); without references, the tool
     /// results that arrived since the last note was written.
     pub(crate) fn note_evidence(&self, references: &[String]) -> Vec<ItemId> {
+        if references.is_empty() {
+            let watermark = self.partitions.task_state.notes_watermark;
+            let fresh: Vec<ItemId> = self
+                .tool_results()
+                .into_iter()
+                .map(|(id, _)| id)
+                .filter(|id| *id > watermark)
+                .collect();
+            let skip = fresh.len().saturating_sub(NOTE_DEFAULT_EVIDENCE_CAP);
+            return fresh.into_iter().skip(skip).collect();
+        }
+        self.evidence_results(references).into_iter().map(|(item, _)| item).collect()
+    }
+
+    /// Plan task 4.1 · the evidence a memory proposal carries, as stored with the record: the
+    /// model's references as it wrote them, then `call:<id>` for each tool result they resolve to
+    /// (unless the model already named that call id), then `proposal:<call id>` for the
+    /// `propose_memory` call itself. Together with the record's session they lead from a memory
+    /// back to the turn that proposed it and the results it rested on. A reference that resolves
+    /// to nothing is kept as written; nothing is refused.
+    pub(crate) fn memory_evidence_refs(&self, references: &[String], proposal_call: Option<&str>) -> Vec<String> {
+        let mut refs: Vec<String> = references.to_vec();
+        for (_, call_id) in self.evidence_results(references) {
+            let resolved = format!("call:{call_id}");
+            if !references.iter().any(|reference| reference == &call_id) && !refs.contains(&resolved) {
+                refs.push(resolved);
+            }
+        }
+        if let Some(call_id) = proposal_call {
+            refs.push(format!("proposal:{call_id}"));
+        }
+        refs
+    }
+
+    /// (item, call id) of every tool result still in history, in history order.
+    fn tool_results(&self) -> Vec<(ItemId, String)> {
         let history = &self.partitions.history;
-        // (result item, call id) of every tool result still in history.
-        let results: Vec<(ItemId, &str)> = (0..history.len())
+        (0..history.len())
             .filter(|&i| history.messages()[i].role == Role::Tool)
             .flat_map(|i| {
                 let id = history.tag(i).id;
@@ -240,7 +275,7 @@ proposed for long-term memory with `propose_memory`.",
                     Content::Parts(parts) => parts
                         .iter()
                         .filter_map(|part| match part {
-                            ContentPart::ToolResult { call_id, .. } => Some((id, call_id.as_str())),
+                            ContentPart::ToolResult { call_id, .. } => Some((id, call_id.to_string())),
                             _ => None,
                         })
                         .collect::<Vec<_>>(),
@@ -248,27 +283,19 @@ proposed for long-term memory with `propose_memory`.",
                 }
             })
             .filter(|(id, _)| *id != 0)
-            .collect();
-        let mut items = Vec::new();
-        let push = |item: ItemId, items: &mut Vec<ItemId>| {
-            if item != 0 && !items.contains(&item) {
-                items.push(item);
-            }
-        };
-        if references.is_empty() {
-            let watermark = self.partitions.task_state.notes_watermark;
-            let fresh: Vec<ItemId> = results.iter().map(|(id, _)| *id).filter(|id| *id > watermark).collect();
-            let skip = fresh.len().saturating_sub(NOTE_DEFAULT_EVIDENCE_CAP);
-            for id in fresh.into_iter().skip(skip) {
-                push(id, &mut items);
-            }
-            return items;
-        }
+            .collect()
+    }
+
+    /// The tool results that explicit references name: a call id, a handle's source, or text in a
+    /// call's arguments (at least three characters). Each result once, in reference order.
+    fn evidence_results(&self, references: &[String]) -> Vec<(ItemId, String)> {
+        let history = &self.partitions.history;
+        let results = self.tool_results();
         // The item that holds call `call_id`'s result: in history, or archived behind a handle.
         let result_of = |call_id: &str| -> Option<ItemId> {
             results
                 .iter()
-                .find(|(_, id)| *id == call_id)
+                .find(|(_, id)| id == call_id)
                 .map(|(item, _)| *item)
                 .or_else(|| {
                     self.handles
@@ -278,9 +305,15 @@ proposed for long-term memory with `propose_memory`.",
                         .map(|h| h.item)
                 })
         };
+        let mut found: Vec<(ItemId, String)> = Vec::new();
+        let mut push = |item: ItemId, call_id: &str| {
+            if item != 0 && !found.iter().any(|(seen, _)| *seen == item) {
+                found.push((item, call_id.to_string()));
+            }
+        };
         for reference in references {
             if let Some(item) = result_of(reference) {
-                push(item, &mut items);
+                push(item, reference);
                 continue;
             }
             if reference.chars().count() < 3 {
@@ -291,12 +324,12 @@ proposed for long-term memory with `propose_memory`.",
                     if call.arguments.to_string().contains(reference.as_str())
                         && let Some(item) = result_of(call.id.as_str())
                     {
-                        push(item, &mut items);
+                        push(item, call.id.as_str());
                     }
                 }
             }
         }
-        items
+        found
     }
 }
 

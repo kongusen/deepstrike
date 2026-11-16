@@ -11974,6 +11974,41 @@ fn a_proposal_settled_before_a_sibling_tool_waits_behind_the_tool_results() {
     );
 }
 
+/// Plan task 4.1 · a stored memory leads back to where it came from. The model cites what it
+/// read in its own words (a path); the kernel resolves that to the tool result's call id while
+/// the result is still in history, and names the proposing call, so the record's evidence reaches
+/// the `llm_completed` that proposed it and the `tool_completed` it rested on.
+#[test]
+fn a_memory_proposal_carries_resolved_evidence_and_its_own_call() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let acted = runtime.submit(&provider_result(
+        "in-read",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("s1", "search", json!({"q": "logs/a.log"}))],
+    ));
+    let tools = sole_effect(&acted).effect_id.clone();
+    let asked = runtime.submit(&tools_resolved("in-results", 1_700_000_003_000, &tools, &[("s1", "12 lines", false)]));
+    let next = sole_effect(&asked).effect_id.clone();
+    let proposal = tool_call(
+        "p1",
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
+        json!({
+            "name": "log-count", "kind": "feedback", "content": "12 ERROR lines in a.log",
+            "evidence_refs": ["logs/a.log", "nowhere"]
+        }),
+    );
+    let proposed = runtime.submit(&provider_result("in-propose", 1_700_000_004_000, &next, vec![proposal]));
+    let EffectKind::PersistMemory(write) = &sole_effect(&proposed).effect else {
+        panic!("expected a memory write, got {:?}", kinds(&proposed));
+    };
+    assert_eq!(
+        write.memory.evidence_refs,
+        vec!["logs/a.log", "nowhere", "call:s1", "proposal:p1"],
+        "the model's words, the result they resolve to, and the proposing call"
+    );
+}
+
 #[test]
 fn a_refused_memory_proposal_tells_the_model_why_and_resumes_its_turn() {
     let (mut runtime, provider) = agent_awaiting_provider_with_proposals();

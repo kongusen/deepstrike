@@ -474,6 +474,16 @@ impl CanonicalOperationDriver {
                 denial_reason(&disposition, "memory write denied"),
             )));
         }
+        // Plan task 4.1 · the evidence is resolved against this run's history now, while the
+        // results it names are still here, and the proposing call is named, so a stored record
+        // leads back to where it came from.
+        let proposal_call = match causation {
+            SyscallCausation::ProviderTool(provider) => Some(provider.call_id.as_str()),
+            _ => None,
+        };
+        let evidence_refs = engine
+            .ctx
+            .memory_evidence_refs(&proposal.evidence_refs, proposal_call);
         // §22.13 · the proposal contributed name/kind/content/evidence and nothing else. Tenant,
         // author, trust, timestamp and provenance are authored here, from the operation's binding,
         // the envelope's accepted time and the derived causation.
@@ -491,7 +501,7 @@ impl CanonicalOperationDriver {
                 kind: proposal.kind,
                 content: proposal.content.clone(),
                 description: proposal.description.clone(),
-                evidence_refs: proposal.evidence_refs.clone(),
+                evidence_refs,
                 accepted_at_ms: context.input.observed_at_ms,
                 causation: causation.clone(),
             },

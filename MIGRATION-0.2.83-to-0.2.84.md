@@ -28,6 +28,11 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
   that updated an existing record 19% → 82%, records per sequence 4.9 → 1.3, correct 30 → 37,
   price-weighted cost per session −11%. Without drift (48 paired sessions): correct 33 → 33,
   cost −10%.
+- A model-proposed memory record's `provenance.evidence_refs` gains kernel-written entries after
+  the model's own: `call:<id>` for each tool result the references resolve to, and
+  `proposal:<call id>` for the proposing call. Node and WASM records now carry
+  `provenance.session_id`. Code that treats `evidence_refs` as the model's text only should skip
+  entries with these prefixes.
 - A `propose_memory` outcome (`[MEMORY PROPOSAL name=…] …`) is written into history after the
   tool results of the turn that proposed it, no longer between them. Runs that ended with
   "assistant tool_calls with no tool result" on OpenAI-compatible providers no longer do.

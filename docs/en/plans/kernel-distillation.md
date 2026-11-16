@@ -453,7 +453,8 @@ gaps it points at are real:
 
 Tasks:
 
-- [ ] 4.1 **Carry evidence with a promotion (R).** `plan_memory_write` resolves `evidence_refs`
+- [x] 4.1 **Carry evidence with a promotion (R).** (2026-11-16, done before stage 1: it needs only
+  the `note_evidence` method, not notes as items) `plan_memory_write` resolves `evidence_refs`
   with the same logic as `note_evidence` and records the resolved item ids and the proposing turn
   in a new optional field on `CanonicalMemoryWrite`; the `memory_written` event carries the same
   field. References that do not resolve are kept as they are; the write is not refused.
@@ -465,6 +466,22 @@ Tasks:
     memory, through `memory_written`, to the proposing `llm_completed`, and on to the tool results
     it cited; old session logs and old memory records still load.
   - This is an additive change to a wire type and needs the §7 exception; see §8 item 5.
+  - **Record.** Verified: `llm_completed.tool_calls` carries full arguments; Python and Rust
+    already set `provenance.session_id` on the record, Node and WASM did not, so from a stored
+    memory one could not even tell which session it came from.
+    - Smaller than planned: no new wire field and no change to the `memory_written` event. In
+      `plan_memory_write` the kernel replaces the model's `evidence_refs` with the full list: the
+      model's references as written, then `call:<id>` for each tool result they resolve to (unless
+      the model already wrote that call id), then `proposal:<call id>` for the proposing call
+      (`ContextManager::memory_evidence_refs`, sharing `evidence_results` with `note_evidence`).
+      All four SDKs already copy that field as given, so only Node and WASM needed `session_id`.
+      References that resolve to nothing are kept as written; nothing is refused.
+    - From a record: `session_id` → that session's log; `proposal:` → the `llm_completed` whose
+      `tool_calls` hold that id; `call:` → the `tool_completed` whose `results` hold that id.
+    - Tests: kernel `a_memory_proposal_carries_resolved_evidence_and_its_own_call`; Node end to end
+      `leads from a stored memory back to the turn that proposed it and the result it rested on`
+      (finds the proposing turn and the cited result in the session log by id). Nothing
+      model-visible changes; no golden changed.
 - [x] 4.2 **Measure memory upkeep (read-only).** Not in the default gate.
   - The benchmark harness (`memoryTools` in `trial.mjs`) records `memory_tools` on every trial from
     the `llm_completed` events: calls to `note` / `propose_memory` / `memory`, model turns, turns

@@ -815,6 +815,7 @@ export class RuntimeRunner {
     operationId: string,
     effectId: string,
     canonicalMemory: Record<string, unknown>,
+    sessionId?: string,
   ): Promise<Record<string, unknown>> {
     const agentId = this.opts.agentId
     const record: MemoryRecord = {
@@ -825,6 +826,8 @@ export class RuntimeRunner {
       content: String(canonicalMemory.content ?? ""),
       description: String(canonicalMemory.description ?? ""),
       provenance: {
+        // The session that proposed it, so the record leads back to its session log (plan 4.1).
+        ...(sessionId ? { session_id: sessionId } : {}),
         author: "model",
         trust: "untrusted",
         evidence_refs: Array.isArray(canonicalMemory.evidence_refs)
@@ -1700,7 +1703,7 @@ export class RuntimeRunner {
 
       } else if (action.kind === "persist_memory") {
         action = await this.commitKernelAction(runtime, this.pendingObservations,
-          await this.persistMemoryEffectResult(runtime.operationId, action.effectId, action.memory))
+          await this.persistMemoryEffectResult(runtime.operationId, action.effectId, action.memory, sessionId))
 
       } else if (action.kind === "query_memory") {
         let hits: MemoryRecall[] = []

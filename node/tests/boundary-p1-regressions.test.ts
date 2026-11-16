@@ -491,6 +491,44 @@ describe("P1-15: memory has one authority — the kernel", () => {
     expect(second).toContain("[MEMORY PROPOSAL name=brief-style]")
   })
 
+  it("leads from a stored memory back to the turn that proposed it and the result it rested on", async () => {
+    // Plan task 4.1: the record names its session, the tool result its evidence resolves to, and
+    // the propose_memory call; each is found in the session log by id.
+    const { memoryStore } = store()
+    const records: { provenance: { session_id?: string; evidence_refs: string[] } }[] = []
+    const memoryCandidateSink = {
+      async submit(_agentId: string, candidate: { candidate_id: string; record: never }) {
+        records.push(candidate.record)
+        return { status: "accepted", candidate_id: candidate.candidate_id, receipt_id: "r-1", record_ref: "rec-1", digest: "d-1" }
+      },
+    }
+    const plane = new LocalExecutionPlane()
+    plane.register(tool("read_file", "read", { type: "object", properties: { path: { type: "string" } } }, async () => "12 ERROR lines"))
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "call_read", name: "read_file", arguments: { path: "logs/a.log" } } as StreamEvent],
+      [{ type: "tool_call", id: "call_prop", name: "propose_memory", arguments: { name: "a-count", kind: "project", content: "a.log has 12 ERROR lines", evidence_refs: ["logs/a.log"] } } as StreamEvent],
+    ])
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      provider, sessionLog, executionPlane: plane, baselineToolIds: ["read_file"],
+      maxTokens: 8000, maxTurns: 4, agentId: "p1-15", memoryScope: scope, memoryStore, preQueryMemory: () => [],
+      memoryCandidateSink, memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+    } as never)
+    for await (const _ of runner.run({ sessionId: "p1-15-evidence", goal: "count and remember" })) void _
+
+    expect(records).toHaveLength(1)
+    const { session_id, evidence_refs } = records[0]!.provenance
+    expect(session_id).toBe("p1-15-evidence")
+    expect(evidence_refs).toEqual(["logs/a.log", "call:call_read", "proposal:call_prop"])
+    const events = (await sessionLog.read(session_id!)).map(entry => entry.event as Record<string, unknown>)
+    const proposing = events.find(event => event.kind === "llm_completed"
+      && (event.tool_calls as { id: string }[]).some(call => call.id === "call_prop"))
+    expect(proposing).toBeDefined()
+    const rested = events.find(event => event.kind === "tool_completed"
+      && (event.results as { call_id: string }[]).some(result => result.call_id === "call_read"))
+    expect(rested).toBeDefined()
+  })
+
   it("admits a host write inside a live run by the kernel's rolling write quota", async () => {
     const { memoryStore, puts } = store()
     const verdicts: boolean[] = []

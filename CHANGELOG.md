@@ -72,6 +72,13 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 
 ### Changed
 
+- A memory the model proposes leads back to where it came from (kernel-distillation plan task
+  4.1). The kernel resolves the proposal's `evidence_refs` against the run's history while the
+  results are still there: the record keeps the model's references as written, followed by
+  `call:<id>` for each tool result they resolve to and `proposal:<call id>` for the
+  `propose_memory` call. Node and WASM now also set `provenance.session_id`, as Python and Rust
+  already did. From a stored record, the session log's `llm_completed` holding that call and the
+  `tool_completed` holding those results are found by id. Nothing the model sees changes.
 - **Memory headers carry the record's name** (kernel-distillation plan task 4.4; see
   `MIGRATION-0.2.83-to-0.2.84.md`). A recalled index line is now
   `[MEMORY record_id=… name=… kind=… trust=…] <summary>`, and a search hit or a record read with
