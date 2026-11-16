@@ -30,7 +30,7 @@ use crate::types::task::RuntimeTask;
 /// flagged as a no-progress repeat) and to read sensibly in the "just did: …" footer. Empty for
 /// no-arg / `{}` calls. Lives in the volatile State turn, so length here never churns the cache.
 ///
-/// The 2c STOP and the O6 fuse compare these digests for EQUALITY, so identity must cover the
+/// The O6 fuse compares these digests for EQUALITY, so identity must cover the
 /// FULL arguments even though the display truncates: serde_json orders keys alphabetically, and
 /// a long leading value (an `edit` call's `file_path`) otherwise swallows the whole window —
 /// collapsing distinct same-file edits into one signature. A truncated digest therefore carries
@@ -411,11 +411,10 @@ pub struct LoopStateMachine {
     pub(super) pending_host_effects: VecDeque<PendingHostEffect>,
     pub(super) active_host_effect: Option<PendingHostEffect>,
     pub(super) deferred_action: Option<Box<LoopAction>>,
-    /// O6: repeat-fuse thresholds (the hard rungs above the 2c soft STOP). Default enabled with
+    /// O6: repeat-fuse thresholds. Default enabled with
     /// generous thresholds; tune/disable via `SetRepeatFuse` / `ConfigureRun.repeat_fuse`.
     pub(super) repeat_fuse: RepeatFuseConfig,
-    /// O6: the previous turn's action signature (non-meta `name(args)` joined — the same key the
-    /// 2c STOP uses). NOT part of the turn checkpoint: a fuse deny's rollback must not launder
+    /// O6: the previous turn's action signature (non-meta `name(args)` joined). NOT part of the turn checkpoint: a fuse deny's rollback must not launder
     /// the streak it just tripped on.
     pub(super) repeat_sig: Option<String>,
     /// O6: consecutive turns whose signature equalled `repeat_sig` (1 = first occurrence).
@@ -531,7 +530,8 @@ impl LoopStateMachine {
 
     /// O4: enable/disable the turn-end criteria gate (default enabled; no-op without criteria).
     pub fn set_criteria_gate(&mut self, enabled: bool) {
-        self.criteria_gate_enabled = enabled;
+        // EXP m8 · minimal: no criteria gate.
+        self.criteria_gate_enabled = enabled && !false;
     }
 
     /// Declare that the workflow this machine runs **is** the operation's root (spec §6.1.7).
@@ -979,19 +979,10 @@ impl LoopStateMachine {
     ///
     /// The canonical driver calls this once per transition, before any semantic call, so that
     /// every clock-dependent decision this step makes — signal TTL and deadline escalation, the
-    /// governance rate-limit window, the wall-time budget axis, idle time-decay — reads the one
-    /// host clock fact the journal already holds. The kernel itself never reads a system clock.
-    ///
-    /// Beyond [`Self::set_observed_time`] it anchors context *activity* at the first accepted
-    /// time. Without the anchor, `last_activity_ms` starts at 0 while the accepted clock is an
-    /// epoch value, so the very first turn would look idle for ~55 years and trip time-decay
-    /// compaction on an empty context.
+    /// governance rate-limit window, the wall-time budget axis — reads the one host clock fact the
+    /// journal already holds. The kernel itself never reads a system clock.
     pub fn observe_accepted_time(&mut self, now_ms: u64) {
-        let first = self.started_at_ms.is_none();
         self.set_observed_time(now_ms);
-        if first {
-            self.ctx.record_activity(now_ms);
-        }
     }
 
     /// Feed the current wall-clock time (ms) to scheduler/governance budget axes.
@@ -1171,7 +1162,7 @@ impl LoopStateMachine {
         // before the first render instead of selecting a nearly full prompt while retaining the
         // entire oversized history internally. No archive effect may precede an agent's first
         // provider effect; the summary and the retained history are part of this atomic start.
-        if self.session_history_baseline > 0 && self.ctx.rho() > self.ctx.config.snip_threshold {
+        if self.session_history_baseline > 0 && self.ctx.rho() > self.ctx.config.micro_threshold {
             let action = crate::context::pressure::PressureAction::ContextCollapse;
             let (saved, summary, archived, invalidates_prefix_at) = self.ctx.compress(action);
             if saved > 0 || summary.is_some() {
@@ -1310,11 +1301,6 @@ impl LoopStateMachine {
                 let calls = message.tool_calls.clone();
                 self.ctx.push_history(message, tokens);
 
-                // ━━ 记录活动时间（Layer 3时间衰减使用）
-                if let Some(now_ms) = self.last_now_ms {
-                    self.ctx.record_activity(now_ms);
-                }
-
                 // §7.6 · the P1 syscalls in this batch were already adjudicated by the canonical
                 // driver. The assistant message keeps every call the model made — it must see the
                 // turn it emitted — but a syscall is never dispatched: it is closed here with the
@@ -1397,23 +1383,8 @@ impl LoopStateMachine {
                     }
                 }
 
-                // 2b: record this turn's tool activity into the task-state recency log (meta-tools
-                // filtered inside). The State-turn footer renders it as "just did: …" + a forward
-                // nudge / STOP, so progress is kernel-derived and never depends on the model
-                // remembering to call `update_plan`. Tool *names* live only on the request (results
-                // carry call_id only), so this is the turn to capture them.
-                //
-                // Capture name AND a compact arg digest: the no-progress STOP keys on whether the
-                // SAME call repeats, and a legit loop (same tool, DIFFERENT args — e.g. processing 20
-                // items) is real progress, not a stall. Keying on the name alone false-positives those
-                // loops; including args distinguishes "step(n=1), step(n=2)…" from a true repeat.
-                let action_sigs: Vec<(String, String)> = calls
-                    .iter()
-                    .map(|c| (c.name.to_string(), compact_tool_args(&c.arguments)))
-                    .collect();
-                self.ctx.note_tool_actions(&action_sigs);
 
-                // O6 RepeatFuse: the hard rungs above the 2c soft STOP. Runs BEFORE the governance
+                // O6 RepeatFuse: deny, then terminate, on a repeated identical turn. Runs BEFORE the governance
                 // gate and independent of whether a policy is loaded — a batteries-included kernel
                 // protection, not a policy feature. Deny commits a visible synthetic error result;
                 // the terminate rung ends the run `NoProgress` after one final no-tools report turn.
@@ -1498,19 +1469,8 @@ impl LoopStateMachine {
                 // this arm — the single provider-call funnel — so the eviction checkpoint and
                 // entropy sample below still run on the exhaustion turn before the final report.
 
-                // ━━ Eviction checkpoint (M3): one decision model (`plan_eviction`), one
-                // execution funnel (`execute_eviction_op`). Layer 3 (idle/time-decay) must run
-                // before the rho recommendation is read, since it mutates token usage — so the
-                // plan is built in that interleaved order and the ops are executed in plan order.
-                let idle_decay = self
-                    .last_now_ms
-                    .is_some_and(|now_ms| self.ctx.should_time_decay_compact(now_ms));
-                if idle_decay {
-                    self.execute_eviction_op(&crate::mm::EvictionOp::TimeDecayMicro);
-                }
-
-                // Layer 4 read-time projection: recompute handle residency on the post-time-decay rho.
-                self.ctx.recompute_handle_residency();
+                // ━━ Eviction checkpoint: one decision (`plan_eviction`), one execution funnel
+                // (`execute_eviction_op`), driven by pressure alone.
                 // K2: knowledge budget check — marks over-budget unpinned entries for the next
                 // boundary sweep (marks are idempotent; drops only apply there) and stashes a
                 // warn-once-per-generation notice, drained into an observation here.
@@ -1522,24 +1482,11 @@ impl LoopStateMachine {
                             budget,
                         });
                 }
-                // Layers 2/4/5: execute the pressure-driven ops from the plan (skip TimeDecayMicro
-                // if already executed). The plan carries specific ops stamped with real config-derived
-                // params (W1-1 収口 — no magic-number placeholders), not the umbrella `Pressure` wrapper.
                 let plan = crate::mm::plan_eviction(
                     self.ctx.should_compress(),
-                    idle_decay,
                     self.ctx.compaction_target_tokens(),
                 );
-                // `idle_decay` ⇒ the plan carries a `TimeDecayMicro` (so the skip-on-already-executed
-                // below is meaningful). The converse does NOT hold: a pressure-driven `MicroCompact`
-                // also emits `TimeDecayMicro` independent of `idle_decay` (W1 unified planner), so we
-                // assert the implication, not equality.
-                debug_assert!(!idle_decay || plan.has_time_decay());
                 for op in &plan.ops {
-                    // Skip TimeDecayMicro if we already executed it (prevents double-execution).
-                    if matches!(op, crate::mm::EvictionOp::TimeDecayMicro) && idle_decay {
-                        continue;
-                    }
                     self.execute_eviction_op(op);
                 }
 

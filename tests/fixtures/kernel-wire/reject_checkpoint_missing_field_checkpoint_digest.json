@@ -17,8 +17,6 @@
         "knowledge_reference_step": 0,
         "knowledge_regret": 0,
         "knowledge_wasted_tokens": 0,
-        "last_activity_ms": "0",
-        "last_compact_ms": null,
         "messages": [],
         "next_handle_id": 0,
         "partition_tokens": {
@@ -41,7 +39,6 @@
           "plan": [],
           "preserved_refs": [],
           "progress": "",
-          "recent_actions": [],
           "scratchpad": ""
         }
       },
@@ -93,17 +90,14 @@
         "resolved_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -212,7 +206,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:71bdefac5444d915aa6f6650cdc2503b38dd43d1babfceca2a0c2c2e4b3b4ef2",
+    "state_digest": "sha256:f711430bf704176c58169eaa63a4b772b5ce3624e17f0200898161feac4a3374",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"

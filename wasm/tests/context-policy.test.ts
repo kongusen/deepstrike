@@ -5,8 +5,7 @@ describe("WASM ContextPolicy", () => {
     const wire = normalizeContextPolicy(contextPolicy())
     expect(wire).not.toHaveProperty("version")
     expect(wire.pressure_thresholds_ppm).toEqual({
-      snip: 700_000,
-      micro: 800_000,
+      micro: 700_000,
       collapse: 900_000,
       auto: 950_000,
       renewal: 980_000,

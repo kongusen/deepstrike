@@ -350,7 +350,7 @@ Stage 1 changes the checkpoint shape. Each task keeps a restore path for old che
 test, and records the change in `MIGRATION-0.2.83-to-<next>.md`. The host-facing ABI (`KernelInput`,
 `KernelEffect`, the wire `ContextPolicy`) does not change in stages 0–1.
 
-### Stage 2: the DEC-13 audit (G)
+### Stage 2: the DEC-13 audit (G) — first round done, M1–M7 deleted
 
 **Method: measure stripping everything first, then bisect.** Thirty pairs per mechanism would cost
 too much.
@@ -386,6 +386,34 @@ Notes:
   `benchmark/context-lifecycle/results/`, check the DeepSeek balance, report the estimate to the
   user and wait for consent.
 - If `minimal` sends many long-horizon runs to the turn limit, stop and analyse; do not run all 30.
+
+**Record (2026-11-16).** The user approved a 30 CNY budget and decided to do stage 2 first and settle the rest of stage 1 after the audit.
+
+- **Method.** On the experiment branch `exp/stage2-audit` (never merged), `DEEPSTRIKE_EXP_MINIMAL` strips M1–M9 to `minimal` (`all`, or a list such as `m1,m5`); unset, all 1158 kernel tests pass. Stage 2 did not wait for 1.4: the switches hook into the current code directly.
+- **Measured** (`deepseek-flash`, paired by task, `results/stage2-*.jsonl`, `s2-default` as the candidate and `s2-minimal` as the baseline; about 15 CNY at long-horizon's historical rate):
+
+  | Scenario | Pairs | Correct: default / minimal | Cost per correct answer | Gate |
+  |---|---|---|---|---|
+  | long-horizon | 10 | 6 / 4 | default 22% cheaper | too few pairs |
+  | ledger | 30 | 28 / 28 | default 62% more | default not significantly better |
+  | knowledge-pressure | 30 | 25 / 27 | default 76% more | **default significantly worse** |
+  | multi-session | 48 sessions | 34 / 32 | default 9% cheaper | default not significantly better; by sequence 3 better, 1 worse |
+  | fan-out | 12 | 12 / 12 | default 16% cheaper | regression only, no difference |
+
+  - The cost difference is almost entirely the cache: minimal hits the cache more in every scenario; default breaks the prefix 2–7 times as often, almost all tagged `collapse` (M5) and `narration` (M1).
+  - long-horizon answers were read one by one: wrong answers on both sides are counts off by 1–2 lines, with no error type unique to one side; the 6 discordant pairs split 4 to 2, within chance. minimal never hit the turn limit (0/10); the only turn-limit run was default's.
+- **Decision (user, 2026-11-16): "delete most of them."** M1–M7 are deleted. M8 (the criteria gate, which fires only when the host passes acceptance criteria; no benchmark sets any, so there is no data) and M9 (`update_plan`'s progress / blocked_on and the scratchpad, part of the four SDKs' API) stay for now, to be decided separately. long-horizon was not topped up to 30 pairs.
+- **How the deletion was done and checked.** First the switches were fixed (M1–M7 stripped, M8–M9 kept) and the regenerated goldens were byte-identical to the `minimal` measured on the experiment branch; then the dead code and the configuration surface were removed, after which the goldens differ only by the removed config fields and the digests that follow. In detail:
+  - M1 narration collapse: projection, `collapseOldAssistantNarration` and the `narration` break cause removed.
+  - M2 utility scoring: `context/utility.rs` replaced by `context/archive.rs`, oldest first, keeping only the recent units by rule.
+  - M3 rule summary: `summarizer.rs` removed; a compaction's record is one line, `archived N messages (~T tokens); tools used: …`.
+  - M4: idle decay (`idleMicroCompactMinutes`, two timestamps) and the separate snip tier removed; snip is micro's first stage, the thresholds lose `snip`, and `micro` defaults to 0.70 (how the measured minimal behaved).
+  - M5: per-turn collapse of old tool results (`recompute_handle_residency`) removed; the `Collapsed` form is still produced by provider-side clearing and stays until 1.4.
+  - M6: the knowledge retention score counts strong references only, without kind weights.
+  - M7: the state-turn footer and the `recent_actions` log behind it removed.
+  - Checkpoints read but no longer write `recent_actions`, `last_activity_ms` and `last_compact_ms`, so older checkpoints restore.
+  - Tests: those asserting deleted behavior were removed; two Python tests that relied on the rule summary inflating pressure or on compaction timing now build their conditions directly (a long goal; looking for the re-activated skill in the state turn). All four SDKs' full suites, the reproduction script and the docs and contract checks pass.
+- **Effect on stage 1.** 1.4 (one form) shrinks: narration collapse and per-turn collapse are gone. 1.7 has no footer or rule summary left to centralize. 1.2, 1.3 and 1.5 still show no concrete payoff; revisit them after 1.6 and 1.7.
 
 After stage 2, converge the configuration: `PressureThresholds` keeps only thresholds still used;
 `preserve_recent_units` and `preserve_recent_turns` merge; of the two `ContextPolicy` types one
@@ -763,7 +791,7 @@ Whoever picks this up starts here. Branch `refactor/kernel-distill-phase0`, base
      running pytest, or httpx complains that `socksio` is missing.
    - [x] This English version, which `node scripts/check-docs-drift.mjs` requires.
 3. **Stage 1 (1.1–1.9)**, then **4.1** (after 1.2; the wire optional field is approved).
-4. **Stage 2's DEC-13 audit.** No spending cap yet (§8 item 1); ask the user before running.
+4. ~~**Stage 2's DEC-13 audit.**~~ First round done, M1–M7 deleted (see stage 2's record). M8 and M9 open.
 5. **Stage 3, documentation.**
 
 ### 10.3 Lessons of this round, before you start

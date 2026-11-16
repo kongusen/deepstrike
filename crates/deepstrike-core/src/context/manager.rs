@@ -26,7 +26,7 @@ pub const KNOWLEDGE_TOOL_NAME: &str = "knowledge";
 pub const READ_RESULT_TOOL_NAME: &str = "read_result";
 
 /// Control-plane meta-tools: kernel-handled tools that drive state/capabilities rather than do task
-/// work. Excluded from the `recent_actions` progress log (2b) so the footer reflects real progress.
+/// work. The repeat fuse leaves them out of a turn's signature.
 const META_TOOL_NAMES: &[&str] = &[
     "pace",
     "update_plan",
@@ -169,15 +169,6 @@ pub struct ContextManager {
     pressure: PressureMonitor,
     renewal: RenewalPolicy,
 
-    // ── Layer 3: Time tracking for decay ─────────────────────────────────
-    /// Last activity timestamp (milliseconds since epoch).
-    /// Updated on each ProviderResult and ToolResults.
-    pub last_activity_ms: u64,
-
-    /// Last compression timestamp (milliseconds since epoch).
-    /// Updated on each compression pass.
-    pub last_compact_ms: Option<u64>,
-
     // ── P3: handle table (context as address space) ─────────────────────────
     /// Per-task handle table: one [`Handle`] per addressable working-context object (tool results
     /// today). Residency transitions on these handles drive read-time projection; the original
@@ -315,8 +306,6 @@ impl ContextManager {
             compression,
             pressure,
             renewal,
-            last_activity_ms: 0,
-            last_compact_ms: None,
             handles: HandleTable::new(),
             next_handle_id: 0,
             frozen_history_len: 0,
@@ -349,74 +338,7 @@ impl ContextManager {
         self.renewal = RenewalPolicy::from_config(&self.config);
     }
 
-    // ── Layer 3: Time-based decay ─────────────────────────────────────────────
-
-    /// Update activity timestamp (call on each ProviderResult and ToolResults).
-    pub fn record_activity(&mut self, now_ms: u64) {
-        self.last_activity_ms = now_ms;
-    }
-
-    /// Check if Micro-Compact should trigger based on time decay (Layer 3).
-    /// Returns true if idle time exceeds `micro_compact_idle_minutes`.
-    pub fn should_time_decay_compact(&self, now_ms: u64) -> bool {
-        // Idle decay excerpts old tool results — the provider's tier when it clears them natively.
-        if self.config.delegate_tool_result_clearing {
-            return false;
-        }
-        let idle_ms = if let Some(last_compact) = self.last_compact_ms {
-            // Time since last compression
-            now_ms.saturating_sub(last_compact)
-        } else {
-            // Time since first activity
-            now_ms.saturating_sub(self.last_activity_ms)
-        };
-
-        let idle_minutes = idle_ms / 60_000;
-        idle_minutes >= self.config.micro_compact_idle_minutes as u64
-    }
-
     // ── Layer 4: read-time projection (handle residency) ────────────────────
-
-    /// Recompute tool-result handle residency for Layer-4 read-time projection (call before
-    /// `render`). When pressure (`rho`) reaches `collapse_threshold`, all but the most recent
-    /// `preserved_tool_results` tool results are marked `Collapsed` (rendered as previews).
-    ///
-    /// **Monotonic within a cache generation (P0-C):** collapse is one-way here —
-    /// `Resident → Collapsed` only, never the reverse. The old two-way version un-collapsed when
-    /// `rho` fell back below the threshold, which (a) rewrote mid-history bytes and invalidated the
-    /// prompt-cache prefix on every threshold oscillation, and (b) re-billed a full tool-result body
-    /// for near-zero attention gain (an old result that already faded). Un-collapsing now happens
-    /// only at compaction/renewal boundaries via [`Self::reset_collapse_generation`] — the one moment
-    /// the prefix is rewritten anyway, so the cache cost is already paid. Non-destructive:
-    /// `partitions` is untouched. Spooled/paged-out handles are left as-is.
-    pub fn recompute_handle_residency(&mut self) {
-        // Monotonic: below the threshold we never *un*-collapse, so there is nothing to do. A
-        // provider that clears tool results natively owns this projection: collapsing them here too
-        // would send the provider previews it could never have cleared from.
-        if self.config.delegate_tool_result_clearing
-            || self.rho() < self.config.collapse_threshold
-        {
-            return;
-        }
-        let keep = self.config.preserved_tool_results;
-        // Single mutable pass in insertion order. `tool_result_handles_mut().enumerate()` yields the
-        // collapse candidates oldest-first; `i < cutoff` protects the most recent `keep` results.
-        let total = self
-            .handles
-            .all()
-            .iter()
-            .filter(|h| matches!(h.kind, HandleKind::ToolResult))
-            .count();
-        let cutoff = total.saturating_sub(keep);
-        for (i, handle) in self.handles.tool_result_handles_mut().enumerate() {
-            // Only fold the reversible Resident → Collapsed axis; never clobber a handle that has
-            // been externalized or paged out, and never reverse an existing collapse mid-generation.
-            if i < cutoff && matches!(handle.residency, Residency::Resident) {
-                handle.residency = Residency::Collapsed;
-                self.cache_ledger.note_cause(BreakCause::Collapse);
-            }
-        }
-    }
 
     /// Start a fresh collapse generation: un-collapse every `Collapsed` handle back to `Resident`.
     /// Called only at compaction/renewal boundaries — the sole points where un-collapsing is
@@ -669,7 +591,7 @@ impl ContextManager {
                     PressureAction::MicroCompact
                 }
             }
-            PressureAction::SnipCompact | PressureAction::MicroCompact if clearing => {
+            PressureAction::MicroCompact if clearing => {
                 PressureAction::None
             }
             other => other,
@@ -680,20 +602,12 @@ impl ContextManager {
         &mut self,
         action: PressureAction,
     ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
-        self.compress_with_time(action, None)
-    }
-
-    pub fn compress_with_time(
-        &mut self,
-        action: PressureAction,
-        now_ms: Option<u64>,
-    ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
         let target = self.config.target_tokens(self.max_tokens);
-        self.compress_with_target(action, target, now_ms)
+        self.compress_with_target(action, target)
     }
 
     pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
-        self.compress_with_target(PressureAction::AutoCompact, 0, None)
+        self.compress_with_target(PressureAction::AutoCompact, 0)
     }
 
     /// W1-1 收口: run one compaction `action` toward an **explicit** `target_tokens`, instead of
@@ -706,7 +620,6 @@ impl ContextManager {
         &mut self,
         action: PressureAction,
         target_tokens: u32,
-        now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
         let (saved, summary, archived, cache_at) = self.compression.compress(
             &mut self.partitions,
@@ -729,9 +642,6 @@ impl ContextManager {
             // The measurement describes the request before this rewrite, not the new context.
             self.last_observed_prompt_tokens = None;
             self.cache_ledger.note_cause(BreakCause::of_compaction(action));
-        }
-        if let Some(ts) = now_ms {
-            self.last_compact_ms = Some(ts);
         }
         // Archived messages have left history — drop their now-orphaned handles (bounds the table).
         if !archived.is_empty() {
@@ -824,7 +734,6 @@ impl ContextManager {
             self.config.preserve_recent_units,
             &self.handles,
             self.frozen_history_len,
-            self.config.collapse_assistant_narration,
         );
         if !self.item_replays.is_empty() {
             let replay_tokens: u32 = rendered
@@ -1479,7 +1388,6 @@ impl ContextManager {
                         engine.count_message(message).saturating_add(replay_tokens)
                     }),
                     item,
-                    stub: message.content.as_text() == Some(super::renderer::NARRATION_STUB),
                 }
             })
             .collect();
@@ -1893,28 +1801,6 @@ impl ContextManager {
         self.partitions.task_state.apply(update);
     }
 
-    /// 2b: record this turn's tool activity into the task-state recency log (kernel-derived progress
-    /// that feeds the State-turn footer). Each entry is `(name, compact_args)`; the rendered signature
-    /// is `name(args)` (or bare `name` for no-arg calls) so the no-progress STOP keys on the WHOLE
-    /// call — same tool with different args (a legit loop over items) reads as distinct progress, not
-    /// a repeat. Control-plane meta-tools (plan/skill/memory/knowledge/workflow authoring) are noise,
-    /// not task progress — filtered by name. A turn with only meta-tool calls records nothing.
-    pub fn note_tool_actions(&mut self, calls: &[(String, String)]) {
-        let summary = calls
-            .iter()
-            .filter(|(name, _)| !is_meta_tool(name))
-            .map(|(name, args)| {
-                if args.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{name}({args})")
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        self.partitions.task_state.note_actions(summary);
-    }
-
     // ── Section pinning ───────────────────────────────────────────────────────
 
     // ── Skills ────────────────────────────────────────────────────────────────
@@ -2182,15 +2068,26 @@ impl ContextManager {
         Some(ToolSchema {
             name: CompactString::new("update_plan"),
             description: "Update your task plan and progress. Call this after completing a step or when the plan changes.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "plan": { "type": "array", "items": { "type": "string" } },
-                    "current_step": { "type": "integer" },
-                    "progress": { "type": "string" },
-                    "blocked_on": { "type": "array", "items": { "type": "string" } }
-                }
-            }),
+            parameters: if false {
+                // EXP m9 · minimal: no progress / blocked_on fields.
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "plan": { "type": "array", "items": { "type": "string" } },
+                        "current_step": { "type": "integer" }
+                    }
+                })
+            } else {
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "plan": { "type": "array", "items": { "type": "string" } },
+                        "current_step": { "type": "integer" },
+                        "progress": { "type": "string" },
+                        "blocked_on": { "type": "array", "items": { "type": "string" } }
+                    }
+                })
+            },
         })
     }
 
@@ -2269,8 +2166,9 @@ Scope, identity, provenance, and timestamps are derived for you.".to_string(),
 mod tests {
     use super::*;
 
-    /// Plan task 8.0 · the ledger attributes real render changes: old narration leaving the
-    /// protected window, a compaction, and a changed toolset.
+    /// Plan task 8.0 · the ledger attributes real render changes: a compaction and a changed
+    /// toolset. Old turns leaving the protected window render unchanged, so plain appends keep the
+    /// prefix.
     #[test]
     fn the_cache_ledger_attributes_render_breaks() {
         use crate::context::cache_ledger::BreakCause;
@@ -2304,10 +2202,11 @@ mod tests {
         step(&mut mgr, 2);
         assert_eq!(mgr.note_request_sent(&mgr.render(), &toolset, 2), None, "an append keeps the prefix");
         step(&mut mgr, 3);
-        // Step 1's narration has left the protected window and renders as the stub now.
-        let found = mgr.note_request_sent(&mgr.render(), &toolset, 3).expect("narration breaks");
-        assert_eq!(found.cause, BreakCause::Narration);
-        assert!(found.kept_tokens > 0 && found.lost_tokens > 0);
+        assert_eq!(
+            mgr.note_request_sent(&mgr.render(), &toolset, 3),
+            None,
+            "step 1 left the protected window and still renders as it was sent"
+        );
 
         step(&mut mgr, 4);
         mgr.cache_ledger.note_cause(BreakCause::of_compaction(PressureAction::AutoCompact));
@@ -2321,7 +2220,7 @@ mod tests {
         assert_eq!((found.cause, found.kept_tokens), (BreakCause::Toolset, 0));
 
         let metrics = mgr.lifecycle_metrics();
-        assert_eq!(metrics.prefix_breaks.len(), 3);
+        assert_eq!(metrics.prefix_breaks.len(), 2);
         assert_eq!(
             metrics.cache_loss_tokens,
             metrics.prefix_breaks.iter().map(|b| u64::from(b.lost_tokens)).sum::<u64>(),
@@ -2897,61 +2796,6 @@ mod tests {
     }
 
     #[test]
-    fn note_tool_actions_keys_on_name_and_args_so_legit_loops_dont_false_stop() {
-        // Same tool, DIFFERENT args across turns = real progress (e.g. process item 1, 2, 3) —
-        // must NOT trip the no-progress STOP backstop.
-        let mut mgr = ContextManager::new(100_000);
-        mgr.init_task("process items".to_string(), vec![]);
-        mgr.note_tool_actions(&[("step".to_string(), "{\"n\":1}".to_string())]);
-        mgr.note_tool_actions(&[("step".to_string(), "{\"n\":2}".to_string())]);
-        mgr.note_tool_actions(&[("step".to_string(), "{\"n\":3}".to_string())]);
-        assert_eq!(
-            mgr.partitions.task_state.recent_actions,
-            ["step({\"n\":1})", "step({\"n\":2})", "step({\"n\":3})"]
-        );
-        let txt = mgr
-            .render()
-            .state_turn
-            .unwrap()
-            .content
-            .as_text()
-            .unwrap()
-            .to_string();
-        assert!(
-            !txt.contains("STOP:"),
-            "same-tool/diff-args loop must not trip STOP: {txt}"
-        );
-
-        // Genuine stall — same tool, SAME args repeated — DOES trip the STOP.
-        let mut mgr2 = ContextManager::new(100_000);
-        mgr2.init_task("g".to_string(), vec![]);
-        for _ in 0..3 {
-            mgr2.note_tool_actions(&[("document_read".to_string(), "{\"id\":\"x\"}".to_string())]);
-        }
-        let txt2 = mgr2
-            .render()
-            .state_turn
-            .unwrap()
-            .content
-            .as_text()
-            .unwrap()
-            .to_string();
-        assert!(
-            txt2.contains("STOP:"),
-            "identical repeated call must trip STOP: {txt2}"
-        );
-
-        // Meta-tools are control plane, not task progress — filtered out entirely.
-        let mut mgr3 = ContextManager::new(100_000);
-        mgr3.init_task("g".to_string(), vec![]);
-        mgr3.note_tool_actions(&[(
-            "update_plan".to_string(),
-            "{\"current_step\":1}".to_string(),
-        )]);
-        assert!(mgr3.partitions.task_state.recent_actions.is_empty());
-    }
-
-    #[test]
     fn manager_renew_advances_sprint_and_keeps_goal() {
         let mut mgr = ContextManager::new(1_000);
         mgr.init_task("test goal".to_string(), vec![]);
@@ -3226,51 +3070,6 @@ mod tests {
     }
 
     #[test]
-    fn update_collapse_mode_collapses_old_tool_results_under_pressure() {
-        let mut mgr = ContextManager::new(1_000);
-        for i in 0..10 {
-            let m = CoreMessage::tool(vec![ContentPart::ToolResult {
-                call_id: format!("c{i}").into(),
-                output: "x".repeat(40),
-                is_error: false,
-                durable_content: None,
-            }]);
-            mgr.push_history(m, 40);
-        }
-        // Drive rho past collapse_threshold deterministically via observed prompt tokens.
-        mgr.set_observed_prompt_tokens(950); // 950 / 1000 = 0.95 >= 0.90
-        assert!(mgr.rho() >= mgr.config.collapse_threshold);
-
-        mgr.recompute_handle_residency();
-        // Oldest is collapsed; the most recent configured tool-result handles stay resident.
-        assert_eq!(
-            mgr.handles.residency_for_source("c0"),
-            Some(&Residency::Collapsed)
-        );
-        assert_eq!(
-            mgr.handles.residency_for_source("c9"),
-            Some(&Residency::Resident)
-        );
-
-        // P0-C — monotonic within a generation: once collapsed, dropping pressure does NOT
-        // un-collapse (un-collapsing would re-bill the body and churn the cache prefix).
-        mgr.set_observed_prompt_tokens(100); // 0.10 < 0.90
-        mgr.recompute_handle_residency();
-        assert_eq!(
-            mgr.handles.residency_for_source("c0"),
-            Some(&Residency::Collapsed),
-            "collapse is sticky until a compaction boundary"
-        );
-
-        // Only a generation reset (compaction/renewal) un-collapses.
-        mgr.reset_collapse_generation();
-        assert_eq!(
-            mgr.handles.residency_for_source("c0"),
-            Some(&Residency::Resident)
-        );
-    }
-
-    #[test]
     fn a_collapsed_tool_result_is_an_item_rendered_as_its_handle() {
         use crate::context::item::Fidelity;
         let mut mgr = ContextManager::new(1_000);
@@ -3281,8 +3080,8 @@ mod tests {
         assert_eq!(mgr.handles.all()[0].item, first, "a handle addresses its item");
         assert_eq!(mgr.history_fidelity(0), Fidelity::Full);
 
-        mgr.set_observed_prompt_tokens(950);
-        mgr.recompute_handle_residency();
+        // Collapsed by provider-side clearing (`absorb_cleared_tool_results`), say.
+        mgr.handles.all_mut()[0].residency = Residency::Collapsed;
         assert_eq!(mgr.history_fidelity(0), Fidelity::Handle);
         assert_eq!(mgr.history_fidelity(9), Fidelity::Full);
         let turns = mgr.render().turns;
@@ -3323,14 +3122,14 @@ mod tests {
     fn delegated_tiers_are_filtered_out_of_the_pressure_recommendation() {
         use PressureAction::*;
         let cases = [
-            ((true, false), [None, None, None, ContextCollapse, AutoCompact]),
-            ((false, true), [None, SnipCompact, MicroCompact, MicroCompact, MicroCompact]),
-            ((true, true), [None, None, None, None, None]),
-            ((false, false), [None, SnipCompact, MicroCompact, ContextCollapse, AutoCompact]),
+            ((true, false), [None, None, ContextCollapse, AutoCompact]),
+            ((false, true), [None, MicroCompact, MicroCompact, MicroCompact]),
+            ((true, true), [None, None, None, None]),
+            ((false, false), [None, MicroCompact, ContextCollapse, AutoCompact]),
         ];
         for ((clearing, compaction), expected) in cases {
             let mgr = delegating(clearing, compaction);
-            let got = [None, SnipCompact, MicroCompact, ContextCollapse, AutoCompact]
+            let got = [None, MicroCompact, ContextCollapse, AutoCompact]
                 .map(|action| mgr.kernel_owned_tier(action));
             assert_eq!(got, expected, "clearing={clearing} compaction={compaction}");
         }
@@ -3341,25 +3140,6 @@ mod tests {
         // Renewal is never delegated: it reads the full local history whatever the provider does.
         mgr.push_history(CoreMessage::user("more"), 100);
         assert!(mgr.should_renew());
-    }
-
-    #[test]
-    fn delegated_clearing_leaves_tool_results_to_the_provider() {
-        let mut mgr = delegating(true, false);
-        mgr.record_activity(0);
-        for i in 0..10 {
-            let m = CoreMessage::tool(vec![ContentPart::ToolResult {
-                call_id: format!("c{i}").into(),
-                output: "x".repeat(40),
-                is_error: false,
-                durable_content: None,
-            }]);
-            mgr.push_history(m, 40);
-        }
-        mgr.set_observed_prompt_tokens(950);
-        mgr.recompute_handle_residency();
-        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Resident));
-        assert!(!mgr.should_time_decay_compact(24 * 60 * 60_000));
     }
 
     #[test]
@@ -3434,8 +3214,9 @@ mod tests {
         for i in 0..20 {
             mgr.push_history(tool_result_msg(&format!("c{i}"), &"x".repeat(120)), 60);
         }
-        mgr.set_observed_prompt_tokens(980); // force collapse of the older results
-        mgr.recompute_handle_residency();
+        for handle in mgr.handles.all_mut().iter_mut().take(10) {
+            handle.residency = Residency::Collapsed;
+        }
         assert_eq!(
             mgr.handles.residency_for_source("c0"),
             Some(&Residency::Collapsed)

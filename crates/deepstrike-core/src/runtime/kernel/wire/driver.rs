@@ -1320,8 +1320,6 @@ fn restore_context_vm(
         })
         .collect();
     ctx.partitions.task_state = restore_task_state(&state.task_state);
-    ctx.last_activity_ms = state.last_activity_ms.get();
-    ctx.last_compact_ms = state.last_compact_ms.map(WireU64::get);
     ctx.active_skills = state
         .active_skills
         .iter()
@@ -1488,7 +1486,7 @@ fn project_task_state(state: &TaskState) -> LogicalTaskState {
         blocked_on: state.blocked_on.clone(),
         directives: state.directives.clone(),
         preserved_refs: state.preserved_refs.clone(),
-        recent_actions: state.recent_actions.clone(),
+        recent_actions: Vec::new(),
         compression_log: state
             .compression_log
             .iter()
@@ -1535,7 +1533,6 @@ fn restore_task_state(state: &LogicalTaskState) -> TaskState {
         blocked_on: state.blocked_on.clone(),
         directives: state.directives.clone(),
         preserved_refs: state.preserved_refs.clone(),
-        recent_actions: state.recent_actions.clone(),
         compression_log: state
             .compression_log
             .iter()
@@ -3249,7 +3246,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         .ctx
         .apply_context_policy(&crate::context::policy::ContextPolicy {
             pressure_thresholds_ppm: crate::context::policy::PressureThresholdsPpm {
-                snip: thresholds.snip.get(),
                 micro: thresholds.micro.get(),
                 collapse: thresholds.collapse.get(),
                 auto: thresholds.auto.get(),
@@ -3258,8 +3254,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
             target_after_compress_ppm: context.target_after_compress_ppm.get(),
             preserve_recent_turns: context.preserve_recent_turns,
             renewal_carryover_ppm: context.renewal_carryover_ppm.get(),
-            collapse_old_assistant_narration: context.collapse_old_assistant_narration,
-            idle_micro_compact_minutes: context.idle_micro_compact_minutes,
             delegate_tool_result_clearing: context.delegated_tiers.tool_result_clearing,
             delegate_compaction: context.delegated_tiers.compaction,
             notes_budget_tokens: context.notes_budget_tokens,
@@ -3328,8 +3322,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     );
     engine.ctx.config.knowledge_budget_ratio =
         config.context_policy.knowledge_budget_ppm.as_ratio();
-    engine.ctx.config.collapse_assistant_narration =
-        config.context_policy.collapse_old_assistant_narration;
     engine.tools = config.tool_catalog.iter().map(core_tool_schema).collect();
     engine
 }

@@ -45,7 +45,7 @@ RuntimeOptions(
 )
 ```
 
-内核 `PressureMonitor` 在压力超阈值时自动触发 `CompressionPipeline`（Snip → Drop → Summarize）。
+内核 `PressureMonitor` 在压力超阈值时自动触发 `CompressionPipeline`（Micro → Collapse → Auto）。
 
 ---
 
@@ -141,7 +141,7 @@ Provider 配置为执行某一档时，会在 descriptor 里声明 `nativeContex
 
 | 声明 | 内核跳过 | 仍然保留 |
 | ------ | ------ | ------ |
-| `tool_result_clearing` | Snip / Micro 压缩、idle TimeDecayMicro、handle 折叠预览 | Collapse / Auto 归档、renewal |
+| `tool_result_clearing` | Micro 压缩、handle 折叠预览 | Collapse / Auto 归档、renewal |
 | `compaction` | Collapse / Auto 归档（只委托这一档时降级为 Micro） | 工具结果清理、renewal |
 
 委托的档位只会被跳过，不会被升级成更重的档位。**Renewal 永不委托**：内核在完整的本地 history 上判断压力，压力取 Provider 观测值与本地估算值的较大者，所以服务端清理后上报的较小 input usage 不会压住续期，renewal 仍是安全网。
@@ -175,7 +175,7 @@ API 在输入达到阈值时，在 assistant 回复开头返回一个 `compactio
 两点要注意：
 
 - 本地 history 并不会因此变短。内核压力仍取 Provider 观测值与本地估算值中的较大者，所以 renewal 照常在本地阈值触发。服务端阈值要设得低于内核的 renewal 阈值，否则服务端还没压缩，内核已经先续期了。
-- 内核如果改写了这一轮的文本（例如 `collapse_old_assistant_narration`），replay 就对不上了。此时块不会再发出，API 收到的是未压缩的完整历史，多花一些输入 token，但不会出错。
+- 内核如果改写了这一轮的文本（例如压缩把它归档了），replay 就对不上了。此时块不会再发出，API 收到的是未压缩的完整历史，多花一些输入 token，但不会出错。
 
 ---
 
@@ -207,13 +207,13 @@ Rust：`RuntimeOptions.notes_budget_tokens = Some(0)` 关闭。
 
 ## 运行时行为摘要
 
-1. **压缩**：Snip 截断过长消息，Micro 缩减旧工具结果，Collapse / Auto 归档较低价值的旧对话，并由内核 `RuleSummarizer` 生成确定性摘要。无需也不支持配置 LLM 摘要器。
+1. **压缩**：Micro 先截断过长消息、再把旧工具结果降为摘录；Collapse / Auto 按最旧优先归档旧对话，压缩记录只写一行机械记录（归档条数、token、用过的工具）。模型要留住的内容由它自己写进笔记；没有 LLM 摘要器，也没有按关键词分槽的规则摘要。
 2. **Renewal**：分级压缩后仍超过续期阈值，才重建 history。按 carryover 预算保留近期完整对话事务，避免拆开工具调用与结果；单个事务放不进预算时不会保留半个事务。系统、Knowledge 与任务状态继续保留。
-3. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入 progress footer
+3. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入重复熔断的调用签名
 
 ### Node 上下文预算与恢复
 
-`contextPolicy` 的阈值、`targetAfterCompress`、`preserveRecentTurns`、`renewalCarryover` 和 idle 设置均在创建 kernel 时安装。大段继承历史在首次 Provider 请求前向压缩目标收缩；近期保留下限和不可压缩的系统、任务状态可能使结果高于目标。
+`contextPolicy` 的阈值、`targetAfterCompress`、`preserveRecentTurns`、`renewalCarryover` 均在创建 kernel 时安装。大段继承历史在首次 Provider 请求前向压缩目标收缩；近期保留下限和不可压缩的系统、任务状态可能使结果高于目标。
 
 Node 的条目、系统提示、Knowledge 和请求启发式预算统一使用 kernel 的 cl100k BPE 加 10% 余量。它不是 DeepSeek 等模型的原生 tokenizer。适配器提供已编码请求时，请求估算包含最终 body，包括回放的 reasoning 字段；自定义 adapter-input Provider 则估算 `context` 与工具 schema。
 

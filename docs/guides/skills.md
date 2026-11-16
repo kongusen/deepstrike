@@ -126,7 +126,7 @@ runner.deactivate_skill("code-review")     # 或宿主显式卸载
 - Catalog **不存正文** — 仅 `build_tool_schema()` 生成 meta-tool
 - `active_skills` 是 `BTreeMap<name, Option<expires_at_turn>>`（多 skill 并存时 union tools；K3 起支持卸载/租约，见 Level 4）
 - Skill 正文加载成功后额外钉入 knowledge 分区（键 `skill:<name>`，runtime upsert 跨 wake 去重）
-- Skill 是 meta-tool，不计入 `recent_actions` progress log
+- Skill 是 meta-tool，不计入重复熔断的调用签名
 
 ---
 

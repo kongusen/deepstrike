@@ -129,7 +129,7 @@ describe("ContextCollapse — summary contains tool names for follow-up task", (
       // "- tool <name> args <args>". The context_collapse stage routes the summary through
       // compression_log → task_state → systemText/stateTurn.
       const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
-      if (allCtx.includes("[Compressed: context_collapse]") && allCtx.includes("tool accumulate")) {
+      if (allCtx.includes("[context_collapse] archived") && allCtx.includes("accumulate")) {
         summaryWithToolName = true
         yield { type: "text_delta" as const, delta: "done" }
         return
@@ -177,7 +177,7 @@ describe("AutoCompact — summary injected into working partition", () => {
 
       // AutoCompact summary routes through compression_log → task_state → systemText/stateTurn
       const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
-      if (allCtx.includes("[Compressed: auto_compact]")) {
+      if (allCtx.includes("[auto_compact] archived")) {
         sawAutoCompactSummary = true
         yield { type: "text_delta" as const, delta: "done" }
         return

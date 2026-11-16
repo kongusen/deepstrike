@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:90a5970eb22027f54d523d2f679c21146dda714c19cc13eb75728b0282b5d78a",
+    "checkpoint_digest": "sha256:b4fce0dad1765e5a70feee5d0862689ed8e17e6e481b497063cfd92099425aaf",
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -18,8 +18,6 @@
         "knowledge_reference_step": 0,
         "knowledge_regret": 0,
         "knowledge_wasted_tokens": 0,
-        "last_activity_ms": "0",
-        "last_compact_ms": null,
         "messages": [],
         "next_handle_id": 0,
         "partition_tokens": {
@@ -42,7 +40,6 @@
           "plan": [],
           "preserved_refs": [],
           "progress": "",
-          "recent_actions": [],
           "scratchpad": ""
         }
       },
@@ -94,17 +91,14 @@
         "resolved_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -213,8 +207,8 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:71bdefac5444d915aa6f6650cdc2503b38dd43d1babfceca2a0c2c2e4b3b4ef2",
-    "tail_digest": "sha256:97e11119f9d0c5cdb1e693175fac49ae8e784c1a7dce5babc4c9805a4d4ec5d8",
+    "state_digest": "sha256:f711430bf704176c58169eaa63a4b772b5ce3624e17f0200898161feac4a3374",
+    "tail_digest": "sha256:f95c9f5194b71cfaa471783c64633f58a90c047511878745f3083e4081e4c1d8",
     "tail_inputs": [
       {
         "input": {
@@ -222,17 +216,14 @@
             "config": {
               "budget_grant": null,
               "context_policy": {
-                "collapse_old_assistant_narration": true,
-                "idle_micro_compact_minutes": 60,
                 "knowledge_budget_ppm": 250000,
                 "notes_budget_tokens": 600,
                 "preserve_recent_turns": 2,
                 "pressure_thresholds_ppm": {
                   "auto": 950000,
                   "collapse": 900000,
-                  "micro": 800000,
-                  "renewal": 980000,
-                  "snip": 700000
+                  "micro": 700000,
+                  "renewal": 980000
                 },
                 "prompt_budget": {
                   "output_reserve_tokens": 0,
@@ -350,17 +341,14 @@
             "config": {
               "budget_grant": null,
               "context_policy": {
-                "collapse_old_assistant_narration": true,
-                "idle_micro_compact_minutes": 60,
                 "knowledge_budget_ppm": 250000,
                 "notes_budget_tokens": 600,
                 "preserve_recent_turns": 2,
                 "pressure_thresholds_ppm": {
                   "auto": 950000,
                   "collapse": 900000,
-                  "micro": 800000,
-                  "renewal": 980000,
-                  "snip": 700000
+                  "micro": 700000,
+                  "renewal": 980000
                 },
                 "prompt_budget": {
                   "output_reserve_tokens": 0,

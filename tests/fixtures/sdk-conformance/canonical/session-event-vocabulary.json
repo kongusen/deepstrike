@@ -420,7 +420,7 @@
         "prefix_breaks": [
           {
             "turn": 3,
-            "cause": "narration",
+            "cause": "micro",
             "kept_tokens": 1800,
             "lost_tokens": 260
           },

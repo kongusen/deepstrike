@@ -39,13 +39,6 @@ pub struct TaskState {
     /// Call IDs or artifact hashes that must be preserved from compression.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preserved_refs: Vec<String>,
-    /// Rolling log of recent *task* activity — one entry per turn, each a compact summary of that
-    /// turn's tool calls (e.g. "module_read, module_list"). Kernel-maintained from REAL tool
-    /// activity (not model-curated), so the State turn always shows forward motion even when the
-    /// model never maintains `plan`. Lives in the volatile State turn (out of the cacheable prefix),
-    /// so updating it never churns the prompt cache. Bounded + recency-ordered; newest last.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent_actions: Vec<String>,
     /// Rolling log of compression events, newest last. Bounded at [`MAX_COMPRESSION_LOG`]
     /// (oldest dropped past the cap, counted in `compression_log_dropped`).
     /// Rendered into systemVolatile so the model always sees compression history.
@@ -172,9 +165,6 @@ impl PlanStep {
 /// Maximum durable directives retained; past this the oldest is dropped (recency window).
 pub const MAX_DIRECTIVES: usize = 8;
 
-/// Maximum recent action-turns retained for the recency footer (bounded ring).
-pub const MAX_RECENT_ACTIONS: usize = 6;
-
 /// Compression-log entries retained in state (rolling window; render shows the last 3).
 pub const MAX_COMPRESSION_LOG: usize = 64;
 
@@ -229,11 +219,13 @@ impl TaskState {
             }
         }
 
-        if !self.progress.is_empty() {
+        // EXP m9 · minimal: notes are where the model records progress; no second place for it.
+        let m9 = false;
+        if !self.progress.is_empty() && !m9 {
             lines.push(format!("progress: {}", self.progress));
         }
 
-        if !self.blocked_on.is_empty() {
+        if !self.blocked_on.is_empty() && !m9 {
             lines.push(format!("blocked_on: {}", self.blocked_on.join(", ")));
         }
 
@@ -242,7 +234,7 @@ impl TaskState {
             lines.push(notes);
         }
 
-        if !self.scratchpad.is_empty() {
+        if !self.scratchpad.is_empty() && !m9 {
             lines.push(format!("scratchpad: {}", self.scratchpad));
         }
 
@@ -283,21 +275,6 @@ impl TaskState {
         if self.directives.len() > MAX_DIRECTIVES {
             let overflow = self.directives.len() - MAX_DIRECTIVES;
             self.directives.drain(0..overflow);
-        }
-    }
-
-    /// Record one turn's tool activity into the recency log (kernel-driven). `summary` is a compact
-    /// string of the turn's task tool names; blank input is ignored. Bounded at
-    /// [`MAX_RECENT_ACTIONS`] (oldest dropped past the cap).
-    pub fn note_actions(&mut self, summary: impl Into<String>) {
-        let summary = summary.into();
-        if summary.trim().is_empty() {
-            return;
-        }
-        self.recent_actions.push(summary);
-        if self.recent_actions.len() > MAX_RECENT_ACTIONS {
-            let overflow = self.recent_actions.len() - MAX_RECENT_ACTIONS;
-            self.recent_actions.drain(0..overflow);
         }
     }
 

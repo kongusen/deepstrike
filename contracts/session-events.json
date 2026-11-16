@@ -722,7 +722,7 @@
         ],
         "parent_items_used": [{ "operation": "op-parent", "item": 4 }],
         "prefix_breaks": [
-          { "turn": 3, "cause": "narration", "kept_tokens": 1800, "lost_tokens": 260 },
+          { "turn": 3, "cause": "micro", "kept_tokens": 1800, "lost_tokens": 260 },
           { "turn": 5, "cause": "auto", "kept_tokens": 900, "lost_tokens": 3100 }
         ],
         "prefix_breaks_omitted": 1,

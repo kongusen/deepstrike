@@ -22,22 +22,23 @@ impl PromptBudgetConfig {
 /// changing `max_tokens` (e.g. switching model) rescales every derived limit
 /// automatically with no other configuration change required.
 ///
-/// Invariant: snip < micro < collapse < auto < renewal (strictly increasing).
+/// Invariant: micro < collapse < auto < renewal (strictly increasing). Kernel-distillation plan,
+/// stage 2 (DEC-13): the separate snip tier and idle time-decay were measured and deleted; a micro
+/// compaction caps oversized messages first.
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
     // ── Pressure thresholds ─────────────────────────────────────────────────
-    pub snip_threshold: f64,
     pub micro_threshold: f64,
     pub collapse_threshold: f64,
     pub auto_threshold: f64,
     pub renewal_threshold: f64,
 
     // ── Post-compression target ──────────────────────────────────────────────
-    /// Target rho after any compression pass. Must be < snip_threshold.
+    /// Target rho after any compression pass. Must be < micro_threshold.
     pub target_after_compress: f64,
 
     // ── Per-compactor ratios ─────────────────────────────────────────────────
-    /// Fraction of max_tokens any single message may occupy after SnipCompact.
+    /// Fraction of max_tokens any single message may occupy after a micro compaction's snip stage.
     /// Messages smaller than this are never touched.
     pub snip_per_msg_ratio: f64,
 
@@ -60,19 +61,6 @@ pub struct ContextConfig {
     pub preserve_recent_turns: usize,
 
     // ── Noise reduction ──────────────────────────────────────────────────────
-    /// Collapse the *narration* text of OLD assistant turns (those past the
-    /// `preserve_recent_units` window that also carry tool calls) to a short stub at render time —
-    /// non-destructively (the full text stays in `partitions.history`). The model's user-facing
-    /// preamble ("好的，我来…先X") has no value once it has aged out of the recent window, but
-    /// re-feeding it verbatim every turn primes the model to keep emitting the same preamble (an
-    /// in-context repetition trap). Tool calls and pairing are untouched; current progress lives in
-    /// the TASK STATE turn. Defaults to true.
-    pub collapse_assistant_narration: bool,
-
-    // ── Layer 3: Time-based decay ───────────────────────────────────────
-    /// Minutes of inactivity before triggering Micro-Compact (Layer 3).
-    /// Defaults to 60 minutes — assumes Prompt Cache has expired by then.
-    pub micro_compact_idle_minutes: u32,
 
     /// Number of recent tool results to preserve during Micro-Compact.
     pub preserved_tool_results: usize,
@@ -102,8 +90,7 @@ pub struct ContextConfig {
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
-            snip_threshold: 0.70,
-            micro_threshold: 0.80,
+            micro_threshold: 0.70,
             collapse_threshold: 0.90,
             auto_threshold: 0.95,
             renewal_threshold: 0.98,
@@ -113,8 +100,6 @@ impl Default for ContextConfig {
             recovery_content_ratio: 0.25,
             preserve_recent_units: 2,
             preserve_recent_turns: 2,
-            collapse_assistant_narration: true,
-            micro_compact_idle_minutes: 60,
             preserved_tool_results: 5,
             knowledge_budget_ratio: 0.25,
             delegate_tool_result_clearing: false,
@@ -154,16 +139,15 @@ mod tests {
     #[test]
     fn default_thresholds_strictly_increasing() {
         let c = ContextConfig::default();
-        assert!(c.snip_threshold < c.micro_threshold);
         assert!(c.micro_threshold < c.collapse_threshold);
         assert!(c.collapse_threshold < c.auto_threshold);
         assert!(c.auto_threshold < c.renewal_threshold);
     }
 
     #[test]
-    fn target_after_compress_below_snip_threshold() {
+    fn target_after_compress_below_micro_threshold() {
         let c = ContextConfig::default();
-        assert!(c.target_after_compress < c.snip_threshold);
+        assert!(c.target_after_compress < c.micro_threshold);
     }
 
     #[test]

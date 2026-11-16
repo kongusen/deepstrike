@@ -12,8 +12,7 @@
 //! The cause comes from the change that made the break. Compaction, renewal, provider rewrites,
 //! tool-result collapse and knowledge promotion announce themselves ([`CacheLedger::note_cause`]);
 //! an unannounced break is classified from the render itself: a dropped item is a budget drop, an
-//! item re-rendered as the narration stub is narration collapse, and a different toolset is a
-//! toolset change.
+//! item re-rendered in place is a reprojection, and a different toolset is a toolset change.
 //!
 //! The state turn after the history is rebuilt every request, so the previous request's state turn
 //! is never reusable: that is not a break, but a provider's count of uncached input includes it.
@@ -47,11 +46,8 @@ pub enum BreakCause {
     Collapse,
     /// An item re-rendered in place without an announced cause (a page-in, a page-out).
     Reprojection,
-    /// Old assistant narration left the protected window and rendered as the narration stub.
-    Narration,
     /// The renderer dropped the oldest history over the input budget.
     BudgetDrop,
-    Snip,
     Micro,
     Auto,
     Renewal,
@@ -66,7 +62,6 @@ impl BreakCause {
     pub fn of_compaction(action: crate::context::pressure::PressureAction) -> Self {
         use crate::context::pressure::PressureAction;
         match action {
-            PressureAction::SnipCompact => Self::Snip,
             PressureAction::MicroCompact => Self::Micro,
             PressureAction::ContextCollapse => Self::Collapse,
             PressureAction::AutoCompact => Self::Auto,
@@ -113,9 +108,6 @@ pub struct SentTurn {
     /// The history item the turn rendered; 0 for a synthetic turn.
     #[serde(default)]
     pub item: ItemId,
-    /// The turn rendered as the narration stub.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub stub: bool,
 }
 
 /// The cacheable prefix of one sent request.
@@ -253,7 +245,6 @@ fn classify(prev: &SentTurn, next: &SentPrefix, at: usize) -> BreakCause {
         return BreakCause::BudgetDrop;
     }
     match next.turns.get(at) {
-        Some(turn) if turn.item == prev.item && turn.stub && !prev.stub => BreakCause::Narration,
         Some(turn) if turn.item == prev.item && turn.item != 0 => BreakCause::Reprojection,
         _ => BreakCause::Other,
     }
@@ -271,7 +262,6 @@ mod tests {
         SentTurn {
             segment: seg(name, tokens),
             item,
-            stub: false,
         }
     }
 
@@ -313,17 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_rendered_as_the_stub_is_narration() {
-        let mut ledger = CacheLedger::default();
-        ledger.observe(1, prefix(vec![turn("a", 1, 10), turn("b", 2, 30)]));
-        let mut stub = turn("stub", 1, 4);
-        stub.stub = true;
-        let found = ledger.observe(2, prefix(vec![stub, turn("b", 2, 30)])).unwrap();
-        assert_eq!(found.cause, BreakCause::Narration);
-        assert_eq!((found.kept_tokens, found.lost_tokens), (170, 40));
-    }
-
-    #[test]
     fn an_announced_cause_wins_and_is_spent_by_one_request() {
         let mut ledger = CacheLedger::default();
         ledger.observe(1, prefix(vec![turn("a", 1, 10)]));
@@ -332,7 +311,7 @@ mod tests {
         let found = ledger.observe(2, prefix(vec![turn("summary", 5, 3)])).unwrap();
         assert_eq!(found.cause, BreakCause::Auto);
         // A compaction that broke nothing leaves no cause behind for a later break.
-        ledger.note_cause(BreakCause::Snip);
+        ledger.note_cause(BreakCause::Micro);
         assert_eq!(ledger.observe(3, prefix(vec![turn("summary", 5, 3)])), None);
         assert_eq!(ledger.pending, None);
     }

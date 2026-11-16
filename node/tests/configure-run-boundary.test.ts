@@ -22,7 +22,7 @@ describe("configure_run policy adapters", () => {
 
     expect(normalizeContextPolicy(contextPolicy({ preserveRecentTurns: 3 }))).toMatchObject({
       preserve_recent_turns: 3,
-      pressure_thresholds_ppm: { snip: 700000, micro: 800000, collapse: 900000, auto: 950000, renewal: 980000 },
+      pressure_thresholds_ppm: { micro: 700000, collapse: 900000, auto: 950000, renewal: 980000 },
     })
   })
 

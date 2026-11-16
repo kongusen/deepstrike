@@ -57,7 +57,7 @@ RuntimeOptions(
 )
 ```
 
-The kernel `PressureMonitor` triggers `CompressionPipeline` (Snip → Drop → Summarize) when pressure exceeds the threshold.
+The kernel `PressureMonitor` triggers `CompressionPipeline` (Micro → Collapse → Auto) when pressure exceeds the threshold.
 
 ---
 
@@ -202,13 +202,13 @@ off (`0`) when reproducing a pre-0.2.82 baseline.
 
 ## Runtime behavior summary
 
-1. **Compression:** Snip caps oversized messages, Micro reduces older tool results, and Collapse / Auto archive lower-value conversations. The kernel's deterministic `RuleSummarizer` supplies summaries; there is no LLM summarizer.
+1. **Compression:** Micro first caps oversized messages, then excerpts older tool results; Collapse / Auto archive the oldest conversation first, and the compression log gets one mechanical line (messages and tokens archived, tools used). What the model needs to keep, it keeps in notes; there is no LLM summarizer and no keyword-slotted rule summary.
 2. **Renewal:** History is rebuilt only when pressure remains above the renewal threshold after compression. Recent complete conversational transactions are carried within the carryover budget; a transaction that cannot fit is never split between a tool call and its results. System, Knowledge and task state survive.
-3. **Meta-tool exclusion:** `skill`, `memory`, `submit_workflow_nodes`, etc. are excluded from the progress footer
+3. **Meta-tool exclusion:** `skill`, `memory`, `submit_workflow_nodes`, etc. are excluded from the repeat fuse's call signature
 
 ### Node context budgeting and recovery
 
-The kernel installs all `contextPolicy` thresholds, `targetAfterCompress`, `preserveRecentTurns`, `renewalCarryover` and idle settings. Large inherited histories compact toward the target before the first provider call, subject to recent-turn and fixed-context floors.
+The kernel installs all `contextPolicy` thresholds, `targetAfterCompress`, `preserveRecentTurns`, and `renewalCarryover`. Large inherited histories compact toward the target before the first provider call, subject to recent-turn and fixed-context floors.
 
 Node item, system, Knowledge and prompt estimates share the kernel's cl100k BPE estimator with a 10% margin. This is not a native tokenizer for models such as DeepSeek. Encoded-body providers estimate the final body, including reasoning replay added by adapters; custom adapter-input providers estimate context and tool schemas.
 

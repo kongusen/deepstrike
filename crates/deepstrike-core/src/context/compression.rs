@@ -4,7 +4,6 @@ use super::partitions::{ContextPartitions, PartitionRow};
 use super::pressure::PressureAction;
 use super::token_engine::ContextTokenEngine;
 use super::units::{strict_tool_pairing_is_valid, unit_boundaries};
-use super::utility::UtilitySelectionContext;
 use crate::types::message::{Content, ContentPart, CoreMessage};
 
 /// Compression result returned by every compactor.
@@ -421,7 +420,7 @@ pub fn plan_drop_oldest(
 }
 
 /// Archive whole history units until history fits the target. Selection via
-/// [`super::utility::plan_utility_archive_with_measurements`]; this executor only drains the plan.
+/// [`super::archive::plan_archive`]; this executor only drains the plan.
 /// Runs as both the `ContextCollapse` and the `AutoCompact` stage — the stages differ only in the
 /// `PressureAction` label the pipeline attributes the drain to, not in what they archive.
 pub struct ArchiveCompactor;
@@ -442,25 +441,19 @@ impl Compressor for ArchiveCompactor {
             .total_tokens(engine)
             .saturating_sub(partitions.history.token_count());
         let history_target = target_tokens.saturating_sub(non_history_tokens);
-        let plan = super::utility::plan_utility_archive_with_measurements(
+        let plan = super::archive::plan_archive(
             partitions.history.messages(),
             partitions.history.measurements(),
             partitions.history.token_count(),
             history_target,
             preserve_k,
             engine,
-            &UtilitySelectionContext {
-                goal: &partitions.task_state.goal,
-                criteria: &partitions.task_state.criteria,
-                preserved_refs: &partitions.task_state.preserved_refs,
-                active_directives: &partitions.task_state.directives,
-            },
         );
         if plan.archived_ranges.is_empty() {
             return CompressResult::default();
         }
         let prefix_invalidated_at = plan.archived_ranges.iter().map(|range| range.start).min();
-        let (archived, saved) = apply_utility_plan(&mut partitions.history, &plan);
+        let (archived, saved) = apply_archive_plan(&mut partitions.history, &plan);
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
         // requested action. Removing an interior unit invalidates from its original start index.
@@ -473,9 +466,9 @@ impl Compressor for ArchiveCompactor {
     }
 }
 
-fn apply_utility_plan(
+fn apply_archive_plan(
     partition: &mut super::partitions::Partition,
-    plan: &super::utility::UtilityArchivePlan,
+    plan: &super::archive::ArchivePlan,
 ) -> (Vec<PartitionRow>, u32) {
     let pairing_was_valid = strict_tool_pairing_is_valid(partition.messages());
     let archived_indices = plan
@@ -502,8 +495,10 @@ impl CompressionPipeline {
         Self {
             preserve_recent_turns: config.preserve_recent_turns,
             stages: vec![
+                // A micro compaction first caps oversized messages (snip), then excerpts old tool
+                // results. Snip has no pressure tier of its own (stage 2, DEC-13).
                 (
-                    PressureAction::SnipCompact,
+                    PressureAction::MicroCompact,
                     Box::new(SnipCompactor {
                         per_msg_ratio: config.snip_per_msg_ratio,
                     }),
@@ -532,7 +527,6 @@ impl CompressionPipeline {
         // Cache cost of the whole compaction = the earliest prefix-break across the stages that ran
         // (an earlier break dominates). `None` = entirely prefix-safe.
         let mut cache_at: Option<usize> = None;
-        let summarizer = super::summarizer::RuleSummarizer;
 
         for (stage_action, compressor) in &self.stages {
             if *stage_action <= action {
@@ -560,17 +554,6 @@ impl CompressionPipeline {
         // executors that no longer self-attribute — so a `compress(AutoCompact)` whose draining
         // happened in the Collapse stage is still labeled `auto_compact` (the C fix), and a
         // `compress(ContextCollapse)` stays `context_collapse` (unchanged).
-        // The summary budget is the room the summary may occupy in the *compacted* window — a
-        // separate concern from `target_tokens` (how small history must get). They coincide for
-        // Collapse (non-zero target), but Auto-Compact drives history toward 0, so reusing the
-        // target here would budget the summary at 0 tokens and emit an empty summary for the very
-        // tier whose whole purpose is to replace archived history with a compact record. Fall back
-        // to the full context window when the target is 0; the summariser self-bounds by structure.
-        let summary_budget = if target_tokens == 0 {
-            max_tokens
-        } else {
-            target_tokens
-        };
         let summary = if all_archived.is_empty() {
             None
         } else {
@@ -578,12 +561,7 @@ impl CompressionPipeline {
                 .iter()
                 .map(|row| (row.message.clone(), row.measurement.clone()))
                 .unzip();
-            let s = summarizer.summarize(
-                &messages,
-                &measurements,
-                action,
-                summary_budget,
-            );
+            let s = archive_record(&messages, &measurements);
             partitions
                 .task_state
                 .log_compression(action.label(), s.clone());
@@ -592,6 +570,27 @@ impl CompressionPipeline {
 
         (total_saved, summary, all_archived, cache_at)
     }
+}
+
+/// The compression log's record of one compaction: how much left history and which tools it
+/// used. Mechanical on purpose (kernel-distillation plan, stage 2, DEC-13): the rule summarizer
+/// that sorted archived text into constraint / decision / … slots by keyword was measured against
+/// this line and gave no significant gain; what the model needs to keep, it keeps in notes.
+fn archive_record(messages: &[CoreMessage], measurements: &[TokenMeasurement]) -> String {
+    let tokens: u32 = measurements.iter().map(|measurement| measurement.tokens).sum();
+    let mut tools: Vec<&str> = Vec::new();
+    for message in messages {
+        for call in &message.tool_calls {
+            if !tools.contains(&call.name.as_str()) {
+                tools.push(call.name.as_str());
+            }
+        }
+    }
+    format!(
+        "archived {} messages (~{tokens} tokens); tools used: {}",
+        messages.len(),
+        if tools.is_empty() { "none".to_string() } else { tools.join(", ") }
+    )
 }
 
 #[cfg(test)]
@@ -794,7 +793,9 @@ mod tests {
     }
 
     #[test]
-    fn collapse_utility_selection_changes_the_archived_units_not_only_the_score() {
+    fn collapse_archives_the_oldest_units_whatever_they_say() {
+        // Stage 2 (DEC-13): no unit is kept for its content (goal terms, a DECISION marker); the
+        // oldest go first.
         let compactor = ArchiveCompactor;
         let mut ctx = ContextPartitions::new(&config());
         ctx.task_state.goal = "ship ORCHID release".into();
@@ -825,16 +826,14 @@ mod tests {
             .filter_map(|row| row.message.content.as_text())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(retained.contains("ORCHID"));
-        assert!(retained.contains("/work/orchid.json"));
-        assert!(!retained.contains("routine chatter"));
+        assert!(archived.contains("ORCHID"), "the oldest unit goes first: {archived}");
         assert!(archived.contains("routine chatter one"));
-        assert!(archived.contains("routine chatter two"));
-        assert_eq!(ctx.history.token_count(), 160);
+        assert!(retained.contains("latest request"));
+        assert!(ctx.total_tokens(&engine()) <= 160);
     }
 
     #[test]
-    fn utility_selector_deducts_fixed_context_before_budgeting_history() {
+    fn archive_selection_deducts_fixed_context_before_budgeting_history() {
         let compactor = ArchiveCompactor;
         let mut ctx = ContextPartitions::new(&config());
         ctx.system.push(CoreMessage::system("fixed"), 600);
@@ -847,33 +846,6 @@ mod tests {
         assert_eq!(result.tokens_saved, 300);
         assert_eq!(ctx.history.token_count(), 100);
         assert!(ctx.total_tokens(&engine()) <= 700);
-    }
-
-    #[test]
-    fn rule_summarizer_formats_correctly() {
-        use crate::context::summarizer::RuleSummarizer;
-        use crate::types::message::{Content, CoreMessage, Role};
-        let summarizer = RuleSummarizer;
-        let mut messages = vec![];
-        messages.push(CoreMessage {
-            role: Role::User,
-            content: Content::Text("hello".to_string()),
-            tool_calls: vec![],
-        });
-        messages.push(CoreMessage {
-            role: Role::Assistant,
-            content: Content::Text("world".to_string()),
-            tool_calls: vec![],
-        });
-        let measurements = vec![
-            TokenMeasurement::for_message(&messages[0], 5),
-            TokenMeasurement::for_message(&messages[1], 6),
-        ];
-        let summary =
-            summarizer.summarize(&messages, &measurements, PressureAction::SnipCompact, 100);
-        assert!(summary.contains("[Compressed: snip_compact]"));
-        assert!(summary.contains("archived_messages: 2; archived_tokens: 11"));
-        assert!(summary.contains("constraints:"));
     }
 
     #[test]
@@ -1024,14 +996,15 @@ mod tests {
     #[test]
     fn pipeline_reports_accurate_prefix_invalidation() {
         // (a) DoD #4: the pipeline surfaces the earliest message any stage actually touched. On the
-        // len=6 baseline (prefix_keep=2), a SnipCompact protects the oldest 2 and caps msgs 3,4 — so
-        // the cache break is at index 3, NOT the coarse 0. An AutoCompact drops the oldest → break 0.
+        // len=6 baseline, a micro compaction (snip stage first) leaves the protected unit alone and
+        // rewrites from msg 1 — so the cache break is there, NOT the coarse 0. An AutoCompact drops
+        // the oldest → break 0.
         let mut cfg = config();
         cfg.preserve_recent_turns = 1;
         let mut ctx = baseline_partitions();
         let (_s, _u, _a, cache_at) = CompressionPipeline::new(&cfg).compress(
             &mut ctx,
-            PressureAction::SnipCompact,
+            PressureAction::MicroCompact,
             MAX,
             500,
             &engine(),
@@ -1135,21 +1108,6 @@ mod tests {
     }
 
     #[test]
-    fn baseline_snip_only_caps_text_no_archival() {
-        // SnipCompact runs only the Snip stage: caps oversized text messages in place — EXCEPT the
-        // With one recent semantic unit protected by the fixture policy, the cache-prefix rule
-        // protects only msg 0 from in-place rewriting. Three oversized text messages are capped.
-        let (before, saved, summary, archived, msgs, total) =
-            run_baseline(PressureAction::SnipCompact);
-        assert_eq!(before, 2000);
-        assert_eq!(saved, 750, "3 non-prefix oversized messages × 250");
-        assert_eq!(archived, 0);
-        assert!(summary.is_none());
-        assert_eq!(msgs, 6, "snip mutates in place, drops no messages");
-        assert_eq!(total, 1250);
-    }
-
-    #[test]
     fn baseline_micro_excerpts_tool_results() {
         // MicroCompact runs Snip then Micro under the same one-unit protection policy.
         let (before, saved, summary, archived, msgs, total) =
@@ -1174,10 +1132,7 @@ mod tests {
         assert_eq!(msgs, 3, "one complete recent unit remains");
         assert_eq!(total, 319);
         let summary = summary.expect("collapse summarizes archived messages");
-        assert!(
-            summary.contains("[Compressed: context_collapse]"),
-            "summary routes the collapse action: {summary}"
-        );
+        assert_eq!(summary, "archived 3 messages (~569 tokens); tools used: none");
     }
 
     #[test]
@@ -1195,20 +1150,15 @@ mod tests {
         assert_eq!(msgs, 3);
         assert_eq!(total, 319);
         let summary = summary.expect("auto-compact summarizes the archived messages");
-        assert!(
-            summary.contains("[Compressed: auto_compact]"),
-            "got: {summary}"
-        );
+        assert!(summary.starts_with("archived "), "got: {summary}");
     }
 
     #[test]
     fn baseline_saved_is_monotonic_in_action_level() {
         // The cross-level contract the refactor must preserve: heavier pressure never frees less.
-        let snip = run_baseline(PressureAction::SnipCompact).1;
         let micro = run_baseline(PressureAction::MicroCompact).1;
         let collapse = run_baseline(PressureAction::ContextCollapse).1;
         let auto = run_baseline(PressureAction::AutoCompact).1;
-        assert!(snip <= micro, "{snip} <= {micro}");
         assert!(micro <= collapse, "{micro} <= {collapse}");
         assert!(collapse <= auto, "{collapse} <= {auto}");
     }
@@ -1342,7 +1292,6 @@ mod tests {
         let eng = engine();
         let pipeline = CompressionPipeline::new(&cfg);
         let actions = [
-            PressureAction::SnipCompact,
             PressureAction::MicroCompact,
             PressureAction::ContextCollapse,
             PressureAction::AutoCompact,

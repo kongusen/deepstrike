@@ -74,7 +74,11 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_context():
     def bulk() -> str:
         """Bulk filler output — shrinks after the first renewal so pressure subsides and the
         re-fetched recall line survives to the next render."""
-        return "ok" if st["saw_renewal"] else "z" * 400
+        # Varied text, as in the Node test: repeated identical bytes compress far below the ~100
+        # tokens per turn this test needs under the real BPE engine.
+        return "ok" if st["saw_renewal"] else (
+            "The quick fox jumps over lazy dogs and writes long context reports daily. " * 7
+        )
 
     session_log = InMemorySessionLog()
     runner = RuntimeRunner(RuntimeOptions(
@@ -90,7 +94,10 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_context():
         pre_query_memory=pre_query,
     ))
 
-    async for _ in runner.run(goal="long sprint work", session_id="renewal-requery"):
+    # A long goal keeps the fixed context (system + state turn) large in this 200-token window, so
+    # compaction alone cannot bring pressure under the renewal threshold and the run renews. Since
+    # 0.2.84 compaction records are one line, so they no longer supply that pressure themselves.
+    async for _ in runner.run(goal="long sprint work across many services " * 14, session_id="renewal-requery"):
         pass
 
     events = await session_log.read("renewal-requery")

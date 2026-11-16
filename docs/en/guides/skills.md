@@ -153,7 +153,7 @@ runner.deactivate_skill("code-review")     # or explicit host-driven unload
 - The catalog **does not store body text** — only `build_tool_schema()` generates the meta-tool
 - `active_skills` is a `BTreeMap<name, Option<expires_at_turn>>` (multiple skills union their tools; deactivation/leases since K3 — see Level 4)
 - A successfully loaded skill body is additionally pinned into the knowledge partition (key `skill:<name>`; runtime upsert dedupes across wakes)
-- Skills are meta-tools and do not count toward `recent_actions` progress log
+- Skills are meta-tools and do not count toward the repeat fuse's call signature
 
 ---
 

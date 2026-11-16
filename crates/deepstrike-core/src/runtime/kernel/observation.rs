@@ -545,7 +545,6 @@ pub struct PublishedEffectRef {
 #[serde(rename_all = "snake_case")]
 pub enum KernelPressureAction {
     None,
-    SnipCompact,
     MicroCompact,
     ContextCollapse,
     AutoCompact,
@@ -555,7 +554,6 @@ impl From<PressureAction> for KernelPressureAction {
     fn from(action: PressureAction) -> Self {
         match action {
             PressureAction::None => Self::None,
-            PressureAction::SnipCompact => Self::SnipCompact,
             PressureAction::MicroCompact => Self::MicroCompact,
             PressureAction::ContextCollapse => Self::ContextCollapse,
             PressureAction::AutoCompact => Self::AutoCompact,

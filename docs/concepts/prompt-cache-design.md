@@ -18,7 +18,7 @@ DeepStrike 的 Context 渲染不是把 messages 简单拼起来，而是把 prom
 system_stable       Identity / stable system prompt
 system_knowledge    Skill definitions / initial_memory / host-pinned durable knowledge
 turns               History (incl. runtime memory-tool hits); cacheable prefix
-state_turn          TASK STATE + signals + recency footer; volatile tail
+state_turn          TASK STATE + signals; volatile tail
 ```
 
 渲染形状：
@@ -45,9 +45,8 @@ state_turn          TASK STATE + signals + recency footer; volatile tail
 
 `state_turn` 包含：
 
-- `[TASK STATE]`：goal、criteria、plan、blocked_on、compression log
+- `[TASK STATE]`：goal、criteria、plan、blocked_on、notes、compression log
 - signals：rollback、interrupt、外部事件
-- salience footer：最近真实工具动作、下一步、最新 directive
 - `Proceed.` anchor
 
 这些内容每 turn 都可能变化。如果把它放进 `turns`，就会让 cacheable message prefix 每轮漂移。现在它作为 volatile tail，由 provider adapter 自己决定放在 history 后面或前面。
@@ -146,11 +145,9 @@ Pipeline 会取所有 stage 的最小 invalidation index。`ContextManager` 只�
 
 | 层 | 行为 | cache 影响 |
 |----|------|------------|
-| Snip | 截断 oversized text message | 可能改写中间 turn |
-| MicroCompact | 摘要 / excerpt 大 tool result | 通常较晚、相对 prefix-safe |
+| MicroCompact | 先截断 oversized message，再 excerpt 大 tool result | 截断可能改写中间 turn；excerpt 通常较晚、相对 prefix-safe |
 | ContextCollapse | drop oldest 到 target | prefix break |
 | AutoCompact | 只保留最近 K turns | prefix break |
-| TimeDecayMicro | idle 后微压缩 | 与 pressure 层独立 |
 
 ## SDK 观测
 

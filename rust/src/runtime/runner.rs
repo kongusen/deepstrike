@@ -3072,7 +3072,6 @@ impl RuntimeRunner {
 fn action_str_of(action: KernelPressureAction) -> String {
     match action {
         KernelPressureAction::None => "none".to_string(),
-        KernelPressureAction::SnipCompact => "snip_compact".to_string(),
         KernelPressureAction::MicroCompact => "micro_compact".to_string(),
         KernelPressureAction::ContextCollapse => "context_collapse".to_string(),
         KernelPressureAction::AutoCompact => "auto_compact".to_string(),

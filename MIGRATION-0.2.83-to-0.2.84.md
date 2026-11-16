@@ -49,6 +49,31 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
 
 ## Removed
 
+- **Context policy options** (stage 2 of the kernel-distillation plan; see the CHANGELOG for the
+  measurement): `collapseOldAssistantNarration` / `collapse_old_assistant_narration`,
+  `idleMicroCompactMinutes` / `idle_micro_compact_minutes`, and the `snip` entry of
+  `pressureThresholds` / `pressure_thresholds` / `pressure_thresholds_ppm`. The kernel's wire
+  config rejects them as unknown fields, so remove them from host code. The remaining thresholds
+  must satisfy `micro < collapse < auto < renewal`, and `targetAfterCompress` must be below
+  `micro` (it was below `snip`). `micro` defaults to 0.70.
+- **What the model sees** changes in long runs: old assistant text is no longer replaced by a stub,
+  the state turn has no footer, and a compaction's record in `compression_history` is one line
+  (`[context_collapse] archived 3 messages (~569 tokens); tools used: read_file`) instead of a
+  slotted rule summary. A host or test that looked for `[Compressed: …]` markers or `→ focus:`
+  should look for these lines instead.
+- Compaction events no longer report `snip_compact`; cache breaks are no longer attributed to
+  `narration` or `snip`. SDKs still accept those strings when reading older session logs.
+- Checkpoints no longer write `recent_actions`, `last_activity_ms` or `last_compact_ms`; older
+  checkpoints that carry them still restore (the values are ignored).
+- Rust: `context::utility` and `context::summarizer` are gone (`context::archive::plan_archive`
+  replaces the planner); `EvictionOp` is `Micro | Collapse { target_tokens } | AutoCompact`;
+  `plan_eviction` takes no idle flag; `PressureAction::SnipCompact`,
+  `KernelPressureAction::SnipCompact`, `ContextConfig.snip_threshold`,
+  `ContextConfig.micro_compact_idle_minutes`, `ContextConfig.collapse_assistant_narration`,
+  `ContextManager::{record_activity, should_time_decay_compact, recompute_handle_residency,
+  note_tool_actions, compress_with_time}` and `TaskState.recent_actions` are removed;
+  `compress_with_target` takes no timestamp.
+
 - Node `RunnerOptions.asyncSummarizer` and the `AsyncSummarizer` type. There is no replacement:
   the kernel does not call a model to manage context (DEC-13).
 - The `summary_upgraded` session event, from the contract and the Node, WASM and Python types.

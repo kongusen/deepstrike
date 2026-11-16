@@ -523,15 +523,20 @@ impl KnowledgePartition {
         Some(deterministic_retention_score(RetentionFeatures {
             pinned: entry.pinned,
             // A strong reference weighs as four lexical ones.
-            use_count: entry
-                .value
-                .strong_refs
-                .saturating_mul(4)
-                .saturating_add(entry.value.lexical_refs),
+            // EXP m6 · minimal: only strong evidence counts as use, and no kind weights (below).
+            use_count: if true {
+                entry.value.strong_refs
+            } else {
+                entry.value.strong_refs.saturating_mul(4).saturating_add(entry.value.lexical_refs)
+            },
             last_used_step: entry.value.last_referenced_step,
             current_step,
             lease_remaining_steps: entry.lease_remaining_turns(self.turn).map(u64::from),
-            kind: retention_kind(entry.key.as_deref()),
+            kind: if true {
+                crate::mm::value::RetentionKind::Other
+            } else {
+                retention_kind(entry.key.as_deref())
+            },
             tokens: entry.tokens,
             confidence_ppm: 0,
             stale_discount_ppm: 0,

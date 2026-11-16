@@ -1,11 +1,11 @@
 {
-  "base_state_digest": "sha256:0bd87ef02ad72a10892c034911a1b18e1d0ffd904c4cc5d6b327d0d0289a9fa0",
+  "base_state_digest": "sha256:0f185cc8bb8373106bf7e90212417e540308185852e0a4a694234b790d1661d2",
   "checkpoint": {
-    "base_record_digest": "sha256:b42a4c03b01a282bb26bf6324e90130954636146851c16484533ef095ba9bd2e",
+    "base_record_digest": "sha256:b72f703376b96d52d24a70455cc500631a5854b604aa390886803bfaf29e687c",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:b60515b4f6e82a9c7d9de945f78b3d60a9472c2ca75067383a9371c1e54ef542",
-    "covered_transaction_head_digest": "sha256:954545ead7ee47a78331e8c42f069adbfc3d0f90d07ca4a79f2c81f17e5e6416",
-    "genesis_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
+    "checkpoint_digest": "sha256:d5153a4c400d4424bd7eb3a2c1305bb99993bd7c23b10a1f216add2b5f2c4d91",
+    "covered_transaction_head_digest": "sha256:5ab010aa3644f5314431c28f472c59f356d48c151fa1b4568bab6415d7828d69",
+    "genesis_digest": "sha256:722dcf45d86ad947a3637c2581ee29ce66cd4030dbffa1075cf128250b91d947",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -20,7 +20,7 @@
               "hash": "cbf29ce484222325",
               "tokens": 1
             },
-            "tail": 24,
+            "tail": 15,
             "tools": {
               "hash": "75b4a0b7173c2ced",
               "tokens": 568
@@ -66,10 +66,8 @@
         "knowledge_reference_step": 1,
         "knowledge_regret": 0,
         "knowledge_wasted_tokens": 0,
-        "last_activity_ms": "1700000001000",
-        "last_compact_ms": null,
         "last_item_id": 1,
-        "last_request_estimate": 604,
+        "last_request_estimate": 595,
         "messages": [
           {
             "body": {
@@ -105,7 +103,6 @@
           "plan": [],
           "preserved_refs": [],
           "progress": "",
-          "recent_actions": [],
           "scratchpad": ""
         }
       },
@@ -180,17 +177,14 @@
         "live_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -378,12 +372,12 @@
         "accepted_inputs": [
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
+            "record_digest": "sha256:722dcf45d86ad947a3637c2581ee29ce66cd4030dbffa1075cf128250b91d947",
             "step_seq": "0"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:b42a4c03b01a282bb26bf6324e90130954636146851c16484533ef095ba9bd2e",
+            "record_digest": "sha256:b72f703376b96d52d24a70455cc500631a5854b604aa390886803bfaf29e687c",
             "step_seq": "1"
           }
         ],
@@ -399,9 +393,9 @@
             "causation_input_id": "in-start",
             "effect": {
               "context": {
-                "estimated_tokens": 604,
+                "estimated_tokens": 595,
                 "state_turn": {
-                  "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
+                  "content": "[TASK STATE] goal: write the research brief\n\nProceed.",
                   "role": "user"
                 },
                 "turns": [
@@ -528,17 +522,14 @@
         "resolved_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -703,8 +694,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:0bd87ef02ad72a10892c034911a1b18e1d0ffd904c4cc5d6b327d0d0289a9fa0",
-    "tail_digest": "sha256:034c53e7eb02148fff4429931146bf084046da5f323319627dd032a042eae122",
+    "state_digest": "sha256:0f185cc8bb8373106bf7e90212417e540308185852e0a4a694234b790d1661d2",
+    "tail_digest": "sha256:12444717f38836b03cde760bbc61f01682455705d29352c9f0cbb36f7a77fc60",
     "tail_inputs": [
       {
         "input": {
@@ -738,7 +729,7 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:327a6d9e2d98e116b9d7faff32ec02c57a508057bc47eb484a9cb03e364e19b7",
+        "record_digest": "sha256:bce8ffac0e9b937927f1b564cc2a40ea19293212d06b3ad76f015a1c2288831f",
         "step_seq": "2"
       },
       {
@@ -767,7 +758,7 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:56f4668cbd1f22b67668694d99a37affd82b7c84d2dde5e00f220d6659c2ebb5",
+        "record_digest": "sha256:7fb6d2c91701523682776116dccc7e9c658201667492635c29764c06c7fdb299",
         "step_seq": "3"
       },
       {
@@ -794,7 +785,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:954545ead7ee47a78331e8c42f069adbfc3d0f90d07ca4a79f2c81f17e5e6416",
+        "record_digest": "sha256:5ab010aa3644f5314431c28f472c59f356d48c151fa1b4568bab6415d7828d69",
         "step_seq": "4"
       }
     ],

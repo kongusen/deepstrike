@@ -58,6 +58,27 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 
 ### Removed
 
+- **Seven rule mechanisms of the context kernel**, after the stage 2 audit of the kernel-distillation
+  plan (DEC-13). The current defaults were measured on DeepSeek, paired by task, against a
+  `minimal` variant with them stripped: no scenario was significantly better with them, and
+  knowledge-pressure was significantly worse (+76% price-weighted cost per correct answer). Correct
+  answers, defaults vs minimal: long-horizon 6/10 vs 4/10 (too few pairs to decide), ledger 28/30
+  vs 28/30, knowledge-pressure 25/30 vs 27/30, multi-session 34/48 vs 32/48, fan-out 12/12 vs
+  12/12. Most of their cost was prompt-cache breaks from narration collapse and per-turn collapse.
+  Deleted, and the kernel now behaves exactly as the measured `minimal` (verified on the goldens):
+  - narration collapse of old assistant turns (and `collapseOldAssistantNarration` /
+    `collapse_old_assistant_narration`, and the `narration` cache-break cause);
+  - utility-scored archiving: compaction archives the oldest units first, keeping only the
+    recent ones by rule;
+  - the `RuleSummarizer`: a compaction's log entry is one mechanical line, `archived N messages
+    (~T tokens); tools used: …`;
+  - idle time-decay (`idleMicroCompactMinutes` / `idle_micro_compact_minutes`, and the
+    `last_activity_ms` / `last_compact_ms` timestamps) and the separate snip tier: snip is the first
+    stage of a micro compaction, and the pressure thresholds lose `snip`;
+  - per-turn collapse of old tool results under pressure (`recompute_handle_residency`);
+  - the knowledge retention score's kind weights and lexical use: only strong references count;
+  - the state-turn footer (`did:` / `next:` / `must:` / `STOP:` / `→ focus:`) and the
+    `recent_actions` log behind it.
 - **Node `asyncSummarizer`** and the `AsyncSummarizer` type. The SDK no longer calls a model in the
   background to rewrite archive summaries or page them back in (DEC-13: the summary is the kernel's
   rule-based one).
@@ -72,6 +93,8 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 
 ### Changed
 
+- The micro threshold defaults to 0.70 (was 0.80): micro compaction now starts where the deleted
+  snip tier did, which is how the measured `minimal` variant behaved.
 - A memory the model proposes leads back to where it came from (kernel-distillation plan task
   4.1). The kernel resolves the proposal's `evidence_refs` against the run's history while the
   results are still there: the record keeps the model's references as written, followed by

@@ -205,7 +205,7 @@ describe("E2E mechanism contract tests", () => {
   it("K04 injects an auto-compact summary into the next provider context", async () => {
     let sawSummary = false
     const provider = new ScriptedProvider((context, call) => {
-      if (contextText(context).includes("[Compressed: auto_compact]")) {
+      if (contextText(context).includes("[auto_compact] archived")) {
         sawSummary = true
         return [{ type: "text_delta", delta: "DONE" }]
       }
@@ -363,8 +363,8 @@ describe("E2E mechanism contract tests", () => {
   //  Phase 2 (→ context_collapse):
   //    Provider emits small fills (180 chars, 45t — below Micro's 200t threshold).
   //    Rho climbs slowly from 0.63 to 0.90 via ~12 turns.
-  //    ContextCollapse injects "[Compressed: context_collapse]" into working partition.
-  //    Detection: text.includes("[Compressed: context_collapse]").
+  //    ContextCollapse injects "[context_collapse] archived" into working partition.
+  //    Detection: text.includes("[context_collapse] archived").
   //
   //  Phase 3 (→ auto_compact + anchor):
   //    Provider seeds RETAIN_ANCHOR, then emits one huge fill (5000 chars, 1250t).
@@ -382,7 +382,7 @@ describe("E2E mechanism contract tests", () => {
   // saving 0 tokens and never reducing context. emitUsage:false lets the Rust
   // engine use count_message() (char/4), giving correct 300t values for 1200-char
   // messages, which SnipCompact correctly truncates.
-  it("K09 triggers all four compression tiers and retains content in preserved tail", async () => {
+  it("K09 triggers every compression tier and retains content in preserved tail", async () => {
     // spc_011-C-01 note: this test's `fill` tool used to do `char.repeat(size)` — a single
     // repeated character. That was fine under the old char/4 approximation (every char "costs"
     // the same regardless of content), but the real BPE-backed default engine (011-C-01)
@@ -412,9 +412,9 @@ describe("E2E mechanism contract tests", () => {
 
       // ── Phase 4: AutoCompact fired — verify summary in context ──
       // AutoCompact writes summary to compression_log → task_state → systemText/stateTurn.
-      if (text.includes("[Compressed: auto_compact]")) {
+      if (text.includes("[auto_compact] archived")) {
         const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
-        const hasSummary = allCtx.includes("[Compressed: auto_compact]")
+        const hasSummary = allCtx.includes("[auto_compact] archived")
         // The anchor call and its value survive in the preserved tail. (Task state no longer names
         // it: that came from a host-written "Executed tools" progress the model never authored.)
         const hasAnchorTool = text.includes("seed_anchor") && text.includes(RETAIN_ANCHOR)
@@ -430,7 +430,7 @@ describe("E2E mechanism contract tests", () => {
       //   turn N: tool message with seed result
       // That's 3 messages. AutoCompact keeps last 4, so all 3 + the previous asst
       // message are preserved. seed-result (containing RETAIN_ANCHOR) is in last-4.
-      if (text.includes("[Compressed: context_collapse]") && !anchorSeeded) {
+      if (text.includes("[context_collapse] archived") && !anchorSeeded) {
         anchorSeeded = true
         phase3BigFillDone = true
         return [
@@ -439,7 +439,7 @@ describe("E2E mechanism contract tests", () => {
           { type: "tool_call", id: `seed-${call}`, name: "seed_anchor", arguments: { value: RETAIN_ANCHOR } },
         ]
       }
-      if (text.includes("[Compressed: context_collapse]")) {
+      if (text.includes("[context_collapse] archived")) {
         return [{ type: "text_delta", delta: "WAITING_FOR_AUTO" }]
       }
 
@@ -509,8 +509,7 @@ describe("E2E mechanism contract tests", () => {
     const compressedEvents = events.filter(e => e.event.kind === "compressed")
     const actions = compressedEvents.map(e => (e.event as any).action as string)
 
-    // All four tiers must have fired as distinct kernel events
-    expect(actions).toContain("snip_compact")
+    // Every tier must have fired as a distinct kernel event (snip runs as micro's first stage)
     expect(actions).toContain("micro_compact")
     expect(actions).toContain("context_collapse")
     expect(actions).toContain("auto_compact")

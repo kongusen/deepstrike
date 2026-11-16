@@ -196,7 +196,7 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 
 阶段 1 的 checkpoint 形状会变。每个任务保留旧 checkpoint 的恢复路径并加测试，变化写进 `MIGRATION-0.2.83-to-<下一版>.md`。面向宿主的 ABI（`KernelInput`、`KernelEffect`、wire `ContextPolicy`）在阶段 0–1 不变。
 
-### 阶段 2：DEC-13 审计（G）
+### 阶段 2：DEC-13 审计（G）——已完成第一轮，M1–M7 已删除
 
 **方法：先测整体剥离，再二分。** 逐项各跑 30 对成本太高。
 
@@ -222,6 +222,34 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 - 读结果前先排除协议层混杂（泄漏的工具标记、重复的 call id、跑到轮数上限的运行），做法见上下文优先计划 9.0。
 - 实测花用户的钱。启动前从 `benchmark/context-lifecycle/results/` 的既有数据估算本次花费，查 DeepSeek 余额，把预计花费报给用户，得到同意再跑。
 - `minimal` 在 long-horizon 上如果出现大量跑到轮数上限的运行，先停下来分析，不要跑满 30 题。
+
+**执行记录（2026-11-16）。** 用户批准预算 30 元，并决定先做阶段 2、阶段 1 剩余任务等审计后再定。
+
+- **做法。** 实验分支 `exp/stage2-audit`（不合入）上，环境变量 `DEEPSTRIKE_EXP_MINIMAL` 把 M1–M9 剥成 `minimal`（`all` 或 `m1,m5` 这样的列表）；不设时 1158 个内核测试全过。没有按计划等 1.4：实验开关直接挂在现有代码上即可。
+- **实测**（`deepseek-flash`，同题配对，`results/stage2-*.jsonl`，变体 `s2-default` 为候选、`s2-minimal` 为基线；按 long-horizon 历史单价估算约 15 元）：
+
+  | 场景 | 配对数 | 正确：default / minimal | 每答对一题的成本 | gate |
+  |---|---|---|---|---|
+  | long-horizon | 10 | 6 / 4 | default 便宜 22% | 样本不足 |
+  | ledger | 30 | 28 / 28 | default 贵 62% | default 没有显著变好 |
+  | knowledge-pressure | 30 | 25 / 27 | default 贵 76% | **default 显著变差** |
+  | multi-session | 48 会话 | 34 / 32 | default 便宜 9% | default 没有显著变好；按序列 3 好 1 差 |
+  | fan-out | 12 | 12 / 12 | default 便宜 16% | 回归，无差异 |
+
+  - 成本差几乎全来自缓存：minimal 在每个场景的缓存命中率都更高，default 的前缀断点是 minimal 的 2–7 倍，断点原因几乎都是 `collapse`（M5）与 `narration`（M1）。
+  - long-horizon 逐题读过答案：两边错题都是计数差 1–2 行，没有只出现在某一边的错误类型；10 对里不一致的 6 对是 4 比 2，在随机波动范围内。minimal 没有跑满轮数（0/10），唯一一次跑满轮数在 default。
+- **决定（用户 2026-11-16）："大部分都删除。"** 删除 M1–M7；M8（criteria gate，只在宿主给出验收标准时触发，这一轮没有任何基准设置它，没有数据）与 M9（`update_plan` 的 progress / blocked_on 与 scratchpad，属于四端 SDK 的 API）暂留，另行决定。long-horizon 没有补到 30 对。
+- **删除的做法与验证。** 先把实验开关按 M1–M7 剥离、M8–M9 保留固定下来，重新生成的 golden 与实验分支上测过的 `minimal` 逐字节相同；再删掉死代码与配置面，此时 golden 的差异只剩被删的配置字段与随之变化的摘要值。具体：
+  - M1 叙述折叠：删除投影、`collapseOldAssistantNarration`、缓存断点原因 `narration`。
+  - M2 效用打分：`context/utility.rs` 换成 `context/archive.rs`，最旧优先，只按规则保留最近的单元。
+  - M3 规则摘要：删除 `summarizer.rs`；压缩记录是一行 `archived N messages (~T tokens); tools used: …`。
+  - M4：删除空闲衰减（`idleMicroCompactMinutes`、两个时间戳）与单独的 snip 档；snip 是 micro 的第一阶段，阈值去掉 `snip`，`micro` 默认 0.70（即测过的 minimal 的行为）。
+  - M5：删除每轮折叠旧工具结果（`recompute_handle_residency`）；`Collapsed` 形态仍由 provider 侧清理产生，保留到 1.4。
+  - M6：knowledge 留存分只计强引用，去掉 kind 权重。
+  - M7：删除状态块页脚与它背后的 `recent_actions`。
+  - checkpoint 中 `recent_actions`、`last_activity_ms`、`last_compact_ms` 只读不写，旧 checkpoint 仍可恢复。
+  - 测试：断言被删行为的测试删除；两个 Python 测试原先靠规则摘要撑高压力或依赖压缩时机，改为直接构造条件（长 goal、在 state turn 里查重新激活的 skill）。四端全量测试、复现脚本、文档与契约检查全部通过。
+- **对阶段 1 的影响。** 1.4（形态合一）的范围缩小：叙述折叠与每轮折叠已不存在。1.7 要集中的内核文本少了页脚与规则摘要。1.2、1.3、1.5 仍然没有找到实际收益，建议在 1.6、1.7 之后再看。
 
 阶段 2 结束后做一次配置收敛：`PressureThresholds` 只留仍被使用的阈值；`preserve_recent_units` 与 `preserve_recent_turns` 合并；两个同名 `ContextPolicy` 留一个权威，另一个改名或删除；`EntropyWatchConfig.notify_model` 按"没有休眠开关"删除（需用户确认，见 §8）。
 
@@ -414,7 +442,7 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
    - [x] Python：旧 venv 指向已不存在的 Python 3.11。在临时目录用 Python 3.12 新建 venv、`maturin develop --release` 后全量 pytest 通过（913 passed）。本机 shell 设了 SOCKS 代理，跑 pytest 要先清掉 `ALL_PROXY` / `HTTP(S)_PROXY`，否则 httpx 报缺 `socksio`。
    - [x] 英文版 `docs/en/plans/kernel-distillation.md`（`check-docs-drift` 要求中英文成对）。中文版是工作副本，先改中文再同步英文。
 3. **阶段 1（1.1–1.9）**，然后 **4.1**（排在 1.2 之后，wire 可选字段已获放行）。
-4. **阶段 2 的 DEC-13 审计。** 预算上限未定（§8 第 1 条），开跑前问用户。
+4. ~~**阶段 2 的 DEC-13 审计。**~~ 第一轮已完成，M1–M7 已删除（见阶段 2 的执行记录）。M8、M9 待定。
 5. **阶段 3 文档。**
 
 ### 10.3 这一轮学到的，动手前要知道

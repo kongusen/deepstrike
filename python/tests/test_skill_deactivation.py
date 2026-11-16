@@ -53,7 +53,9 @@ class DeactivationProvider:
             self.after_deactivation = context.system_knowledge or ""
             yield ToolCallEvent(id="s2", name="skill", arguments={"name": "debug"})
             return
-        self.after_reactivation = context.system_knowledge or ""
+        # Re-pinned content arrives after the cached prefix was sent, so it is in the state turn
+        # until the next boundary promotes it into system knowledge; either way the model sees it.
+        self.after_reactivation = (context.system_knowledge or "") + repr(context.state_turn)
         yield TextDelta(delta="done")
 
 

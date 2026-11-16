@@ -66,7 +66,7 @@ while not done:
 | system | Identity, stable system prompt |
 | knowledge | Skill body, `initial_memory`, host-pinned durable refs (keyed + boundary eviction + budget) |
 | history | Turns + runtime memory/knowledge retrieval hits (compressible, frozen prefix) |
-| state | task_state, signals, plan footer |
+| state | task_state, signals, plan, notes |
 
 `mm::HandleTable` pages large tool results by residency.
 

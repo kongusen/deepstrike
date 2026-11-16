@@ -87,7 +87,7 @@ SDK 将 tool/provider outcome 统一包装为 `ResolveEffect`：
 
 若 `pressure > threshold`：
 
-1. 运行 `CompressionPipeline`（Snip → Micro → Collapse → Auto；后两级归档最旧的历史单元，并写入一条规则摘要）
+1. 运行 `CompressionPipeline`（Micro → Collapse → Auto；Micro 先截断过长消息、再把旧工具结果降为摘录；后两级按最旧优先归档历史单元，并在压缩记录里写一行机械记录：归档了多少条、多少 token、用过哪些工具）
 2. 可能触发 `Renewal` / handoff
 3. 更新 `frozen_prefix_len`（prompt cache 断点）
 

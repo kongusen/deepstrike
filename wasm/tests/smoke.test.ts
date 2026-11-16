@@ -237,7 +237,7 @@ describe("RuntimeRunner", () => {
         safetyMarginTokens: 10,
       },
       contextPolicy: {
-        pressureThresholds: { snip: 0.72 },
+        pressureThresholds: { micro: 0.72 },
         preserveRecentTurns: 4,
       },
       resourceQuota: {
@@ -277,8 +277,7 @@ describe("RuntimeRunner", () => {
     expect(configure!.config.prompt_budget).toBeUndefined()
     expect(configure!.config.context_policy).toEqual(expect.objectContaining({
       pressure_thresholds_ppm: {
-        snip: 720_000,
-        micro: 800_000,
+        micro: 720_000,
         collapse: 900_000,
         auto: 950_000,
         renewal: 980_000,
@@ -286,8 +285,6 @@ describe("RuntimeRunner", () => {
       target_after_compress_ppm: 650_000,
       preserve_recent_turns: 4,
       renewal_carryover_ppm: 50_000,
-      collapse_old_assistant_narration: true,
-      idle_micro_compact_minutes: 60,
       prompt_budget: {
         prompt_overhead_tokens: 20,
         output_reserve_tokens: 100,

@@ -733,8 +733,11 @@ pub struct ContextVmState {
     /// CoreMessage-count boundary projected as `frozen_prefix_len` on future provider effects.
     #[serde(default)]
     pub frozen_history_len: u32,
+    /// Idle time-decay's timestamps (removed in 0.2.84, stage 2 of the kernel-distillation plan).
+    /// Accepted and ignored, so checkpoints written before restore; never written.
+    #[serde(default, skip_serializing)]
     pub last_activity_ms: WireU64,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub last_compact_ms: Option<WireU64>,
 }
 
@@ -879,7 +882,9 @@ pub struct LogicalTaskState {
     pub directives: Vec<String>,
     #[serde(default)]
     pub preserved_refs: Vec<String>,
-    #[serde(default)]
+    /// The footer's action log (removed in 0.2.84, stage 2 of the kernel-distillation plan).
+    /// Accepted and ignored, so checkpoints written before it restore; never written.
+    #[serde(default, skip_serializing)]
     pub recent_actions: Vec<String>,
     #[serde(default)]
     pub compression_log: Vec<LogicalCompressionEntry>,
