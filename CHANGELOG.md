@@ -4,10 +4,13 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.84] - 2026-11-17
 
-Kernel distillation (`docs/plans/kernel-distillation.md`): phase 0, and the first results of
-stage 4. Phase 0 changes nothing the model sees; the memory header change below does.
+Kernel distillation (`docs/plans/kernel-distillation.md`). Seven rule mechanisms of the context
+kernel and `update_plan`'s progress / blocked_on / scratchpad are deleted after a measured audit
+(DEC-13); memory headers carry the record's name; the kernel's text to the model lives in one
+module; one write-authority table. **Operations in flight under 0.2.83 cannot be resumed by this
+version** (see `MIGRATION-0.2.83-to-0.2.84.md`).
 
 ### Added
 

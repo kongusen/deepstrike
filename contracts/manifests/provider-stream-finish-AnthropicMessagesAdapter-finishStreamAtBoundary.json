@@ -1,6 +1,6 @@
 {
   "id": "provider-stream.finish.AnthropicMessagesAdapter.finishStreamAtBoundary",
-  "version": "0.2.83",
+  "version": "0.2.84",
   "protocol": {
     "family": "host-provider",
     "direction": "decode",

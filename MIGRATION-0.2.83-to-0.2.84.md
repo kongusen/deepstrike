@@ -1,8 +1,8 @@
-# Migration from 0.2.83 to the next release
+# Migration from 0.2.83 to 0.2.84
 
-The version number is provisional. This release is phase 0 of the
-[kernel-distillation plan](./docs/plans/kernel-distillation.md) plus the first results of its
-stage 4 (memory under drift).
+This release carries the [kernel-distillation plan](./docs/plans/kernel-distillation.md): its
+cleanup (stage 0), the item table made real (stage 1), the DEC-13 audit's deletions (stage 2) and
+the memory work of stage 4.
 
 ## Stored state
 
