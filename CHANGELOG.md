@@ -107,6 +107,10 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
   `[TASK STATE]` block no longer renders them.
 - **`EntropyWatch.notify_model`**, the unmeasured second channel that turned an entropy alert into
   a `[SIGNAL]` to the model. The alert goes to the host only.
+- Rust: values of the item table that nothing produced or read (plan task 1.9):
+  `ItemOrigin::{TaskState, Signal, Note}` (task state, signals and notes are not stored as items),
+  `ItemScope::Agent`, `Fidelity::Structured` and `Lease::SingleUse`. The lifecycle report's `origin`
+  and `fidelity` types in Node, WASM and Python lose the same values; no report ever carried them.
 - `ContextConfig.autocompact_buffer` and `ContextConfig::autocompact_threshold()` (never read).
 - `ContextConfig.verbose_control_notes` and the `[SYSTEM] …` verbose rollback / rejection notes.
 - Rust: `EvictionOp::Snip` and `EvictionOp::AutoCompact` lose their fields (the executor ignored
@@ -138,8 +142,8 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
   the wire default. Code that builds a `ContextManager` directly now gets the `note` tool; set the
   field to `0` to turn it off.
 - Rust: `ContextPartitions.signals` holds `SignalItem { text, delivered }` instead of `String`
-  (plan task 1.1), and `Lease::SingleUse`, which no item used, is `Lease::UntilDelivered`: the
-  lease the origin table gives signals, enforced on delivery rather than on first reference.
+  (plan task 1.1): a signal is marked when a request carries it and leaves when that request
+  commits, and a checkpoint records how many are marked.
 - One count of recent history units protects them from both render and compaction: the wire's
   `context_policy.preserve_recent_turns` now also sets what render never drops (it was a separate
   `ContextConfig.preserve_recent_units`, fixed at 2). Both defaulted to 2, so only a host that

@@ -50,7 +50,7 @@ export interface ContextItemRecord {
   /** The item's id, shared with history items and item-graph edges. */
   id?: number
   key?: string
-  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary" | "note"
+  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "provider_summary"
   tokens: number
   value: {
     injected_turn: number
@@ -108,7 +108,7 @@ export interface ContextHistoryItemRecord {
   tokens: number
   injected_turn: number
   /** What it rendered when it left, or renders now; absent = full. */
-  fidelity?: "structured" | "excerpt" | "handle"
+  fidelity?: "excerpt" | "handle"
   /** Why it left; absent while still in history. */
   end?: "removed" | "compacted" | "renewed"
 }

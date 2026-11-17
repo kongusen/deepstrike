@@ -93,7 +93,9 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
 - Rust: `CollapseCompactor` and `AutoCompactor` are one `ArchiveCompactor`.
 
 - Rust: `ContextPartitions.signals` is `Vec<SignalItem>` (`text`, `delivered`) instead of
-  `Vec<String>`; read `signal.text`. `Lease::SingleUse` is renamed `Lease::UntilDelivered`.
+  `Vec<String>`; read `signal.text`.
+- Rust: `ItemOrigin::{TaskState, Signal, Note}`, `ItemScope::Agent`, `Fidelity::Structured` and
+  `Lease::SingleUse` are removed (no item ever had them).
 - Checkpoints gain an optional `signals_delivered` (the signals the in-flight provider request
   carries). A checkpoint without it restores as before.
 

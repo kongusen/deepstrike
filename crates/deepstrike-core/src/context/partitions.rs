@@ -794,9 +794,8 @@ pub struct ContextPartitions {
     pub history: Partition,
 }
 
-/// One runtime signal, an item of origin [`crate::context::item::ItemOrigin::Signal`] with lease
-/// [`crate::context::item::Lease::UntilDelivered`]: said once, in the state turn of the next
-/// provider request.
+/// One runtime signal: said once, in the state turn of the next provider request, and gone when
+/// that request commits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalItem {
     pub text: String,

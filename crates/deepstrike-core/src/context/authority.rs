@@ -31,7 +31,7 @@ impl WriteOp {
 /// - The host creates anything, and replaces or removes anything except what the kernel or the
 ///   provider wrote.
 /// - The model and the provider write only items of the origins they author (the origin table's
-///   `authority`): the model its skills, turns and notes, the provider its summaries.
+///   `authority`): the model its skills and turns, the provider its summaries.
 pub fn admit_write(origin: ItemOrigin, writer: Authority, op: WriteOp) -> Result<(), String> {
     let author = origin.defaults().authority;
     let allowed = match writer {
@@ -119,7 +119,7 @@ pub fn admit_task_update(update: &TaskUpdate, writer: Authority) -> Result<(), S
 mod tests {
     use super::*;
 
-    const ORIGINS: [ItemOrigin; 13] = [
+    const ORIGINS: [ItemOrigin; 10] = [
         ItemOrigin::System,
         ItemOrigin::Skill,
         ItemOrigin::MemoryRecall,
@@ -129,10 +129,7 @@ mod tests {
         ItemOrigin::DependencyOutput,
         ItemOrigin::User,
         ItemOrigin::Assistant,
-        ItemOrigin::TaskState,
-        ItemOrigin::Signal,
         ItemOrigin::ProviderSummary,
-        ItemOrigin::Note,
     ];
     const WRITERS: [Authority; 4] =
         [Authority::Host, Authority::Kernel, Authority::Model, Authority::Provider];
@@ -170,10 +167,7 @@ mod tests {
                 "dependency_output c-- crd --- ---",
                 "user             crd crd --- ---",
                 "assistant        crd crd crd ---",
-                "task_state       c-- crd --- ---",
-                "signal           crd crd --- ---",
                 "provider_summary c-- crd --- crd",
-                "note             crd crd crd ---",
             ]
         );
     }

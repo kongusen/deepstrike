@@ -417,7 +417,7 @@ class ContextHistoryItemRecord(TypedDict, total=False):
     origin: str
     tokens: int
     injected_turn: int
-    fidelity: Literal["structured", "excerpt", "handle"]
+    fidelity: Literal["excerpt", "handle"]
     end: Literal["removed", "compacted", "renewed"]
 
 
