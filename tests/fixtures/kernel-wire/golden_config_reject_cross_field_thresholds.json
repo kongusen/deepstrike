@@ -5,8 +5,7 @@
   "config": {
     "context_policy": {
       "pressure_thresholds_ppm": {
-        "snip": 700000,
-        "micro": 600000,
+        "micro": 950000,
         "collapse": 900000,
         "auto": 950000,
         "renewal": 980000

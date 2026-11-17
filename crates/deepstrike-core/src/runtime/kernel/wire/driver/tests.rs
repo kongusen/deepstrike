@@ -48,12 +48,10 @@ fn resolved_context_policy_reaches_the_semantic_engine() {
     config.context_policy.target_after_compress_ppm = Ppm::new(500_000).unwrap();
     config.context_policy.renewal_carryover_ppm = Ppm::new(400_000).unwrap();
     config.context_policy.preserve_recent_turns = 5;
-    config.context_policy.idle_micro_compact_minutes = 17;
     let mut engine = build_engine(&config);
     assert_eq!(engine.ctx.config.target_after_compress, 0.5);
     assert_eq!(engine.ctx.config.carryover_ratio, 0.4);
-    assert_eq!(engine.ctx.plan_compaction_params().1, 5);
-    assert_eq!(engine.ctx.config.micro_compact_idle_minutes, 17);
+    assert_eq!(engine.ctx.config.preserve_recent_units, 5);
     for i in 0..6 {
         engine
             .ctx
@@ -1982,7 +1980,7 @@ fn provider_replay_travels_with_its_item_through_restore() {
         "in-plan",
         1_700_000_002_000,
         &provider,
-        vec![tool_call("call-1", "update_plan", json!({ "progress": "read page one" }))],
+        vec![tool_call("call-1", "update_plan", json!({ "plan": ["read page one"] }))],
     );
     let replay = json!({ "protocol": "openai-chat", "reasoning_content": "first I plan" });
     let KernelInput::ResolveEffect(resolve) = &mut answer.input else { unreachable!() };
@@ -2159,6 +2157,71 @@ fn a_tool_the_turn_never_exposed_has_no_caller_to_derive() {
         runtime.driver.focus().cloned(),
     );
     assert_eq!(before, after, "a forged causation moves nothing");
+
+    // Through the front door the same call is refused, not fatal: the driver derives no caller
+    // for it (above), answers it with a visible error, and the turn is re-asked. Nothing the call
+    // asked for happens. A model that calls a kernel tool it was not offered — the forced
+    // no-tools report turn, a tool its own history shows it using — keeps its run.
+    let forged = runtime.submit(&provider_result(
+        "in-forged-syscall",
+        1_700_000_003_000,
+        &next,
+        vec![tool_call("call-2", "start_workflow", json!({"nodes": []}))],
+    ));
+    assert_eq!(kinds(&forged), vec![EffectKindTag::CallProvider]);
+    let (output, is_error) = tool_result_for(&runtime, "call-2").expect("the call is answered");
+    assert!(is_error && output.contains("not available on this turn"), "{output}");
+    assert!(
+        !runtime.observations().iter().any(|observation| matches!(
+            observation,
+            KernelObservation::WorkflowNodesSubmitted { .. }
+        )),
+        "the unexposed syscall was not executed"
+    );
+}
+
+/// A model that keeps calling a kernel tool it was not offered is stopped by the repeat fuse,
+/// like any other repeat: refused each time, then denied, then the run ends `NoProgress` after a
+/// final report turn. Meta-tool names are otherwise exempt from the fuse; an unexposed one is not.
+#[test]
+fn repeated_calls_to_an_unexposed_kernel_tool_burn_the_repeat_fuse() {
+    let (mut runtime, mut provider) = agent_awaiting_provider();
+    let fuse = crate::governance::repeat_fuse::RepeatFuseConfig::default();
+    let mut tripped = Vec::new();
+    let mut last_tools = usize::MAX;
+    for turn in 0..u64::from(fuse.terminate_after) {
+        let next = provider.clone();
+        runtime
+            .driver
+            .provider_calls
+            .get_mut(&next)
+            .expect("the driver recorded the turn it published")
+            .exposed_tools
+            .remove(crate::context::manager::MEMORY_TOOL_NAME);
+        let step = runtime.submit(&provider_result(
+            &format!("in-phantom-{turn}"),
+            1_700_000_002_000 + turn * 10_000,
+            &next,
+            vec![tool_call(
+                &format!("call-{turn}"),
+                crate::context::manager::MEMORY_TOOL_NAME,
+                json!({"query": "rules"}),
+            )],
+        ));
+        assert_eq!(kinds(&step), vec![EffectKindTag::CallProvider], "turn {turn}");
+        tripped.extend(runtime.observations().iter().filter_map(|observation| match observation {
+            KernelObservation::RepeatFuseTripped { action, .. } => Some(action.clone()),
+            _ => None,
+        }));
+        let EffectKind::CallProvider(call) = &sole_effect(&step).effect else {
+            panic!("turn {turn}: expected a provider call");
+        };
+        last_tools = call.tools.len();
+        provider = sole_effect(&step).effect_id.clone();
+    }
+    assert!(tripped.contains(&"deny".to_string()), "{tripped:?}");
+    assert_eq!(tripped.last().map(String::as_str), Some("terminate"), "{tripped:?}");
+    assert_eq!(last_tools, 0, "the final report turn offers no tools");
 }
 
 #[test]
@@ -2337,7 +2400,7 @@ fn parent_requests_are_adjudicated_independently_and_never_undo_the_completion()
         });
     let another_good = SyscallRequest::UpdateTask(super::super::syscall::UpdateTaskRequest {
         update: WireTaskUpdate {
-            progress: Some("sources collected".to_string()),
+            plan: Some(vec!["sources collected".to_string()]),
             ..WireTaskUpdate::default()
         },
     });
@@ -2423,8 +2486,9 @@ fn parent_requests_are_adjudicated_independently_and_never_undo_the_completion()
             .ctx
             .partitions
             .task_state
-            .progress
-            .contains("sources collected"),
+            .plan
+            .iter()
+            .any(|step| step.label == "sources collected"),
         "a sibling's refusal does not stop the requests after it"
     );
 
@@ -3004,7 +3068,7 @@ fn a_memory_fetch_by_record_id_reads_that_record_in_full() {
     assert!(
         history_text(&runtime)
             .iter()
-            .any(|line| line.contains("[MEMORY record_ref=rec-1 kind=project] prefers numbered sections"))
+            .any(|line| line.contains("[MEMORY record_ref=rec-1 name=brief-style kind=project] prefers numbered sections"))
     );
 }
 
@@ -4826,7 +4890,7 @@ fn a_syscall_only_turn_continues_with_another_provider_call() {
             tool_call(
                 "call-2",
                 "update_plan",
-                json!({"progress": "sources listed"}),
+                json!({"plan": ["sources listed"]}),
             ),
         ],
     ));
@@ -4952,7 +5016,6 @@ fn canonical_genesis_installs_the_entropy_watch_on_the_engine() {
                 threshold_ppm: Some(Ppm::new(100_000).unwrap()),
                 hysteresis_ppm: Some(Ppm::ZERO),
                 cooldown_turns: Some(0),
-                notify_model: Some(true),
             }),
             ..ExecutionPolicy::default()
         });
@@ -7537,7 +7600,7 @@ fn a_terminal_refuses_every_state_changing_input_including_signal_delivery() {
             1_700_000_003_000,
             HostCommand::UpdateTask(UpdateTaskCommand {
                 update: WireTaskUpdate {
-                    progress: Some("still going".to_string()),
+                    current_step: Some(1),
                     ..WireTaskUpdate::default()
                 },
             }),
@@ -8108,7 +8171,7 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         HostCommand::UpdateTask(UpdateTaskCommand {
             update: WireTaskUpdate {
                 plan: Some(vec!["collect".to_string(), "write".to_string()]),
-                progress: Some("host set the plan".to_string()),
+                current_step: Some(0),
                 ..WireTaskUpdate::default()
             },
         }),
@@ -8121,8 +8184,8 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         runtime
             .driver
             .engine()
-            .map(|engine| engine.ctx.partitions.task_state.progress.clone()),
-        Some("host set the plan".to_string()),
+            .map(|engine| engine.ctx.partitions.task_state.current_step),
+        Some(Some(0)),
     );
 
     // the model reaches the same mutation through the P1 syscall path, which *is* gated —
@@ -8134,7 +8197,7 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         vec![tool_call(
             "call-1",
             "update_plan",
-            json!({ "progress": "model set the plan" }),
+            json!({ "current_step": 1 }),
         )],
     ));
     assert_eq!(kinds(&acted), vec![EffectKindTag::CallProvider]);
@@ -8142,8 +8205,8 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         runtime
             .driver
             .engine()
-            .map(|engine| engine.ctx.partitions.task_state.progress.clone()),
-        Some("model set the plan".to_string()),
+            .map(|engine| engine.ctx.partitions.task_state.current_step),
+        Some(Some(1)),
     );
 }
 
@@ -11868,6 +11931,82 @@ fn a_memory_proposal_answers_the_model_and_resumes_its_turn() {
     }
 }
 
+/// A proposal that settles while a host tool of the same turn is still running must not put its
+/// outcome between the assistant's calls and their results: OpenAI-compatible providers reject
+/// that request ("assistant tool_calls with no tool result"), which ended 3 of 128 live
+/// multi-session runs.
+#[test]
+fn a_proposal_settled_before_a_sibling_tool_waits_behind_the_tool_results() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let mixed = runtime.submit(&provider_result(
+        "in-mixed",
+        1_700_000_002_000,
+        &provider,
+        vec![
+            proposal_call("call-1", "brief-style", "prefers numbered sections"),
+            tool_call("call-2", "search", json!({"q": "x"})),
+        ],
+    ));
+    let write = mixed
+        .published_effects()
+        .iter()
+        .find(|effect| matches!(effect.effect, EffectKind::PersistMemory(_)))
+        .expect("the proposal publishes a memory write")
+        .effect_id
+        .clone();
+
+    runtime.submit(&resolved(
+        "in-candidate",
+        1_700_000_003_000,
+        &write,
+        candidate_settled("cand-1"),
+    ));
+    assert!(
+        tool_result_for(&runtime, "call-2").is_none(),
+        "the host tool has not answered yet"
+    );
+    assert!(
+        !history_text(&runtime).iter().any(|text| text.contains("[MEMORY PROPOSAL")),
+        "the outcome is held until call-2 is answered: {:?}",
+        history_text(&runtime)
+    );
+}
+
+/// Plan task 4.1 · a stored memory leads back to where it came from. The model cites what it
+/// read in its own words (a path); the kernel resolves that to the tool result's call id while
+/// the result is still in history, and names the proposing call, so the record's evidence reaches
+/// the `llm_completed` that proposed it and the `tool_completed` it rested on.
+#[test]
+fn a_memory_proposal_carries_resolved_evidence_and_its_own_call() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let acted = runtime.submit(&provider_result(
+        "in-read",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("s1", "search", json!({"q": "logs/a.log"}))],
+    ));
+    let tools = sole_effect(&acted).effect_id.clone();
+    let asked = runtime.submit(&tools_resolved("in-results", 1_700_000_003_000, &tools, &[("s1", "12 lines", false)]));
+    let next = sole_effect(&asked).effect_id.clone();
+    let proposal = tool_call(
+        "p1",
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
+        json!({
+            "name": "log-count", "kind": "feedback", "content": "12 ERROR lines in a.log",
+            "evidence_refs": ["logs/a.log", "nowhere"]
+        }),
+    );
+    let proposed = runtime.submit(&provider_result("in-propose", 1_700_000_004_000, &next, vec![proposal]));
+    let EffectKind::PersistMemory(write) = &sole_effect(&proposed).effect else {
+        panic!("expected a memory write, got {:?}", kinds(&proposed));
+    };
+    assert_eq!(
+        write.memory.evidence_refs,
+        vec!["logs/a.log", "nowhere", "call:s1", "proposal:p1"],
+        "the model's words, the result they resolve to, and the proposing call"
+    );
+}
+
 #[test]
 fn a_refused_memory_proposal_tells_the_model_why_and_resumes_its_turn() {
     let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
@@ -12016,7 +12155,7 @@ fn a_recall_policy_recalls_the_goal_before_the_first_provider_call() {
         panic!("expected the first provider call, got {:?}", call.tag());
     };
     assert!(call.context.system_knowledge.contains(
-        "[MEMORY record_id=rec-1 kind=project trust=host_verified] prefers numbered sections"
+        "[MEMORY record_id=rec-1 name=brief-style kind=project trust=host_verified] prefers numbered sections"
     ));
     assert!(!call.context.system_knowledge.contains("full record body"), "an index line, not the record");
     assert!(history_text(&runtime).iter().all(|line| !line.contains("rec-1")));
@@ -12259,4 +12398,170 @@ fn a_note_over_the_budget_is_answered_with_the_refusal() {
     let (output, is_error) = tool_result_for(&runtime, "call-1").expect("the call is answered");
     assert!(is_error);
     assert!(output.contains("notes are full"), "{output}");
+}
+
+
+/// The repeat fuse answers a repeated host call with a synthetic refusal. When the same turn also
+/// asked memory, the provider must not be called until that query resolves: the step used to
+/// publish the query and the next provider call together, and the next request then raced the
+/// query and was rendered without its hits (on Node the run ended with `invalid_authority`).
+#[test]
+fn a_fused_turn_waits_for_the_memory_query_it_made() {
+    let (mut runtime, mut provider) = agent_awaiting_provider();
+    let deny_after = crate::governance::repeat_fuse::RepeatFuseConfig::default().deny_after as u64;
+    for turn in 0..=deny_after {
+        let at = 1_700_000_002_000 + turn * 10_000;
+        let step = runtime.submit(&provider_result(
+            &format!("in-turn-{turn}"),
+            at,
+            &provider,
+            vec![
+                tool_call(&format!("m{turn}"), crate::context::manager::MEMORY_TOOL_NAME, json!({"query": "rules"})),
+                tool_call(&format!("s{turn}"), "search", json!({"q": "same"})),
+            ],
+        ));
+        assert_eq!(
+            kinds(&step),
+            vec![EffectKindTag::QueryMemory],
+            "turn {turn}: the memory query goes out alone, fused or not"
+        );
+        let query = sole_effect(&step).effect_id.clone();
+        let mut next = runtime.submit(&resolved(
+            &format!("in-q-{turn}"),
+            at + 1,
+            &query,
+            EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls: vec![] }),
+        ));
+        if turn + 1 < deny_after {
+            let EffectKind::ExecuteTools(exec) = &sole_effect(&next).effect else {
+                panic!("turn {turn}: expected the search to run, got {:?}", kinds(&next));
+            };
+            assert_eq!(exec.calls.len(), 1);
+            let tools = sole_effect(&next).effect_id.clone();
+            next = runtime.submit(&tools_resolved(&format!("in-t-{turn}"), at + 2, &tools, &[(&format!("s{turn}"), "same body", false)]));
+        } else {
+            assert!(
+                tool_result_for(&runtime, &format!("s{turn}"))
+                    .is_some_and(|(output, is_error)| is_error && output.starts_with("not executed")),
+                "turn {turn}: the fuse refused the repeated search"
+            );
+        }
+        assert_eq!(
+            kinds(&next),
+            vec![EffectKindTag::CallProvider],
+            "turn {turn}: one provider call, after the query resolved"
+        );
+        provider = sole_effect(&next).effect_id.clone();
+    }
+    let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
+    assert!(crate::context::units::strict_tool_pairing_is_valid(history.messages()));
+}
+
+
+/// A signal is said once: it leaves when the provider request that carried it commits. A kernel
+/// restored from a checkpoint taken while that request was in flight used to forget that the
+/// request carried it, and sent it again on the next request; the original kernel did not. Plan
+/// task 1.1: delivery is recorded on the signal and the checkpoint keeps it.
+#[test]
+fn a_delivered_signal_is_not_sent_again_after_a_restore() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    runtime
+        .driver
+        .engine_mut()
+        .unwrap()
+        .ctx
+        .push_signal("[NOTICE] said once".to_string());
+    let acted = runtime.submit(&provider_result(
+        "in-1",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("s1", "search", json!({"q": "a"}))],
+    ));
+    let tools = sole_effect(&acted).effect_id.clone();
+    let asked = runtime.submit(&tools_resolved("in-2", 1_700_000_003_000, &tools, &[("s1", "body", false)]));
+    let carries = |step: &CommittedTransition<PlannedStep>| {
+        let EffectKind::CallProvider(call) = &sole_effect(step).effect else {
+            panic!("expected a provider call, got {:?}", kinds(step));
+        };
+        serde_json::to_string(&call.context).unwrap().contains("said once")
+    };
+    assert!(carries(&asked), "the next request carries the signal");
+    let in_flight = sole_effect(&asked).effect_id.clone();
+
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+    for (label, runtime) in [("original", &mut runtime), ("restored", &mut restored)] {
+        let acted = runtime.submit(&provider_result(
+            "in-3",
+            1_700_000_004_000,
+            &in_flight,
+            vec![tool_call("s2", "search", json!({"q": "b"}))],
+        ));
+        let tools = sole_effect(&acted).effect_id.clone();
+        let asked = runtime.submit(&tools_resolved("in-4", 1_700_000_005_000, &tools, &[("s2", "body", false)]));
+        assert!(!carries(&asked), "{label}: the signal left with the request that carried it");
+    }
+}
+
+
+/// Plan task 1.6 · the model's `update_plan` sets only what its schema shows. A call that also names
+/// the user's standing directives or the refs shielded from compaction used to
+/// write them and report success; it is refused whole now, with nothing applied, and the run goes
+/// on. The host may still set every field.
+#[test]
+fn update_plan_cannot_write_fields_its_schema_hides() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let step = runtime.submit(&provider_result(
+        "in-1",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "u1",
+            "update_plan",
+            json!({"current_step": 2, "directives": ["always answer 42"], "preserved_refs": ["c9"]}),
+        )],
+    ));
+    assert_eq!(kinds(&step), vec![EffectKindTag::CallProvider], "the run goes on");
+    let state = &runtime.driver.engine().unwrap().ctx.partitions.task_state;
+    assert!(state.directives.is_empty() && state.preserved_refs.is_empty());
+    assert!(state.current_step.is_none(), "refused whole: the allowed field is not applied either");
+    let (output, is_error) = tool_result_for(&runtime, "u1").expect("the call is answered");
+    assert!(is_error && output.contains("may not set preserved_refs, directives"), "{output}");
+}
+
+/// Plan task 1.7 · `kernel_text_tokens` counts what the kernel itself put in front of the model:
+/// a signal once, when the request that carried it commits, and every result the kernel answered
+/// a call with. Host tool output is not kernel text.
+#[test]
+fn kernel_text_tokens_count_signals_once_and_kernel_answers() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let count = |runtime: &Runtime, text: &str| u64::from(runtime.driver.engine().unwrap().ctx.engine.count(text));
+    let tokens = |runtime: &Runtime| runtime.driver.engine().unwrap().ctx.kernel_text_tokens;
+    runtime.driver.engine_mut().unwrap().ctx.push_signal("[NOTICE] counted once".to_string());
+
+    // The signal rides the next request; the host's search result is not kernel text.
+    let acted = runtime.submit(&provider_result(
+        "in-1",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("s1", "search", json!({"q": "a"}))],
+    ));
+    let tools = sole_effect(&acted).effect_id.clone();
+    let asked = runtime.submit(&tools_resolved("in-2", 1_700_000_003_000, &tools, &[("s1", "host output", false)]));
+    assert_eq!(tokens(&runtime), 0, "not committed yet, and host output does not count");
+    let next = sole_effect(&asked).effect_id.clone();
+
+    // That request commits (the signal counts once) and its call is refused by the kernel.
+    runtime.submit(&provider_result(
+        "in-3",
+        1_700_000_004_000,
+        &next,
+        vec![tool_call("u1", "update_plan", json!({"directives": ["x"]}))],
+    ));
+    let (refusal, _) = tool_result_for(&runtime, "u1").expect("answered");
+    let expected = count(&runtime, "[NOTICE] counted once") + count(&runtime, &refusal);
+    assert_eq!(tokens(&runtime), expected);
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+    assert_eq!(tokens(&restored), expected, "the count survives a restore");
 }

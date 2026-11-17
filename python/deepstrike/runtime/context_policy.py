@@ -9,7 +9,6 @@ PPM_SCALE = 1_000_000
 
 
 class ContextPressureThresholds(TypedDict):
-    snip: float
     micro: float
     collapse: float
     auto: float
@@ -26,8 +25,6 @@ class ContextPolicy(TypedDict, total=False):
     target_after_compress: float
     preserve_recent_turns: int
     renewal_carryover: float
-    collapse_old_assistant_narration: bool
-    idle_micro_compact_minutes: int
     delegated_tiers: DelegatedContextTiers
     #: Plan task 9.1 · tokens the model's notes may hold in the state turn (kernel default 600, on
     #: since 0.2.82); 0 turns the ``note`` tool off.
@@ -39,16 +36,13 @@ class ContextPolicyWire(TypedDict, total=False):
     target_after_compress_ppm: int
     preserve_recent_turns: int
     renewal_carryover_ppm: int
-    collapse_old_assistant_narration: bool
-    idle_micro_compact_minutes: int
     delegated_tiers: DelegatedContextTiers
     notes_budget_tokens: int
 
 
 DEFAULT_CONTEXT_POLICY: ContextPolicy = {
     "pressure_thresholds": {
-        "snip": 0.70,
-        "micro": 0.80,
+        "micro": 0.70,
         "collapse": 0.90,
         "auto": 0.95,
         "renewal": 0.98,
@@ -56,8 +50,6 @@ DEFAULT_CONTEXT_POLICY: ContextPolicy = {
     "target_after_compress": 0.65,
     "preserve_recent_turns": 2,
     "renewal_carryover": 0.05,
-    "collapse_old_assistant_narration": True,
-    "idle_micro_compact_minutes": 60,
 }
 
 
@@ -77,28 +69,23 @@ def normalize_context_policy(policy: ContextPolicy) -> ContextPolicyWire:
     thresholds = policy["pressure_thresholds"]
     pressure_ppm = {
         name: ratio_to_ppm(thresholds[name], f"pressure_thresholds.{name}")
-        for name in ("snip", "micro", "collapse", "auto", "renewal")
+        for name in ("micro", "collapse", "auto", "renewal")
     }
     ordered = list(pressure_ppm.values())
     if any(left >= right for left, right in zip(ordered, ordered[1:])):
         raise ValueError(
-            "context pressure thresholds must satisfy snip < micro < collapse < auto < renewal"
+            "context pressure thresholds must satisfy micro < collapse < auto < renewal"
         )
     target_ppm = ratio_to_ppm(policy["target_after_compress"], "target_after_compress")
-    if target_ppm >= pressure_ppm["snip"]:
-        raise ValueError("target_after_compress must be lower than the snip threshold")
+    if target_ppm >= pressure_ppm["micro"]:
+        raise ValueError("target_after_compress must be lower than the micro threshold")
     _integer_at_least(policy["preserve_recent_turns"], 1, "preserve_recent_turns")
-    _integer_at_least(policy["idle_micro_compact_minutes"], 0, "idle_micro_compact_minutes")
-    if not isinstance(policy["collapse_old_assistant_narration"], bool):
-        raise TypeError("collapse_old_assistant_narration must be boolean")
 
     wire: ContextPolicyWire = {
         "pressure_thresholds_ppm": pressure_ppm,
         "target_after_compress_ppm": target_ppm,
         "preserve_recent_turns": policy["preserve_recent_turns"],
         "renewal_carryover_ppm": ratio_to_ppm(policy["renewal_carryover"], "renewal_carryover"),
-        "collapse_old_assistant_narration": policy["collapse_old_assistant_narration"],
-        "idle_micro_compact_minutes": policy["idle_micro_compact_minutes"],
     }
     if "notes_budget_tokens" in policy:
         _integer_at_least(policy["notes_budget_tokens"], 0, "notes_budget_tokens")

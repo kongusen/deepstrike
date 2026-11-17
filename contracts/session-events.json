@@ -665,6 +665,7 @@
         "history_items",
         "history_items_omitted",
         "items",
+        "kernel_text_tokens",
         "notes_active",
         "notes_written",
         "parent_items_used",
@@ -722,12 +723,13 @@
         ],
         "parent_items_used": [{ "operation": "op-parent", "item": 4 }],
         "prefix_breaks": [
-          { "turn": 3, "cause": "narration", "kept_tokens": 1800, "lost_tokens": 260 },
+          { "turn": 3, "cause": "micro", "kept_tokens": 1800, "lost_tokens": 260 },
           { "turn": 5, "cause": "auto", "kept_tokens": 900, "lost_tokens": 3100 }
         ],
         "prefix_breaks_omitted": 1,
         "cache_tail_tokens": 840,
         "notes_written": 3,
+        "kernel_text_tokens": 120,
         "notes_active": 2
       }
     },
@@ -1463,25 +1465,6 @@
         "reason": "completed",
         "turns_used": 3,
         "total_tokens": 1200
-      }
-    },
-    {
-      "kind": "summary_upgraded",
-      "group": "context",
-      "sdks": [
-        "node",
-        "python",
-        "wasm"
-      ],
-      "required": [
-        "compressed_seq",
-        "summary"
-      ],
-      "optional": [],
-      "sample": {
-        "kind": "summary_upgraded",
-        "compressed_seq": 5,
-        "summary": "better summary"
       }
     },
     {

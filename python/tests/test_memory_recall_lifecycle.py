@@ -150,7 +150,7 @@ async def test_prefetched_hit_is_the_canonical_recall_turn_and_is_audited():
 
     recall_lines = [line for line in captured["knowledge"].split("\n") if line.startswith("[MEMORY ")]
     assert recall_lines == [
-        "[MEMORY record_id=record-t5 kind=reference trust=host_verified] t5 fixture",
+        "[MEMORY record_id=record-t5 name=record-t5 kind=reference trust=host_verified] t5 fixture",
     ]
     audited = [e.event for e in await runner._opts.session_log.read("t5-projection")
                if e.event.get("kind") == "memory_retrieval_result"]

@@ -123,7 +123,7 @@ use crate::scheduler::tcb::{
 use crate::scheduler::wait_index::WaitKey;
 use crate::signals::queue::QueuedSignalRuntimeState;
 use crate::signals::router::SignalRouterRuntimeState;
-use crate::syscall::{Disposition, Syscall as CoreSyscall};
+use crate::syscall::Syscall as CoreSyscall;
 use crate::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, LoopRoundSpec,
@@ -1309,10 +1309,18 @@ fn restore_context_vm(
     ctx.recall_top_k = state.recall_top_k;
     ctx.recall_due = state.recall_due;
     ctx.dependency_bodies = state.dependency_bodies.clone();
-    ctx.partitions.signals = state.signals.clone();
+    ctx.read_result_offered = state.read_result_offered;
+    ctx.kernel_text_tokens = state.kernel_text_tokens;
+    ctx.partitions.signals = state
+        .signals
+        .iter()
+        .enumerate()
+        .map(|(index, text)| crate::context::partitions::SignalItem {
+            text: text.clone(),
+            delivered: index < state.signals_delivered as usize,
+        })
+        .collect();
     ctx.partitions.task_state = restore_task_state(&state.task_state);
-    ctx.last_activity_ms = state.last_activity_ms.get();
-    ctx.last_compact_ms = state.last_compact_ms.map(WireU64::get);
     ctx.active_skills = state
         .active_skills
         .iter()
@@ -1474,12 +1482,8 @@ fn project_task_state(state: &TaskState) -> LogicalTaskState {
             })
             .collect(),
         current_step: state.current_step.map(|index| index as u32),
-        progress: state.progress.clone(),
-        scratchpad: state.scratchpad.clone(),
-        blocked_on: state.blocked_on.clone(),
         directives: state.directives.clone(),
         preserved_refs: state.preserved_refs.clone(),
-        recent_actions: state.recent_actions.clone(),
         compression_log: state
             .compression_log
             .iter()
@@ -1521,12 +1525,8 @@ fn restore_task_state(state: &LogicalTaskState) -> TaskState {
             })
             .collect(),
         current_step: state.current_step.map(|index| index as usize),
-        progress: state.progress.clone(),
-        scratchpad: state.scratchpad.clone(),
-        blocked_on: state.blocked_on.clone(),
         directives: state.directives.clone(),
         preserved_refs: state.preserved_refs.clone(),
-        recent_actions: state.recent_actions.clone(),
         compression_log: state
             .compression_log
             .iter()
@@ -1561,18 +1561,6 @@ fn authority(message: &str) -> SyscallRefusal {
         KernelFaultCode::InvalidAuthority,
         message.to_string(),
     ))
-}
-
-fn denial_reason(disposition: &Disposition, fallback: &str) -> String {
-    match disposition {
-        Disposition::Deny { stage, reason } => format!("{stage}: {reason}"),
-        Disposition::RateLimited { retry_after_ms } => {
-            format!("rate limited; retry after {retry_after_ms}ms")
-        }
-        Disposition::Gate { reason, .. } => format!("awaiting approval: {reason}"),
-        Disposition::Defer { slot } => format!("deferred at slot {slot}"),
-        Disposition::Allow => fallback.to_string(),
-    }
 }
 
 /// What the kernel authored for a pending `PersistMemory` effect (§22.13).
@@ -1841,7 +1829,7 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
         arguments: serde_json::Value,
     ) -> Result<T, SyscallRejection> {
         serde_json::from_value(arguments)
-            .map_err(|error| SyscallRejection::new(name, format!("malformed arguments: {error}")))
+            .map_err(|error| SyscallRejection::new(name, crate::context::voice::refusal::malformed_arguments(&error.to_string())))
     }
 
     match name {
@@ -1922,13 +1910,10 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
             let record_id = args.record_id.filter(|id| !id.trim().is_empty());
             match (&record_id, args.query.trim().is_empty()) {
                 (Some(_), false) => {
-                    return Err(SyscallRejection::new(
-                        name,
-                        "pass either query or record_id, not both",
-                    ));
+                    return Err(SyscallRejection::new(name, crate::context::voice::refusal::MEMORY_QUERY_AND_RECORD));
                 }
                 (None, true) => {
-                    return Err(SyscallRejection::new(name, "pass a query or a record_id"));
+                    return Err(SyscallRejection::new(name, crate::context::voice::refusal::MEMORY_QUERY_NEITHER));
                 }
                 _ => {}
             }
@@ -1950,7 +1935,7 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
             }
             let args: Args = decode(name, arguments)?;
             let handle_id = super::scalar::HandleId::new(args.call_id).map_err(|error| {
-                SyscallRejection::new(name, format!("malformed handle: {}", error.message))
+                SyscallRejection::new(name, crate::context::voice::refusal::malformed_handle(&error.message))
             })?;
             Ok(SyscallRequest::PageIn(super::syscall::PageInRequest {
                 handle_id,
@@ -2006,9 +1991,6 @@ fn core_task_update(update: &WireTaskUpdate) -> crate::context::task_state::Task
     crate::context::task_state::TaskUpdate {
         plan: update.plan.clone(),
         current_step: update.current_step.map(|step| step as usize),
-        progress: update.progress.clone(),
-        scratchpad: update.scratchpad.clone(),
-        blocked_on: update.blocked_on.clone(),
         preserved_refs: update.preserved_refs.clone(),
         directives: update.directives.clone(),
     }
@@ -2804,38 +2786,12 @@ fn loop_action_label(action: &LoopAction) -> &'static str {
 ///
 /// 下一请求信息最大化: each says what happened *and* where the consequence will show up, so the
 /// model's next turn does not have to guess whether a control-plane call took effect.
-fn syscall_ack(name: &str) -> &'static str {
-    match name {
-        "start_workflow" => {
-            "workflow accepted: its ready nodes are scheduled; each result arrives as that node \
-             completes"
-        }
-        "submit_workflow_nodes" => {
-            "nodes appended to the running workflow; each result arrives as that node completes"
-        }
-        "skill" => "skill activated: its guidance and tools are in this turn's context",
-        "update_plan" => "plan updated: the new state renders in [TASK STATE] from here on",
-        crate::context::notes::NOTE_TOOL_NAME => "note saved: it renders in [TASK STATE] from here on",
-        crate::context::manager::MEMORY_TOOL_NAME => {
-            "memory search issued: matching records are added to this conversation before your \
-             next turn"
-        }
-        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
-            "memory proposal submitted for review: it is not stored until the host accepts it, \
-             and its outcome is added to this conversation before your next turn"
-        }
-        crate::context::manager::READ_RESULT_TOOL_NAME => "page-in requested",
-        "send_message" | "publish_channel" => "local handle routed",
-        "receive_mailbox" | "receive_channel" | "read_object" => "local state returned",
-        _ => "accepted",
-    }
-}
 
 fn validate_ipc_labels(message_id: &str, kind: &str) -> Result<(), SyscallRefusal> {
     if message_id.is_empty() || kind.is_empty() || message_id.len() > 256 || kind.len() > 256 {
         return Err(SyscallRefusal::Rejected(SyscallRejection::new(
             "local_ipc",
-            "message_id and message_kind must contain 1..=256 bytes",
+            crate::context::voice::refusal::IPC_LABELS,
         )));
     }
     Ok(())
@@ -2858,27 +2814,13 @@ fn resolve_ipc_handle(
         .ok_or_else(|| {
             SyscallRefusal::Rejected(SyscallRejection::new(
                 "local_ipc",
-                format!("payload handle {handle_id} is not reachable by this operation"),
+                crate::context::voice::refusal::ipc_handle_unreachable(handle_id.as_str()),
             ))
         })
 }
 
 fn local_ipc_refusal(error: crate::scheduler::tcb::LocalIpcError) -> SyscallRefusal {
-    let reason = match error {
-        crate::scheduler::tcb::LocalIpcError::UnknownCaller => "unknown caller",
-        crate::scheduler::tcb::LocalIpcError::CallerTerminal => "caller is terminal",
-        crate::scheduler::tcb::LocalIpcError::UnknownRecipient => "unknown recipient",
-        crate::scheduler::tcb::LocalIpcError::ChannelSubscribersMismatch => {
-            "channel subscriber set is immutable"
-        }
-        crate::scheduler::tcb::LocalIpcError::NotSubscriber => "caller is not a channel subscriber",
-        crate::scheduler::tcb::LocalIpcError::Full => "IPC capacity is full",
-        crate::scheduler::tcb::LocalIpcError::Expired => "message TTL already expired",
-        crate::scheduler::tcb::LocalIpcError::ObjectConflict => {
-            "object id already names a different descriptor"
-        }
-    };
-    SyscallRefusal::Rejected(SyscallRejection::new("local_ipc", reason))
+    SyscallRefusal::Rejected(SyscallRejection::new("local_ipc", crate::context::voice::refusal::local_ipc(&error)))
 }
 
 fn local_ipc_outcome(accepted: bool) -> SyscallOutcome {
@@ -3236,25 +3178,18 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     });
     let context = &config.context_policy;
     let thresholds = &context.pressure_thresholds_ppm;
-    engine
-        .ctx
-        .apply_context_policy(&crate::context::policy::ContextPolicy {
-            pressure_thresholds_ppm: crate::context::policy::PressureThresholdsPpm {
-                snip: thresholds.snip.get(),
-                micro: thresholds.micro.get(),
-                collapse: thresholds.collapse.get(),
-                auto: thresholds.auto.get(),
-                renewal: thresholds.renewal.get(),
-            },
-            target_after_compress_ppm: context.target_after_compress_ppm.get(),
-            preserve_recent_turns: context.preserve_recent_turns,
-            renewal_carryover_ppm: context.renewal_carryover_ppm.get(),
-            collapse_old_assistant_narration: context.collapse_old_assistant_narration,
-            idle_micro_compact_minutes: context.idle_micro_compact_minutes,
-            delegate_tool_result_clearing: context.delegated_tiers.tool_result_clearing,
-            delegate_compaction: context.delegated_tiers.compaction,
-            notes_budget_tokens: context.notes_budget_tokens,
-        });
+    let mut tuned = engine.ctx.config.clone();
+    tuned.micro_threshold = thresholds.micro.as_ratio();
+    tuned.collapse_threshold = thresholds.collapse.as_ratio();
+    tuned.auto_threshold = thresholds.auto.as_ratio();
+    tuned.renewal_threshold = thresholds.renewal.as_ratio();
+    tuned.target_after_compress = context.target_after_compress_ppm.as_ratio();
+    tuned.preserve_recent_units = context.preserve_recent_turns as usize;
+    tuned.carryover_ratio = context.renewal_carryover_ppm.as_ratio();
+    tuned.delegate_tool_result_clearing = context.delegated_tiers.tool_result_clearing;
+    tuned.delegate_compaction = context.delegated_tiers.compaction;
+    tuned.notes_budget_tokens = context.notes_budget_tokens;
+    engine.ctx.apply_config(tuned);
     engine
         .ctx
         .set_prompt_budget(crate::context::config::PromptBudgetConfig {
@@ -3288,7 +3223,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         threshold: f64::from(execution.entropy_watch.threshold_ppm.get()) / 1_000_000.0,
         hysteresis: f64::from(execution.entropy_watch.hysteresis_ppm.get()) / 1_000_000.0,
         cooldown_turns: execution.entropy_watch.cooldown_turns,
-        notify_model: execution.entropy_watch.notify_model,
     });
     install_live_policies(&mut engine, config);
     engine
@@ -3319,8 +3253,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     );
     engine.ctx.config.knowledge_budget_ratio =
         config.context_policy.knowledge_budget_ppm.as_ratio();
-    engine.ctx.config.collapse_assistant_narration =
-        config.context_policy.collapse_old_assistant_narration;
     engine.tools = config.tool_catalog.iter().map(core_tool_schema).collect();
     engine
 }
@@ -3483,14 +3415,8 @@ fn skill_grant_attenuation_message(
     skill_name: &str,
     violations: &[crate::types::capability::Capability],
 ) -> String {
-    format!(
-        "skill {skill_name:?} declares capability grants that would widen the mounting agent's authority: {}",
-        violations
-            .iter()
-            .map(|capability| capability.id.0.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    let ids: Vec<&str> = violations.iter().map(|capability| capability.id.0.as_str()).collect();
+    crate::context::voice::refusal::skill_grants_widen(skill_name, &ids)
 }
 
 fn core_tool_schema(schema: &WireToolSchema) -> crate::types::message::ToolSchema {

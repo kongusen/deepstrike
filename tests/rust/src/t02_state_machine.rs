@@ -370,7 +370,7 @@ fn critical_signal_injects_interrupt_and_re_reasons() {
         .partitions
         .signals
         .iter()
-        .any(|t| t.contains("[INTERRUPT]"));
+        .any(|t| t.text.contains("[INTERRUPT]"));
     assert!(has_interrupt);
 }
 
@@ -399,14 +399,14 @@ fn high_urgency_signal_injects_note() {
         .partitions
         .signals
         .iter()
-        .any(|t| t.contains("[SIGNAL]"));
+        .any(|t| t.text.contains("[SIGNAL]"));
     assert!(has_signal_note);
     let has_interrupt = sm
         .ctx
         .partitions
         .signals
         .iter()
-        .any(|t| t.contains("[INTERRUPT]"));
+        .any(|t| t.text.contains("[INTERRUPT]"));
     assert!(!has_interrupt);
 }
 

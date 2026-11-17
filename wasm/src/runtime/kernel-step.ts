@@ -12,9 +12,6 @@ import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
 interface TaskUpdate {
   plan?: string[]
   currentStep?: number
-  progress?: string
-  scratchpad?: string
-  blockedOn?: string[]
   preservedRefs?: string[]
 }
 
@@ -315,9 +312,6 @@ export function taskUpdateToKernel(update: TaskUpdate): Record<string, unknown> 
   return {
     plan: update.plan,
     current_step: update.currentStep,
-    progress: update.progress,
-    scratchpad: update.scratchpad,
-    blocked_on: update.blockedOn,
     preserved_refs: update.preservedRefs,
   }
 }

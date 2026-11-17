@@ -2,7 +2,7 @@
  * Self-Harness nudge rules — declarative event→note rules (the runtime control-policy surface).
  *
  * A `NudgeRule` says "when this session event fires, push this note to the model". It generalizes the
- * two hard-coded precedents (EntropyWatch.notify_model, the RepeatFuse STOP text) into data the
+ * hard-coded precedent of the RepeatFuse STOP text into data the
  * self-harness loop can rewrite. `NudgeEngine` is a pure, clock-free class: `observe(event)` folds one
  * session event into its per-rule state and returns the notes that fired, which the runner lowers to
  * the `injectNote` signal channel. No I/O, no randomness — so the trigger matrix is exhaustively

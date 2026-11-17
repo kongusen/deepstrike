@@ -4,6 +4,159 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.84] - 2026-11-17
+
+Kernel distillation (`docs/plans/kernel-distillation.md`). Seven rule mechanisms of the context
+kernel and `update_plan`'s progress / blocked_on / scratchpad are deleted after a measured audit
+(DEC-13); memory headers carry the record's name; the kernel's text to the model lives in one
+module; one write-authority table. **Operations in flight under 0.2.83 cannot be resumed by this
+version** (see `MIGRATION-0.2.83-to-0.2.84.md`).
+
+### Added
+
+- `context_lifecycle_reported.kernel_text_tokens` (plan task 1.7): tokens of text the kernel
+  itself put in front of the model — signals, counted once when the request that carried them
+  committed, and every result the kernel answered a call with (acknowledgements, refusals, denials,
+  timeouts). Checkpointed; reported by `deepstrike-lab` as `kernel_text_tokens`. The kernel's words to the
+  model — notices, acknowledgements, the results it answers calls with, the notices it writes into
+  history, the `[TASK STATE]` block and the descriptions and parameters of its own tools — are now
+  built in one module, `context::voice`, so they can be read and swapped as a whole; nothing the
+  model sees changed. So are the reasons a refused kernel-tool call carries, the `note`
+  acknowledgements and the memory-policy validation messages; a reason that only passes on another
+  component's message (a validation fault, a host policy's denial) carries it unchanged.
+- `deepstrike-lab` reports what a model spends keeping its own memory (kernel-distillation plan
+  task 4.2): `recall_tokens` (the memory index lines recall injected), `memory_calls` (`note`,
+  `propose_memory` and `memory` calls per trial), `memory_turn_share` (turns that called nothing
+  else) and `memory_output_share` (the share of what the model wrote that went into those calls).
+  The benchmark harness records the tally as `memory_tools` on every trial; trials recorded before
+  it show "–" for the last three. None of them is in the default gate.
+- Benchmarks: `multi-session --drift K` (plan task 4.3) retires one of a sequence's two unwritten
+  rules at session K and puts another in its place, with oracles `stale_applied` and `overwrites` and
+  the records each session started with; the per-session summary prints recall tokens.
+
+### Fixed
+
+- The model could set task-state fields its `update_plan` schema does not show: `directives` (the
+  user's standing commands, rendered right after the goal), `preserved_refs` (results shielded from
+  compaction) and `scratchpad`. A call naming any of them is now refused whole with an error result
+  naming the fields the model may set (`plan`, `current_step`, `progress`, `blocked_on`); nothing is
+  applied and the run goes on. Host task updates still set every field. One write-authority table
+  (`context::authority`, plan task 1.6) now decides this and the host's knowledge writes.
+- `read_result` disappeared from the toolset while the model still had reason to call it. It was
+  offered only while some tool result was out of context, so paging a result back in, or a
+  compaction or renewal that made collapsed results resident again, withdrew it — even though its
+  own description tells the model to page through large content with `offset`. The model called it
+  again and the run ended with `invalid_authority`. Once offered in a run, `read_result` now stays
+  offered (checkpointed as `read_result_offered`); a toolset that no longer shrinks also stops
+  breaking the cache prefix.
+- A call to a kernel tool the turn did not expose (`memory`, `read_result`, `start_workflow`, …)
+  ended the run with `invalid_authority`. It is now refused like an unexposed host tool: an error
+  result "Tool '…' is not available on this turn. Choose from the tools listed in your tools
+  schema.", nothing executed, and the turn continues. Repeats of such a call count toward the
+  repeat fuse even for meta-tool names, so a model that keeps calling a tool it does not have is
+  denied and then ends `NoProgress` after a final report turn. The typical trigger was that final
+  report turn itself, which offers no tools.
+- A kernel restored from a checkpoint taken while a provider request was in flight sent that
+  request's signals (rollback notes, kernel notices) again on the next request; the original kernel
+  did not. Delivery is now recorded on each signal and checkpointed (`signals_delivered`).
+- When the repeat fuse or a gate answered a turn's host calls with synthetic results, the kernel
+  called the provider at once even if the same turn had issued a memory query or write; the next
+  request raced that work and was rendered without its result. The turn now waits for it.
+- WASM, Python and Rust: a turn that called `memory` and `propose_memory` together failed the run
+  ("must return one host action" / "kernel transition returned no action and no fault"), as Node
+  did. All four runners now take the kernel's next outstanding effect.
+- A `propose_memory` call in the same turn as a host tool could end the run on OpenAI-compatible
+  providers with "assistant tool_calls with no tool result". The proposal's outcome was written
+  into history as soon as the host settled it, ahead of the host tool's result; it now waits behind
+  the turn's tool results, as memory hits have since 0.2.80. This ended 3 of 128 live multi-session
+  sessions (1 of 48 in the 0.2.82 measurements).
+- Node: a turn that called `memory` and `propose_memory` together failed with "canonical kernel
+  transition must return one host action". The kernel publishes both effects in one step; the
+  runner ran the first and then found no action in the step that settled it. It now takes the
+  kernel's next outstanding effect.
+
+### Removed
+
+- **Seven rule mechanisms of the context kernel**, after the stage 2 audit of the kernel-distillation
+  plan (DEC-13). The current defaults were measured on DeepSeek, paired by task, against a
+  `minimal` variant with them stripped: no scenario was significantly better with them, and
+  knowledge-pressure was significantly worse (+76% price-weighted cost per correct answer). Correct
+  answers, defaults vs minimal: long-horizon 6/10 vs 4/10 (too few pairs to decide), ledger 28/30
+  vs 28/30, knowledge-pressure 25/30 vs 27/30, multi-session 34/48 vs 32/48, fan-out 12/12 vs
+  12/12. Most of their cost was prompt-cache breaks from narration collapse and per-turn collapse.
+  Deleted, and the kernel now behaves exactly as the measured `minimal` (verified on the goldens):
+  - narration collapse of old assistant turns (and `collapseOldAssistantNarration` /
+    `collapse_old_assistant_narration`, and the `narration` cache-break cause);
+  - utility-scored archiving: compaction archives the oldest units first, keeping only the
+    recent ones by rule;
+  - the `RuleSummarizer`: a compaction's log entry is one mechanical line, `archived N messages
+    (~T tokens); tools used: …`;
+  - idle time-decay (`idleMicroCompactMinutes` / `idle_micro_compact_minutes`, and the
+    `last_activity_ms` / `last_compact_ms` timestamps) and the separate snip tier: snip is the first
+    stage of a micro compaction, and the pressure thresholds lose `snip`;
+  - per-turn collapse of old tool results under pressure (`recompute_handle_residency`);
+  - the knowledge retention score's kind weights and lexical use: only strong references count;
+  - the state-turn footer (`did:` / `next:` / `must:` / `STOP:` / `→ focus:`) and the
+    `recent_actions` log behind it.
+- **Node `asyncSummarizer`** and the `AsyncSummarizer` type. The SDK no longer calls a model in the
+  background to rewrite archive summaries or page them back in (DEC-13: the summary is the kernel's
+  rule-based one).
+- **The `summary_upgraded` session event** (contract, Node / WASM / Python types and registries).
+  Session logs from earlier versions still load; a `summary_upgraded` event in them is ignored, and
+  replay uses the `compressed` event's rule-based summary.
+- **`update_plan`'s `progress` and `blocked_on`, and the task scratchpad** (stage 2 audit, M9:
+  measured with the other mechanisms in `minimal`, no significant gain). The model's `update_plan`
+  takes `plan` and `current_step`; `TaskUpdate` loses the three fields in every SDK, and the
+  `[TASK STATE]` block no longer renders them.
+- **`EntropyWatch.notify_model`**, the unmeasured second channel that turned an entropy alert into
+  a `[SIGNAL]` to the model. The alert goes to the host only.
+- Rust: values of the item table that nothing produced or read (plan task 1.9):
+  `ItemOrigin::{TaskState, Signal, Note}` (task state, signals and notes are not stored as items),
+  `ItemScope::Agent`, `Fidelity::Structured` and `Lease::SingleUse`. The lifecycle report's `origin`
+  and `fidelity` types in Node, WASM and Python lose the same values; no report ever carried them.
+- `ContextConfig.autocompact_buffer` and `ContextConfig::autocompact_threshold()` (never read).
+- `ContextConfig.verbose_control_notes` and the `[SYSTEM] …` verbose rollback / rejection notes.
+- Rust: `EvictionOp::Snip` and `EvictionOp::AutoCompact` lose their fields (the executor ignored
+  them); `plan_eviction` drops its `preserve_turns` argument;
+  `ContextManager::plan_compaction_params` is replaced by `compaction_target_tokens`.
+
+### Changed
+
+- The micro threshold defaults to 0.70 (was 0.80): micro compaction now starts where the deleted
+  snip tier did, which is how the measured `minimal` variant behaved.
+- A memory the model proposes leads back to where it came from (kernel-distillation plan task
+  4.1). The kernel resolves the proposal's `evidence_refs` against the run's history while the
+  results are still there: the record keeps the model's references as written, followed by
+  `call:<id>` for each tool result they resolve to and `proposal:<call id>` for the
+  `propose_memory` call. Node and WASM now also set `provenance.session_id`, as Python and Rust
+  already did. From a stored record, the session log's `llm_completed` holding that call and the
+  `tool_completed` holding those results are found by id. Nothing the model sees changes.
+- **Memory headers carry the record's name** (kernel-distillation plan task 4.4; see
+  `MIGRATION-0.2.83-to-0.2.84.md`). A recalled index line is now
+  `[MEMORY record_id=… name=… kind=… trust=…] <summary>`, and a search hit or a record read with
+  `memory(record_id)` is `[MEMORY record_ref=… name=… kind=…] <content>`. `propose_memory` asks the
+  model to reuse an existing name to update a record, and the name was never in view, so a
+  correction became a second record beside the first. Measured on DeepSeek, paired by session:
+  with one rule replaced mid-sequence (`multi-session --drift 4`, 80 sessions) proposals that
+  updated a record went from 19% to 82%, records per sequence from 4.9 to 1.3, correct sessions
+  from 30 to 37 and price-weighted cost down 11%; without drift (48 sessions) correct 33 → 33 and
+  cost down 10%.
+- `ContextConfig::default().notes_budget_tokens` is `DEFAULT_NOTES_BUDGET_TOKENS` (600), matching
+  the wire default. Code that builds a `ContextManager` directly now gets the `note` tool; set the
+  field to `0` to turn it off.
+- Rust: `ContextPartitions.signals` holds `SignalItem { text, delivered }` instead of `String`
+  (plan task 1.1): a signal is marked when a request carries it and leaves when that request
+  commits, and a checkpoint records how many are marked.
+- One count of recent history units protects them from both render and compaction: the wire's
+  `context_policy.preserve_recent_turns` now also sets what render never drops (it was a separate
+  `ContextConfig.preserve_recent_units`, fixed at 2). Both defaulted to 2, so only a host that
+  sets the wire value differently sees a change. Rust: `ContextConfig.preserve_recent_turns` is
+  gone (use `preserve_recent_units`), and `context::policy::ContextPolicy`, a second copy of the
+  wire policy with its own validation, is gone; `ContextManager::apply_context_policy` is
+  `apply_config(ContextConfig)`.
+- `CollapseCompactor` and `AutoCompactor` (identical bodies) are one `ArchiveCompactor`; the
+  pipeline still labels the two stages `context_collapse` and `auto_compact`.
+
 ## [0.2.83] - 2026-11-14
 
 ### Changed

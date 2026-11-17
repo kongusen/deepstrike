@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:ea89d7c719f1d63aa3a617e36c63232735d4a940d1f75b5bfc0c6ba1119992ae",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:8e72d9063f01f06d4b94b8a7e0e27b6fbee1af68ef113bf602545c296f88dd32",
+    "checkpoint_digest": "sha256:22a48cd03e1dbf4abfc85d5450905d2803fc3b1540e00c5bf5b6a3b1653117e2",
     "covered_transaction_head_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -18,8 +18,6 @@
         "knowledge_reference_step": 0,
         "knowledge_regret": 0,
         "knowledge_wasted_tokens": 0,
-        "last_activity_ms": "0",
-        "last_compact_ms": null,
         "messages": [],
         "next_handle_id": 0,
         "partition_tokens": {
@@ -32,7 +30,6 @@
         "signals": [],
         "system_measurements": [],
         "task_state": {
-          "blocked_on": [],
           "compression_log": [],
           "compression_log_dropped": "0",
           "criteria": [],
@@ -40,10 +37,7 @@
           "directives": [],
           "goal": "",
           "plan": [],
-          "preserved_refs": [],
-          "progress": "",
-          "recent_actions": [],
-          "scratchpad": ""
+          "preserved_refs": []
         }
       },
       "scheduler": {
@@ -94,17 +88,14 @@
         "resolved_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -120,7 +111,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -213,7 +203,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:71bdefac5444d915aa6f6650cdc2503b38dd43d1babfceca2a0c2c2e4b3b4ef2",
+    "state_digest": "sha256:f8c921effbd0bca6c7da2ecf8107b5d328bcff004119c75e9259576ff4d0e2b0",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"

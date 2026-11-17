@@ -228,8 +228,6 @@ pub struct EntropyWatchPolicy {
     pub hysteresis_ppm: Option<Ppm>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooldown_turns: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_model: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -327,10 +325,6 @@ pub struct ContextPolicy {
     pub preserve_recent_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renewal_carryover_ppm: Option<Ppm>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collapse_old_assistant_narration: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idle_micro_compact_minutes: Option<u32>,
     /// Share of the context budget the knowledge partition may hold. `0` disables the partition's
     /// budget entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -353,8 +347,8 @@ pub struct ContextPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DelegatedContextTiers {
-    /// Old tool results are cleared by the provider: no idle decay, snip, micro-compact or
-    /// collapsed-preview projection in the kernel.
+    /// Old tool results are cleared by the provider: no micro-compact or collapsed-preview
+    /// projection in the kernel.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_result_clearing: bool,
     /// History is compacted by the provider: no context collapse or auto-compact in the kernel.
@@ -373,7 +367,6 @@ impl DelegatedContextTiers {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PressureThresholds {
-    pub snip: Ppm,
     pub micro: Ppm,
     pub collapse: Ppm,
     pub auto: Ppm,
@@ -673,7 +666,6 @@ pub struct ResolvedEntropyWatch {
     pub threshold_ppm: Ppm,
     pub hysteresis_ppm: Ppm,
     pub cooldown_turns: u32,
-    pub notify_model: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -720,8 +712,6 @@ pub struct ResolvedContextPolicy {
     pub target_after_compress_ppm: Ppm,
     pub preserve_recent_turns: u32,
     pub renewal_carryover_ppm: Ppm,
-    pub collapse_old_assistant_narration: bool,
-    pub idle_micro_compact_minutes: u32,
     pub knowledge_budget_ppm: Ppm,
     pub prompt_budget: PromptBudget,
     /// Absent on the wire when nothing is delegated, so every configuration that predates
@@ -894,19 +884,13 @@ impl ResolvedMemoryPolicy {
             return Ok(());
         }
         if name.trim().is_empty() {
-            return Err("memory name must not be empty".to_string());
+            return Err(crate::context::voice::refusal::MEMORY_NAME_EMPTY.to_string());
         }
         if name.chars().count() > self.max_name_length as usize {
-            return Err(format!(
-                "memory name exceeds {} characters",
-                self.max_name_length
-            ));
+            return Err(crate::context::voice::refusal::memory_name_too_long(self.max_name_length));
         }
         if content_bytes > self.max_content_bytes as usize {
-            return Err(format!(
-                "memory content exceeds {} bytes",
-                self.max_content_bytes
-            ));
+            return Err(crate::context::voice::refusal::memory_content_too_large(self.max_content_bytes));
         }
         Ok(())
     }
@@ -966,7 +950,6 @@ impl ConfigDefaults {
                         threshold_ppm: Ppm::from_ppm_const(650_000),
                         hysteresis_ppm: Ppm::from_ppm_const(100_000),
                         cooldown_turns: 4,
-                        notify_model: false,
                     },
                 },
                 governance_policy: ResolvedGovernancePolicy {
@@ -996,8 +979,7 @@ impl ConfigDefaults {
                 },
                 context_policy: ResolvedContextPolicy {
                     pressure_thresholds_ppm: PressureThresholds {
-                        snip: Ppm::from_ppm_const(700_000),
-                        micro: Ppm::from_ppm_const(800_000),
+                        micro: Ppm::from_ppm_const(700_000),
                         collapse: Ppm::from_ppm_const(900_000),
                         auto: Ppm::from_ppm_const(950_000),
                         renewal: Ppm::from_ppm_const(980_000),
@@ -1005,8 +987,6 @@ impl ConfigDefaults {
                     target_after_compress_ppm: Ppm::from_ppm_const(650_000),
                     preserve_recent_turns: 2,
                     renewal_carryover_ppm: Ppm::from_ppm_const(50_000),
-                    collapse_old_assistant_narration: true,
-                    idle_micro_compact_minutes: 60,
                     knowledge_budget_ppm: Ppm::from_ppm_const(250_000),
                     prompt_budget: PromptBudget {
                         prompt_overhead_tokens: 0,
@@ -1542,9 +1522,6 @@ fn resolve_execution(
             if let Some(value) = watch.cooldown_turns {
                 resolved.entropy_watch.cooldown_turns = value;
             }
-            if let Some(value) = watch.notify_model {
-                resolved.entropy_watch.notify_model = value;
-            }
         }
     }
 
@@ -1805,12 +1782,6 @@ fn resolve_context(
         if let Some(value) = policy.renewal_carryover_ppm {
             resolved.renewal_carryover_ppm = value;
         }
-        if let Some(value) = policy.collapse_old_assistant_narration {
-            resolved.collapse_old_assistant_narration = value;
-        }
-        if let Some(value) = policy.idle_micro_compact_minutes {
-            resolved.idle_micro_compact_minutes = value;
-        }
         if let Some(value) = policy.knowledge_budget_ppm {
             resolved.knowledge_budget_ppm = value;
         }
@@ -1826,23 +1797,22 @@ fn resolve_context(
     }
 
     let t = &resolved.pressure_thresholds_ppm;
-    if !(t.snip < t.micro && t.micro < t.collapse && t.collapse < t.auto && t.auto < t.renewal) {
+    if !(t.micro < t.collapse && t.collapse < t.auto && t.auto < t.renewal) {
         return Err(invalid(format!(
             "context_policy pressure thresholds must strictly increase \
-             (snip {} < micro {} < collapse {} < auto {} < renewal {})",
-            t.snip.get(),
+             (micro {} < collapse {} < auto {} < renewal {})",
             t.micro.get(),
             t.collapse.get(),
             t.auto.get(),
             t.renewal.get()
         )));
     }
-    if resolved.target_after_compress_ppm >= t.snip {
+    if resolved.target_after_compress_ppm >= t.micro {
         return Err(invalid(format!(
-            "context_policy.target_after_compress_ppm ({}) must be below the snip threshold ({}); \
+            "context_policy.target_after_compress_ppm ({}) must be below the micro threshold ({}); \
              otherwise a compression pass can never reach its own target",
             resolved.target_after_compress_ppm.get(),
-            t.snip.get()
+            t.micro.get()
         )));
     }
     if resolved.preserve_recent_turns == 0 {
@@ -2225,7 +2195,6 @@ mod tests {
                     threshold_ppm: Some(ppm(650_000)),
                     hysteresis_ppm: Some(ppm(100_000)),
                     cooldown_turns: Some(3),
-                    notify_model: Some(true),
                 }),
             }),
             governance_policy: Some(GovernancePolicy {
@@ -2279,7 +2248,6 @@ mod tests {
             }),
             context_policy: Some(ContextPolicy {
                 pressure_thresholds_ppm: Some(PressureThresholds {
-                    snip: ppm(700_000),
                     micro: ppm(800_000),
                     collapse: ppm(900_000),
                     auto: ppm(950_000),
@@ -2288,8 +2256,6 @@ mod tests {
                 target_after_compress_ppm: Some(ppm(650_000)),
                 preserve_recent_turns: Some(3),
                 renewal_carryover_ppm: Some(ppm(50_000)),
-                collapse_old_assistant_narration: Some(true),
-                idle_micro_compact_minutes: Some(45),
                 knowledge_budget_ppm: Some(ppm(250_000)),
                 prompt_budget: Some(PromptBudget {
                     prompt_overhead_tokens: 1_200,
@@ -2784,18 +2750,18 @@ mod tests {
                         .pressure_thresholds_ppm
                         .as_mut()
                         .unwrap()
-                        .micro = ppm(600_000);
+                        .micro = ppm(950_000);
                 }),
                 "strictly increase",
             ),
             (
-                "compression target must sit below snip",
+                "compression target must sit below micro",
                 Box::new(|config| {
                     config
                         .context_policy
                         .as_mut()
                         .unwrap()
-                        .target_after_compress_ppm = Some(ppm(750_000));
+                        .target_after_compress_ppm = Some(ppm(850_000));
                 }),
                 "target_after_compress_ppm",
             ),
@@ -2926,11 +2892,11 @@ mod tests {
             .context_policy
             .as_mut()
             .unwrap()
-            .target_after_compress_ppm = Some(ppm(750_000));
+            .target_after_compress_ppm = Some(ppm(850_000));
         let rejection = config.resolve(&defaults()).expect_err("must reject");
         assert!(
             rejection.message.contains("target_after_compress_ppm")
-                && rejection.message.contains("snip"),
+                && rejection.message.contains("micro"),
             "unhelpful message: {}",
             rejection.message
         );

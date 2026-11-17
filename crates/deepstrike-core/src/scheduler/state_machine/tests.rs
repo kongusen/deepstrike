@@ -252,7 +252,7 @@ fn critical_signal_goes_to_signals_not_history() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[INTERRUPT]"))
+            .any(|s| s.text.contains("[INTERRUPT]"))
     );
     assert!(
         !sm.ctx
@@ -433,7 +433,7 @@ fn coalesced_queue_entry_renders_its_deterministic_count() {
             .partitions
             .signals
             .iter()
-            .any(|summary| summary.contains("[x2] batched update"))
+            .any(|summary| summary.text.contains("[x2] batched update"))
     );
 }
 
@@ -589,7 +589,7 @@ fn high_urgency_interrupt_does_not_preempt() {
             .partitions
             .signals
             .iter()
-            .any(|signal| signal.contains("handle soon"))
+            .any(|signal| signal.text.contains("handle soon"))
     );
     assert!(
         !sm.ctx
@@ -876,6 +876,8 @@ fn top_level_run_capability_filter_gates_exposed_tools() {
 #[test]
 fn top_level_run_without_spec_exposes_no_task_tools() {
     let mut sm = sm();
+    // Task-tool exposure only: the `note` meta tool is out of scope here.
+    sm.ctx.config.notes_budget_tokens = 0;
     sm.tools = vec![
         make_tool_schema("read"),
         make_tool_schema("write"),
@@ -1217,6 +1219,8 @@ fn exposure_baseline_empty_and_none_are_both_minimal() {
 fn exposure_baseline_narrows_even_without_a_ceiling() {
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
     let mut sm = sm();
+    // Task-tool exposure only: the `note` meta tool is out of scope here.
+    sm.ctx.config.notes_budget_tokens = 0;
     sm.tools = vec![
         make_tool_schema("read"),
         make_tool_schema("write"),
@@ -2318,7 +2322,7 @@ fn rollback_note_is_concise_by_default() {
         tool_name: "run_tests".to_string(),
         error: "exit code 1".to_string(),
     };
-    let note = crate::scheduler::rollback::build_rollback_note(&reason, false);
+    let note = crate::scheduler::rollback::build_rollback_note(&reason);
     assert!(
         !note.contains("[SYSTEM]"),
         "default note must not contain [SYSTEM]: {note}"
@@ -2330,32 +2334,13 @@ fn rollback_note_is_concise_by_default() {
 }
 
 #[test]
-fn rollback_note_is_verbose_when_opted_in() {
-    let reason = RollbackReason::Timeout;
-    let note = crate::scheduler::rollback::build_rollback_note(&reason, true);
-    assert!(
-        note.starts_with("[SYSTEM] Transaction rollback:"),
-        "verbose note must use internal format: {note}"
-    );
-}
-
-#[test]
 fn control_rejection_note_never_claims_a_transaction_rollback() {
     let concise = crate::scheduler::rollback::build_control_rejection_note(
         "start_workflow",
         "quota exhausted",
-        false,
     );
     assert!(concise.contains("start_workflow"));
     assert!(!concise.to_ascii_lowercase().contains("rollback"));
-
-    let verbose = crate::scheduler::rollback::build_control_rejection_note(
-        "start_workflow",
-        "quota exhausted",
-        true,
-    );
-    assert!(verbose.starts_with("[SYSTEM] Control request rejected:"));
-    assert!(!verbose.contains("Transaction rollback"));
 }
 
 // ─── Governance denial commits as a visible error result ─────────────────────────────
@@ -3920,7 +3905,7 @@ fn quarantined_node_output_is_labeled_crossing_into_trusted_context() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[quarantined sub-agent wf-node0]")),
+            .any(|s| s.text.contains("[quarantined sub-agent wf-node0]")),
         "quarantined output is labeled untrusted-origin on crossing: {:?}",
         sm.ctx.partitions.signals
     );
@@ -4664,7 +4649,7 @@ fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
                 .partitions
                 .signals
                 .iter()
-                .any(|s| s.to_lowercase().contains("quarantine")),
+                .any(|s| s.text.to_lowercase().contains("quarantine")),
         "quarantine denial is surfaced"
     );
 }
@@ -5191,7 +5176,7 @@ fn criteria_gate_injects_one_self_check_before_completed() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[CRITERIA CHECK]") && s.contains("tests pass")),
+            .any(|s| s.text.contains("[CRITERIA CHECK]") && s.text.contains("tests pass")),
         "self-check must land in signals: {:?}",
         sm.ctx.partitions.signals
     );
@@ -5481,7 +5466,7 @@ fn pace_stop_routes_through_criteria_gate_then_honors_the_redecision() {
             .partitions
             .signals
             .iter()
-            .any(|s| s.contains("[CRITERIA CHECK]"))
+            .any(|s| s.text.contains("[CRITERIA CHECK]"))
     );
     assert!(
         sm.take_observations()
@@ -5674,45 +5659,8 @@ fn sm2_with_watch(threshold: f64, cooldown_turns: u32) -> LoopStateMachine {
         threshold,
         hysteresis: 0.1,
         cooldown_turns,
-        notify_model: false,
     });
     sm
-}
-
-#[test]
-fn entropy_watch_notify_model_routes_a_heartbeat_signal() {
-    let mut sm = sm2_with_watch(0.2, 0);
-    let mut cfg = sm.entropy_watch_config();
-    cfg.notify_model = true;
-    sm.set_entropy_watch(cfg);
-    sm.start(RuntimeTask::new("loop badly"));
-
-    let mut saw_alert = false;
-    for _ in 0..4 {
-        let obs = entropy_drive_turn(&mut sm, serde_json::json!({"same": true}), true);
-        if obs
-            .iter()
-            .any(|o| matches!(o, KernelObservation::EntropyAlert { .. }))
-        {
-            saw_alert = true;
-            // The internal signal is not a leased host delivery, but still traverses the
-            // attention policy and reaches the model channel.
-            assert!(
-                !obs.iter()
-                    .any(|o| matches!(o, KernelObservation::SignalDeliveryDisposed { .. }))
-            );
-            assert!(
-                sm.ctx
-                    .partitions
-                    .signals
-                    .iter()
-                    .any(|s| s.contains("[entropy]")),
-                "entropy directive must land in signals: {:?}",
-                sm.ctx.partitions.signals
-            );
-        }
-    }
-    assert!(saw_alert, "low threshold + disordered run must alert");
 }
 
 #[test]

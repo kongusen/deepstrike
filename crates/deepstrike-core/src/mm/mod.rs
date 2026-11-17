@@ -72,7 +72,7 @@ mod tests {
             MemoryTierHint::Semantic
         );
         assert_eq!(
-            tier_hint_for_compress(PressureAction::SnipCompact),
+            tier_hint_for_compress(PressureAction::MicroCompact),
             MemoryTierHint::Durable
         );
     }

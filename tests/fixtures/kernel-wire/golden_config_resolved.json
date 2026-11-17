@@ -7,16 +7,13 @@
       "tokens": "500000"
     },
     "context_policy": {
-      "collapse_old_assistant_narration": true,
-      "idle_micro_compact_minutes": 45,
       "knowledge_budget_ppm": 250000,
       "preserve_recent_turns": 3,
       "pressure_thresholds_ppm": {
         "auto": 950000,
         "collapse": 900000,
         "micro": 800000,
-        "renewal": 980000,
-        "snip": 700000
+        "renewal": 980000
       },
       "prompt_budget": {
         "output_reserve_tokens": 4000,
@@ -32,7 +29,6 @@
         "cooldown_turns": 3,
         "enabled": true,
         "hysteresis_ppm": 100000,
-        "notify_model": true,
         "threshold_ppm": 650000
       },
       "max_context_tokens": 200000,
@@ -217,16 +213,13 @@
       "tokens": "500000"
     },
     "context_policy": {
-      "collapse_old_assistant_narration": true,
-      "idle_micro_compact_minutes": 45,
       "knowledge_budget_ppm": 250000,
       "preserve_recent_turns": 3,
       "pressure_thresholds_ppm": {
         "auto": 950000,
         "collapse": 900000,
         "micro": 800000,
-        "renewal": 980000,
-        "snip": 700000
+        "renewal": 980000
       },
       "prompt_budget": {
         "output_reserve_tokens": 4000,
@@ -243,7 +236,6 @@
         "cooldown_turns": 3,
         "enabled": true,
         "hysteresis_ppm": 100000,
-        "notify_model": true,
         "threshold_ppm": 650000
       },
       "max_context_tokens": 200000,

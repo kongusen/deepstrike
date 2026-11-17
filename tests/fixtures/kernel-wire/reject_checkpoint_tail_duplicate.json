@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:90a5970eb22027f54d523d2f679c21146dda714c19cc13eb75728b0282b5d78a",
+    "checkpoint_digest": "sha256:827a08c4dd81a100d2645629752ca66c400f88f521ad4770dd0038099f382aa6",
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -18,8 +18,6 @@
         "knowledge_reference_step": 0,
         "knowledge_regret": 0,
         "knowledge_wasted_tokens": 0,
-        "last_activity_ms": "0",
-        "last_compact_ms": null,
         "messages": [],
         "next_handle_id": 0,
         "partition_tokens": {
@@ -32,7 +30,6 @@
         "signals": [],
         "system_measurements": [],
         "task_state": {
-          "blocked_on": [],
           "compression_log": [],
           "compression_log_dropped": "0",
           "criteria": [],
@@ -40,10 +37,7 @@
           "directives": [],
           "goal": "",
           "plan": [],
-          "preserved_refs": [],
-          "progress": "",
-          "recent_actions": [],
-          "scratchpad": ""
+          "preserved_refs": []
         }
       },
       "scheduler": {
@@ -94,17 +88,14 @@
         "resolved_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -120,7 +111,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -213,8 +203,8 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:71bdefac5444d915aa6f6650cdc2503b38dd43d1babfceca2a0c2c2e4b3b4ef2",
-    "tail_digest": "sha256:97e11119f9d0c5cdb1e693175fac49ae8e784c1a7dce5babc4c9805a4d4ec5d8",
+    "state_digest": "sha256:f8c921effbd0bca6c7da2ecf8107b5d328bcff004119c75e9259576ff4d0e2b0",
+    "tail_digest": "sha256:c2becc5821a4e321ec37b85b86ddbe08e87bb6078afbb3014e9b3af4398f87a8",
     "tail_inputs": [
       {
         "input": {
@@ -222,17 +212,14 @@
             "config": {
               "budget_grant": null,
               "context_policy": {
-                "collapse_old_assistant_narration": true,
-                "idle_micro_compact_minutes": 60,
                 "knowledge_budget_ppm": 250000,
                 "notes_budget_tokens": 600,
                 "preserve_recent_turns": 2,
                 "pressure_thresholds_ppm": {
                   "auto": 950000,
                   "collapse": 900000,
-                  "micro": 800000,
-                  "renewal": 980000,
-                  "snip": 700000
+                  "micro": 700000,
+                  "renewal": 980000
                 },
                 "prompt_budget": {
                   "output_reserve_tokens": 0,
@@ -248,7 +235,6 @@
                   "cooldown_turns": 4,
                   "enabled": false,
                   "hysteresis_ppm": 100000,
-                  "notify_model": false,
                   "threshold_ppm": 650000
                 },
                 "max_context_tokens": 128000,
@@ -350,17 +336,14 @@
             "config": {
               "budget_grant": null,
               "context_policy": {
-                "collapse_old_assistant_narration": true,
-                "idle_micro_compact_minutes": 60,
                 "knowledge_budget_ppm": 250000,
                 "notes_budget_tokens": 600,
                 "preserve_recent_turns": 2,
                 "pressure_thresholds_ppm": {
                   "auto": 950000,
                   "collapse": 900000,
-                  "micro": 800000,
-                  "renewal": 980000,
-                  "snip": 700000
+                  "micro": 700000,
+                  "renewal": 980000
                 },
                 "prompt_budget": {
                   "output_reserve_tokens": 0,
@@ -376,7 +359,6 @@
                   "cooldown_turns": 4,
                   "enabled": false,
                   "hysteresis_ppm": 100000,
-                  "notify_model": false,
                   "threshold_ppm": 650000
                 },
                 "max_context_tokens": 128000,

@@ -52,7 +52,7 @@ const runtime = (journal, id) => new CanonicalRunnerRuntime(new CanonicalKernel(
   const clear = journal.clearOutboundEnvelope.bind(journal)
   journal.stageOutboundEnvelope = async (op, json) => { events.push("stage"); await new Promise(r => setTimeout(r, 5)); return stage(op, json) }
   journal.clearOutboundEnvelope = async op => { events.push("clear"); return clear(op) }
-  const update = progress => rt.host.transition({ kind: "host_control", command: { kind: "update_task", update: { progress } } })
+  const update = step => rt.host.transition({ kind: "host_control", command: { kind: "update_task", update: { plan: [step] } } })
   await Promise.all([update("a"), update("b")])
   assert.deepEqual(events, ["stage", "clear", "stage", "clear"])
   ok("P2-3 two transitions of one operation never share the outbound slot")

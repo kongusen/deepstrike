@@ -559,7 +559,7 @@ longer aborted with `ResourceLimitExceeded`:
 - A child request hitting DEC-3 is still a fault.
 
 There is no batch submission; one at a time is enforced by the tool description (the `propose_memory`
-description in `context/manager.rs`, which also says what to record and what not to, and to search
+description in `context/voice.rs`, which also says what to record and what not to, and to search
 with `memory` first and reuse the name).
 
 Not done:
@@ -573,7 +573,7 @@ Not done:
 ## 16. Recall becomes index push + on-demand pull (2026-10-30)
 
 Host prefetch (first-turn history and renewal keyed knowledge) no longer injects record bodies; each
-hit pushes one index line: `[MEMORY record_id=<id> kind=<kind> trust=<trust>] <summary>`, where the
+hit pushes one index line: `[MEMORY record_id=<id> name=<name> kind=<kind> trust=<trust>] <summary>`, where the
 summary is the `description`, or the `name` when that is empty. The four SDKs share two fixed
 vectors: record-v with a description gives `… how briefs are laid out`, and with a blank
 description gives `… fact`.
@@ -591,7 +591,7 @@ The model reads the full record with the new `record_id` parameter of the `memor
   as not found (empty); the same retrieval switch as search applies.
 - The kernel accepts only exactly the requested record or no result; any other record or multiple
   results are rejected as `UnexpectedEffectOutcome` with no state change, and the effect stays
-  pending. A hit is written into history as `[MEMORY record_ref=<id> kind=<kind>] <content>`, the
+  pending. A hit is written into history as `[MEMORY record_ref=<id> name=<name> kind=<kind>] <content>`, the
   same as a search hit, and the recall lifecycle is derived as usual; with no result,
   `[MEMORY record_ref=<id>] not found: …` is written so the model knows the index line is stale.
 - The `query` field of the `memory_queried` observation records a point lookup as `record_id=<id>`;

@@ -72,8 +72,8 @@ async def test_p2_3_two_transitions_of_one_operation_never_share_the_outbound_sl
 
   journal.stage_outbound_envelope = staged
   journal.clear_outbound_envelope = cleared
-  update = lambda progress: rt.host.transition(  # noqa: E731
-    {"kind": "host_control", "command": {"kind": "update_task", "update": {"progress": progress}}})
+  update = lambda step: rt.host.transition(  # noqa: E731
+    {"kind": "host_control", "command": {"kind": "update_task", "update": {"plan": [step]}}})
   await asyncio.gather(update("a"), update("b"))
   assert events == ["stage", "clear", "stage", "clear"]
 

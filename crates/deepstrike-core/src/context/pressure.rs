@@ -13,7 +13,6 @@ use super::token_engine::ContextTokenEngine;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PressureAction {
     None,
-    SnipCompact,
     MicroCompact,
     ContextCollapse,
     AutoCompact,
@@ -21,11 +20,10 @@ pub enum PressureAction {
 
 impl PressureAction {
     /// Canonical snake_case label — the single source for compaction-event action strings and the
-    /// `[Compressed: {label}]` summary marker (used by both the summarizer and the compaction log).
+    /// compaction-log entry.
     pub fn label(self) -> &'static str {
         match self {
             PressureAction::None => "none",
-            PressureAction::SnipCompact => "snip_compact",
             PressureAction::MicroCompact => "micro_compact",
             PressureAction::ContextCollapse => "context_collapse",
             PressureAction::AutoCompact => "auto_compact",
@@ -81,8 +79,6 @@ impl PressureMonitor {
             PressureAction::ContextCollapse
         } else if rho > self.config.micro_threshold {
             PressureAction::MicroCompact
-        } else if rho > self.config.snip_threshold {
-            PressureAction::SnipCompact
         } else {
             PressureAction::None
         }
@@ -110,10 +106,6 @@ mod tests {
         let monitor = PressureMonitor::new(100, cfg.clone());
         assert_eq!(monitor.recommend(0.50), PressureAction::None);
         assert_eq!(
-            monitor.recommend(cfg.snip_threshold + 0.01),
-            PressureAction::SnipCompact
-        );
-        assert_eq!(
             monitor.recommend(cfg.micro_threshold + 0.01),
             PressureAction::MicroCompact
         );
@@ -130,11 +122,11 @@ mod tests {
     #[test]
     fn custom_thresholds_respected() {
         let cfg = ContextConfig {
-            snip_threshold: 0.50,
+            micro_threshold: 0.50,
             ..Default::default()
         };
         let monitor = PressureMonitor::new(100, cfg);
-        assert_eq!(monitor.recommend(0.51), PressureAction::SnipCompact);
+        assert_eq!(monitor.recommend(0.51), PressureAction::MicroCompact);
         assert_eq!(monitor.recommend(0.49), PressureAction::None);
     }
 

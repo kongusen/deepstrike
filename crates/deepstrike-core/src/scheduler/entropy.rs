@@ -30,12 +30,9 @@ const ROLLBACK_SATURATION: f64 = 3.0;
 /// syscall/config projection.
 /// Opt-in threshold watch over the per-turn entropy score (③). When the score crosses
 /// `threshold` the kernel emits an `EntropyAlert` observation — at most once per crossing
-/// (hysteresis re-arm) and never more often than `cooldown_turns`. With `notify_model`
-/// the alert is *also* routed through the kernel's own signal dispatch as a
-/// `Heartbeat/Alert` [`RuntimeSignal`](crate::types::signal::RuntimeSignal), so the model
-/// sees a durable `[SIGNAL]` directive at the next boundary. Default OFF: the primary
-/// consumer is the host supervisor, which can inject a task-aware note itself — an
-/// unconditional self-nudge risks a feedback loop (the note churns context → more entropy).
+/// (hysteresis re-arm) and never more often than `cooldown_turns`. The alert goes to the host
+/// supervisor only, which can inject a task-aware note itself (kernel-distillation plan §8:
+/// the self-nudge to the model was an unmeasured second channel and is gone).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EntropyWatchConfig {
     #[serde(default)]
@@ -49,9 +46,6 @@ pub struct EntropyWatchConfig {
     /// Minimum completed turns between two alerts.
     #[serde(default = "default_cooldown_turns")]
     pub cooldown_turns: u32,
-    /// Also self-signal the model (Heartbeat/Alert, High urgency) when the alert fires.
-    #[serde(default)]
-    pub notify_model: bool,
 }
 
 fn default_threshold() -> f64 {
@@ -71,7 +65,6 @@ impl Default for EntropyWatchConfig {
             threshold: default_threshold(),
             hysteresis: default_hysteresis(),
             cooldown_turns: default_cooldown_turns(),
-            notify_model: false,
         }
     }
 }
@@ -359,7 +352,6 @@ mod tests {
             threshold: 0.5,
             hysteresis: 0.1,
             cooldown_turns: 0,
-            notify_model: false,
         };
         let mut t = EntropyTracker::default();
         let hot = EntropySample {
@@ -403,7 +395,6 @@ mod tests {
             threshold: 0.5,
             hysteresis: 0.1,
             cooldown_turns: 5,
-            notify_model: false,
         };
         let mut t = EntropyTracker::default();
         let hot = EntropySample {

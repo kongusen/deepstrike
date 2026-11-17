@@ -417,7 +417,7 @@ class ContextHistoryItemRecord(TypedDict, total=False):
     origin: str
     tokens: int
     injected_turn: int
-    fidelity: Literal["structured", "excerpt", "handle"]
+    fidelity: Literal["excerpt", "handle"]
     end: Literal["removed", "compacted", "renewed"]
 
 
@@ -445,6 +445,8 @@ class _ContextLifecycleItems(TypedDict, total=False):
     cache_tail_tokens: int
     notes_written: int
     notes_active: int
+    #: Plan task 1.7 · tokens of kernel-written text the model was shown.
+    kernel_text_tokens: int
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):
@@ -579,12 +581,6 @@ class KernelObservationEvent(TypedDict):
     raw: dict[str, Any]
 
 
-class SummaryUpgradedEvent(TypedDict):
-    kind: Literal["summary_upgraded"]
-    compressed_seq: int
-    summary: str
-
-
 class _GroupMemberJoinedRequired(TypedDict):
     kind: Literal["group_member_joined"]
     session_id: str
@@ -674,7 +670,6 @@ SessionEvent = (
     | WorkflowCompletedEvent
     | KernelObservationEvent
     | RunTerminalEvent
-    | SummaryUpgradedEvent
     | GroupMemberJoinedEvent
     | GroupBudgetChargedEvent
     | RoundStartedEvent

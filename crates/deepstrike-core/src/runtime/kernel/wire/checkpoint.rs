@@ -650,6 +650,12 @@ pub struct ContextVmState {
     /// Dependency outputs this run can read with `read_result(call_id="dep:<agent_id>")`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub dependency_bodies: std::collections::BTreeMap<String, String>,
+    /// `read_result` was offered in this run and stays offered after a restore.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_result_offered: bool,
+    /// Plan task 1.7 · kernel-written tokens shown so far, so the report survives a restore.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub kernel_text_tokens: u64,
     /// **The** home of P3 handle identity and residency.
     #[serde(default)]
     pub handles: Vec<HandleState>,
@@ -710,6 +716,11 @@ pub struct ContextVmState {
     pub held_history: Vec<StoredMessageState>,
     #[serde(default)]
     pub signals: Vec<String>,
+    /// How many of `signals`, from the front, the pending provider request carries. They leave
+    /// when that request's result commits; a checkpoint taken while it is in flight must say so,
+    /// or a restored kernel sends them again. Absent (0) in checkpoints from before 0.2.84.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub signals_delivered: u32,
     /// §5q-2 · the stored messages of the system and history partitions, in render order. **The**
     /// home of message bodies; the knowledge partition carries its own inside
     /// [`KnowledgeSlotState`], because a knowledge entry is an identified slot rather than a
@@ -725,9 +736,6 @@ pub struct ContextVmState {
     /// CoreMessage-count boundary projected as `frozen_prefix_len` on future provider effects.
     #[serde(default)]
     pub frozen_history_len: u32,
-    pub last_activity_ms: WireU64,
-    #[serde(default)]
-    pub last_compact_ms: Option<WireU64>,
 }
 
 /// Which partition a [`StoredMessageState`] belongs to.
@@ -862,17 +870,9 @@ pub struct LogicalTaskState {
     #[serde(default)]
     pub current_step: Option<u32>,
     #[serde(default)]
-    pub progress: String,
-    #[serde(default)]
-    pub scratchpad: String,
-    #[serde(default)]
-    pub blocked_on: Vec<String>,
-    #[serde(default)]
     pub directives: Vec<String>,
     #[serde(default)]
     pub preserved_refs: Vec<String>,
-    #[serde(default)]
-    pub recent_actions: Vec<String>,
     #[serde(default)]
     pub compression_log: Vec<LogicalCompressionEntry>,
     #[serde(default)]
@@ -2376,3 +2376,4 @@ fn is_zero_u64(value: &u64) -> bool {
 fn is_default_ledger(ledger: &crate::context::cache_ledger::CacheLedger) -> bool {
     *ledger == crate::context::cache_ledger::CacheLedger::default()
 }
+

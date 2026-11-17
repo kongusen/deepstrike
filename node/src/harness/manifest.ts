@@ -381,7 +381,7 @@ function validateRuntimeValue(key: string, value: unknown): void {
       for (const k of Object.keys(watch)) {
         const v = watch[k]
         if (v === undefined) continue
-        if (k === "enabled" || k === "notifyModel") {
+        if (k === "enabled") {
           if (typeof v !== "boolean") throw new TypeError(`runtime.entropyWatch.${k} must be a boolean`)
         } else if (k === "threshold" || k === "hysteresis") {
           if (typeof v !== "number" || !(v >= 0 && v <= 1)) {

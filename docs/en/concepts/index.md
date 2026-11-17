@@ -15,8 +15,9 @@ If [Agent Process Runtime](/en/architecture/agent-process-runtime) explains the 
 | Page | Main code entry | What it covers |
 |------|-----------------|----------------|
 | [Agent Process Runtime](/en/architecture/agent-process-runtime) | `scheduler/tcb.rs`, `scheduler/wait_index.rs`, `runtime/kernel/wire/` | How process trees, durable waits, authority, budgets, IPC, supervision, and recovery form one runtime |
+| [Context Items](/en/concepts/context-item) | `context/item.rs`, `context/authority.rs`, `context/voice.rs` | The scope, fidelity, lease and authority every item takes from its origin, and where each is enforced |
 | [Roles & Isolation](/en/concepts/roles-and-isolation) | `types/agent.rs`, `orchestration/workflow/`, `scheduler/tcb.rs` | How role, isolation, capability, and trust become executable kernel constraints |
-| [Prompt Cache Design](/en/concepts/prompt-cache-design) | `context/renderer.rs`, `context/manager.rs`, `mm/handle.rs` | How four-slot rendering, state_turn, handle projection, and frozen prefix protect cache reuse |
+| [Prompt Cache Design](/en/concepts/prompt-cache-design) | `context/renderer.rs`, `context/manager/`, `mm/handle.rs` | How four-slot rendering, state_turn, handle projection, and frozen prefix protect cache reuse |
 | [RunGroup Budget](/en/concepts/run-group-budget) | `python/deepstrike/runtime/run_group.py`, `node/src/runtime/run-group.ts`, `scheduler/state_machine/gate.rs` | How multiple stateless runs share one cumulative token / spawn governance domain |
 
 ## How This Differs From Architecture

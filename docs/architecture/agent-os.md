@@ -99,6 +99,7 @@ pub enum Syscall {
 - Identity / Knowledge / History / State 四槽渲染
 - 压缩 pipeline 在压力下回收 token，并标记 prompt-cache 失效点
 - Skill / Memory 通过 meta-tool 与 syscall 改变 **能力 manifest**，而非直接 mutate history
+- 每段内容是一个 item，它的作用域、形态、寿命和写入权由 origin 决定，见 [Context Item 表](../concepts/context-item)；内核写给模型的文本集中在 `context/voice.rs`
 
 ## 六种 Harness 模式
 

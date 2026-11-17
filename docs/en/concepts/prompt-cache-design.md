@@ -5,7 +5,7 @@ DeepStrike does not render context by concatenating messages. It treats the prom
 Main implementation entry points:
 
 - `crates/deepstrike-core/src/context/renderer.rs`
-- `crates/deepstrike-core/src/context/manager.rs`
+- `crates/deepstrike-core/src/context/manager/`
 - `crates/deepstrike-core/src/context/compression.rs`
 - `crates/deepstrike-core/src/mm/handle.rs`
 - `node/src/types.ts` / `python/deepstrike/runtime/runner.py` turn metrics
@@ -18,7 +18,7 @@ Main implementation entry points:
 system_stable       identity / stable system prompt
 system_knowledge    skill definitions / initial_memory / host-pinned durable knowledge
 turns               history (incl. runtime memory-tool hits); cacheable prefix
-state_turn          TASK STATE + signals + recency footer; volatile tail
+state_turn          TASK STATE + signals; volatile tail
 ```
 
 Rendered shape:
@@ -50,9 +50,8 @@ the cache for the whole history behind it. The kernel places new entries as foll
 
 `state_turn` contains:
 
-- `[TASK STATE]`: goal, criteria, plan, blocked_on, compression log
+- `[TASK STATE]`: goal, criteria, directives, plan, notes, compression log
 - signals: rollback, interrupt, external events
-- salience footer: recent real tool actions, next step, latest directive
 - `Proceed.` anchor
 
 These change almost every turn. If they lived in `turns`, the cacheable message prefix would drift every render. Keeping `state_turn` as a volatile tail lets provider adapters place it after history or before history without polluting the reusable prefix.
@@ -151,11 +150,9 @@ Current layers:
 
 | Layer | Behavior | Cache impact |
 |-------|----------|--------------|
-| Snip | truncate oversized text messages | may rewrite a middle turn |
-| MicroCompact | summarize / excerpt large tool results | usually later and more prefix-safe |
+| MicroCompact | cap oversized messages, then excerpt large tool results | the cap may rewrite a middle turn; excerpts are usually later and more prefix-safe |
 | ContextCollapse | drop oldest messages to target | prefix break |
 | AutoCompact | keep only recent K turns | prefix break |
-| TimeDecayMicro | micro-compact after idle time | independent of pressure tier |
 
 ## SDK Observability
 

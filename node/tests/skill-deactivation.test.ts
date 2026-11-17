@@ -54,7 +54,9 @@ describe("skill deactivation (K3)", () => {
           yield { type: "tool_call", id: "s2", name: "skill", arguments: { name: "debug" } }
           return
         }
-        afterReactivation = context.systemKnowledge ?? ""
+        // Re-pinned content arrives after the cached prefix was sent, so it is in the state turn
+        // until the next boundary promotes it into system knowledge; either way the model sees it.
+        afterReactivation = (context.systemKnowledge ?? "") + JSON.stringify(context.stateTurn ?? "")
         yield { type: "text_delta", delta: "done" }
       },
     }

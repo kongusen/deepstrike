@@ -227,11 +227,7 @@ impl LoopStateMachine {
                 Disposition::Deny { reason, .. } => reason.clone(),
                 _ => "workflow node submission denied".to_string(),
             };
-            let note = super::super::rollback::build_control_rejection_note(
-                tool_label,
-                &reason,
-                self.ctx.config.verbose_control_notes,
-            );
+            let note = super::super::rollback::build_control_rejection_note(tool_label, &reason);
             self.ctx.push_signal(note);
             self.observations
                 .push(KernelObservation::ControlRequestRejected {
@@ -324,7 +320,6 @@ impl LoopStateMachine {
                     let note = super::super::rollback::build_control_rejection_note(
                         "start_workflow",
                         &reason,
-                        self.ctx.config.verbose_control_notes,
                     );
                     self.ctx.push_signal(note);
                     self.observations
@@ -373,7 +368,6 @@ impl LoopStateMachine {
                 let note = super::super::rollback::build_control_rejection_note(
                     operation,
                     &err.to_string(),
-                    self.ctx.config.verbose_control_notes,
                 );
                 self.ctx.push_signal(note);
                 self.observations
@@ -430,7 +424,6 @@ impl LoopStateMachine {
                 let note = super::super::rollback::build_control_rejection_note(
                     &operation,
                     "quarantine: quarantined node requested write-capable isolation",
-                    self.ctx.config.verbose_control_notes,
                 );
                 self.ctx.push_signal(note);
                 continue;

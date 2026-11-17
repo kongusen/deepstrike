@@ -1,11 +1,11 @@
 {
-  "ack_token": "op-driver-1:checkpoint:3:sha256:f50ddccaa90e39c943c5129141dde9a47701798067c5d61212e8a729d3ac0175",
+  "ack_token": "op-driver-1:checkpoint:3:sha256:7ba6d11f80fb33483e2d9081d2902e677e1482e151c33dfef01c4e3fa2d8da80",
   "checkpoint": {
-    "base_record_digest": "sha256:56f4668cbd1f22b67668694d99a37affd82b7c84d2dde5e00f220d6659c2ebb5",
+    "base_record_digest": "sha256:afb0106b0db17c614ee2731cfe654c7065004afcce1de9ac6d356a73c476402b",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:f50ddccaa90e39c943c5129141dde9a47701798067c5d61212e8a729d3ac0175",
-    "covered_transaction_head_digest": "sha256:56f4668cbd1f22b67668694d99a37affd82b7c84d2dde5e00f220d6659c2ebb5",
-    "genesis_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
+    "checkpoint_digest": "sha256:7ba6d11f80fb33483e2d9081d2902e677e1482e151c33dfef01c4e3fa2d8da80",
+    "covered_transaction_head_digest": "sha256:afb0106b0db17c614ee2731cfe654c7065004afcce1de9ac6d356a73c476402b",
+    "genesis_digest": "sha256:ee31f01b238ac8fd7d613cfc7f45992681e5f2011cd957a7c286344c67e965ec",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -20,7 +20,7 @@
               "hash": "cbf29ce484222325",
               "tokens": 1
             },
-            "tail": 27,
+            "tail": 15,
             "tools": {
               "hash": "75b4a0b7173c2ced",
               "tokens": 568
@@ -43,7 +43,7 @@
               }
             ]
           },
-          "tail_tokens": 24
+          "tail_tokens": 15
         },
         "frozen_history_len": 0,
         "handles": [
@@ -133,10 +133,8 @@
         "knowledge_reference_step": 3,
         "knowledge_regret": 0,
         "knowledge_wasted_tokens": 0,
-        "last_activity_ms": "1700000002000",
-        "last_compact_ms": null,
         "last_item_id": 3,
-        "last_request_estimate": 612,
+        "last_request_estimate": 600,
         "messages": [
           {
             "body": {
@@ -201,7 +199,6 @@
         "signals": [],
         "system_measurements": [],
         "task_state": {
-          "blocked_on": [],
           "compression_log": [],
           "compression_log_dropped": "0",
           "criteria": [],
@@ -209,12 +206,7 @@
           "directives": [],
           "goal": "write the research brief",
           "plan": [],
-          "preserved_refs": [],
-          "progress": "",
-          "recent_actions": [
-            "search({\"q\":\"sources\"})"
-          ],
-          "scratchpad": ""
+          "preserved_refs": []
         }
       },
       "scheduler": {
@@ -294,17 +286,14 @@
         "live_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -320,7 +309,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -492,22 +480,22 @@
         "accepted_inputs": [
           {
             "input_id": "in-acted",
-            "record_digest": "sha256:327a6d9e2d98e116b9d7faff32ec02c57a508057bc47eb484a9cb03e364e19b7",
+            "record_digest": "sha256:9ac91a87399232e1b0390eccfca6ceb39e347a97fb4baa93c3b4c343df5fd39a",
             "step_seq": "2"
           },
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
+            "record_digest": "sha256:ee31f01b238ac8fd7d613cfc7f45992681e5f2011cd957a7c286344c67e965ec",
             "step_seq": "0"
           },
           {
             "input_id": "in-results",
-            "record_digest": "sha256:56f4668cbd1f22b67668694d99a37affd82b7c84d2dde5e00f220d6659c2ebb5",
+            "record_digest": "sha256:afb0106b0db17c614ee2731cfe654c7065004afcce1de9ac6d356a73c476402b",
             "step_seq": "3"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:b42a4c03b01a282bb26bf6324e90130954636146851c16484533ef095ba9bd2e",
+            "record_digest": "sha256:457f90615d43605d1fc136d1aed8a01890a86bc84c3b866e5eda103202f6687d",
             "step_seq": "1"
           }
         ],
@@ -523,9 +511,9 @@
             "causation_input_id": "in-results",
             "effect": {
               "context": {
-                "estimated_tokens": 612,
+                "estimated_tokens": 600,
                 "state_turn": {
-                  "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
+                  "content": "[TASK STATE] goal: write the research brief\n\nProceed.",
                   "role": "user"
                 },
                 "turns": [
@@ -672,17 +660,14 @@
         "resolved_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -698,7 +683,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -860,13 +844,13 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:08d7e0e80064c99e1794e2b89de667f9b73727608e900e87133a29f81829a4d7",
+    "state_digest": "sha256:1b0178db33f3cb6ef7f34460a41cc022d3436a0cf88581764e10ea1dd6037d3e",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
   },
-  "covered_head": "sha256:56f4668cbd1f22b67668694d99a37affd82b7c84d2dde5e00f220d6659c2ebb5",
+  "covered_head": "sha256:afb0106b0db17c614ee2731cfe654c7065004afcce1de9ac6d356a73c476402b",
   "description": "A full-state logical checkpoint taken mid-turn (spec 12.1, 12.3). base == through == the durable head, so the bounded tail is empty and a restore replays nothing before the post-checkpoint records. The logical state is partitioned four ways and the header repeats none of it: the pending `call_provider` effect, the replay ledger and the terminal slot live in `transition`, the task table in `scheduler`, the handle table in `context_vm`, the live policy and the provider-tool causation in `syscall`.",
-  "state_digest": "sha256:08d7e0e80064c99e1794e2b89de667f9b73727608e900e87133a29f81829a4d7",
+  "state_digest": "sha256:1b0178db33f3cb6ef7f34460a41cc022d3436a0cf88581764e10ea1dd6037d3e",
   "through_step_seq": "3"
 }

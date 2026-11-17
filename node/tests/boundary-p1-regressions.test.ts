@@ -156,11 +156,11 @@ function findDeep(value: unknown, match: (value: Record<string, unknown>) => boo
 }
 
 describe("P1-7: the host never writes the model's task state", () => {
-  it("keeps the model's update_plan progress after a tool batch", async () => {
+  it("keeps the model's update_plan plan after a tool batch", async () => {
     const plane = new LocalExecutionPlane()
     plane.register(tool("noop", "does nothing", { type: "object", properties: {} }, async () => "ok"))
     const provider = new ScriptedProvider([
-      [{ type: "tool_call", id: "call_plan", name: "update_plan", arguments: { progress: "drafting section two" } } as StreamEvent],
+      [{ type: "tool_call", id: "call_plan", name: "update_plan", arguments: { plan: ["drafting section two"] } } as StreamEvent],
       [{ type: "tool_call", id: "call_noop", name: "noop", arguments: {} } as StreamEvent],
     ])
     const runner = new RuntimeRunner({
@@ -452,10 +452,81 @@ describe("P1-15: memory has one authority — the kernel", () => {
     for await (const _ of runner.run({ sessionId: "p1-15-fetch", goal: "recall" })) void _
 
     expect(gets).toEqual(["crossing", "elsewhere"])
-    expect(contextText(provider.contexts[1]!)).toContain("[MEMORY record_ref=crossing kind=reference] crossing body")
+    expect(contextText(provider.contexts[1]!)).toContain("[MEMORY record_ref=crossing name=crossing kind=reference] crossing body")
     // a record outside this agent's memory scope is not found, not leaked
     expect(contextText(provider.contexts[2]!)).toContain("[MEMORY record_ref=elsewhere] not found")
     expect(contextText(provider.contexts[2]!)).not.toContain("elsewhere body")
+  })
+
+  it("runs a memory query and a proposal the model made in one turn, then calls the provider once", async () => {
+    // The kernel publishes both effects in one step. The runner used to run the first and then
+    // fail the run ("must return one host action") when the step that settled it published nothing.
+    const { memoryStore, puts } = store([stored("crossing", 0)])
+    const submitted: string[] = []
+    const memoryCandidateSink = {
+      async submit(agentId: string, candidate: { candidate_id: string; record: ReturnType<typeof stored> }) {
+        submitted.push(candidate.record.name)
+        await memoryStore.put(agentId, candidate.record as never)
+        return { status: "accepted", candidate_id: candidate.candidate_id, receipt_id: "r-1", record_ref: candidate.record.record_id, digest: "d-1" }
+      },
+    }
+    const provider = new ScriptedProvider([[
+      { type: "tool_call", id: "call_q", name: "memory", arguments: { query: "prefs" } } as StreamEvent,
+      { type: "tool_call", id: "call_p", name: "propose_memory", arguments: { name: "brief-style", kind: "project", content: "numbered sections" } } as StreamEvent,
+    ]])
+    const events: { type: string; message?: string }[] = []
+    const runner = new RuntimeRunner({
+      provider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(),
+      maxTokens: 8000, maxTurns: 4, agentId: "p1-15", memoryScope: scope, memoryStore, preQueryMemory: () => [],
+      memoryCandidateSink, memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+    } as never)
+    for await (const event of runner.run({ sessionId: "p1-15-both", goal: "recall and remember" })) events.push(event as never)
+
+    expect(events.filter(event => event.type === "error")).toEqual([])
+    expect(submitted).toEqual(["brief-style"])
+    expect(puts.length).toBe(1)
+    expect(provider.contexts).toHaveLength(2)
+    const second = contextText(provider.contexts[1]!)
+    expect(second).toContain("[MEMORY record_ref=crossing name=crossing kind=reference] crossing body")
+    expect(second).toContain("[MEMORY PROPOSAL name=brief-style]")
+  })
+
+  it("leads from a stored memory back to the turn that proposed it and the result it rested on", async () => {
+    // Plan task 4.1: the record names its session, the tool result its evidence resolves to, and
+    // the propose_memory call; each is found in the session log by id.
+    const { memoryStore } = store()
+    const records: { provenance: { session_id?: string; evidence_refs: string[] } }[] = []
+    const memoryCandidateSink = {
+      async submit(_agentId: string, candidate: { candidate_id: string; record: never }) {
+        records.push(candidate.record)
+        return { status: "accepted", candidate_id: candidate.candidate_id, receipt_id: "r-1", record_ref: "rec-1", digest: "d-1" }
+      },
+    }
+    const plane = new LocalExecutionPlane()
+    plane.register(tool("read_file", "read", { type: "object", properties: { path: { type: "string" } } }, async () => "12 ERROR lines"))
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "call_read", name: "read_file", arguments: { path: "logs/a.log" } } as StreamEvent],
+      [{ type: "tool_call", id: "call_prop", name: "propose_memory", arguments: { name: "a-count", kind: "project", content: "a.log has 12 ERROR lines", evidence_refs: ["logs/a.log"] } } as StreamEvent],
+    ])
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      provider, sessionLog, executionPlane: plane, baselineToolIds: ["read_file"],
+      maxTokens: 8000, maxTurns: 4, agentId: "p1-15", memoryScope: scope, memoryStore, preQueryMemory: () => [],
+      memoryCandidateSink, memoryRuntimePolicy: { retrieval: "host", modelWrites: "candidate_sink" },
+    } as never)
+    for await (const _ of runner.run({ sessionId: "p1-15-evidence", goal: "count and remember" })) void _
+
+    expect(records).toHaveLength(1)
+    const { session_id, evidence_refs } = records[0]!.provenance
+    expect(session_id).toBe("p1-15-evidence")
+    expect(evidence_refs).toEqual(["logs/a.log", "call:call_read", "proposal:call_prop"])
+    const events = (await sessionLog.read(session_id!)).map(entry => entry.event as Record<string, unknown>)
+    const proposing = events.find(event => event.kind === "llm_completed"
+      && (event.tool_calls as { id: string }[]).some(call => call.id === "call_prop"))
+    expect(proposing).toBeDefined()
+    const rested = events.find(event => event.kind === "tool_completed"
+      && (event.results as { call_id: string }[]).some(result => result.call_id === "call_read"))
+    expect(rested).toBeDefined()
   })
 
   it("admits a host write inside a live run by the kernel's rolling write quota", async () => {

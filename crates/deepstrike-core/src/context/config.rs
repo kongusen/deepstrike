@@ -22,22 +22,23 @@ impl PromptBudgetConfig {
 /// changing `max_tokens` (e.g. switching model) rescales every derived limit
 /// automatically with no other configuration change required.
 ///
-/// Invariant: snip < micro < collapse < auto < renewal (strictly increasing).
+/// Invariant: micro < collapse < auto < renewal (strictly increasing). Kernel-distillation plan,
+/// stage 2 (DEC-13): the separate snip tier and idle time-decay were measured and deleted; a micro
+/// compaction caps oversized messages first.
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
     // ── Pressure thresholds ─────────────────────────────────────────────────
-    pub snip_threshold: f64,
     pub micro_threshold: f64,
     pub collapse_threshold: f64,
     pub auto_threshold: f64,
     pub renewal_threshold: f64,
 
     // ── Post-compression target ──────────────────────────────────────────────
-    /// Target rho after any compression pass. Must be < snip_threshold.
+    /// Target rho after any compression pass. Must be < micro_threshold.
     pub target_after_compress: f64,
 
     // ── Per-compactor ratios ─────────────────────────────────────────────────
-    /// Fraction of max_tokens any single message may occupy after SnipCompact.
+    /// Fraction of max_tokens any single message may occupy after a micro compaction's snip stage.
     /// Messages smaller than this are never touched.
     pub snip_per_msg_ratio: f64,
 
@@ -50,42 +51,14 @@ pub struct ContextConfig {
     /// Maximum fraction of max_tokens a recovery/replay payload may occupy.
     pub recovery_content_ratio: f64,
 
-    /// Recent conversational transactions always kept during render.
+    /// The most recent history units (a tool call stays with its results) that render never
+    /// drops and compaction never archives. The wire's `preserve_recent_turns` sets it. Default 2.
     pub preserve_recent_units: usize,
 
-    /// Number of most-recent turns (user+assistant pairs) preserved by
-    /// CollapseCompactor and AutoCompactor. Each turn = 2 messages, so
-    /// the actual message count kept is `preserve_recent_turns * 2`.
-    /// Must be ≥ 1. Default: 2 (= 4 messages).
-    pub preserve_recent_turns: usize,
-
     // ── Noise reduction ──────────────────────────────────────────────────────
-    /// Use verbose internal control notes (e.g. "[SYSTEM] Transaction rollback: …").
-    /// Defaults to false; uses concise natural-language notes instead.
-    pub verbose_control_notes: bool,
-
-    /// Collapse the *narration* text of OLD assistant turns (those past the
-    /// `preserve_recent_units` window that also carry tool calls) to a short stub at render time —
-    /// non-destructively (the full text stays in `partitions.history`). The model's user-facing
-    /// preamble ("好的，我来…先X") has no value once it has aged out of the recent window, but
-    /// re-feeding it verbatim every turn primes the model to keep emitting the same preamble (an
-    /// in-context repetition trap). Tool calls and pairing are untouched; current progress lives in
-    /// the TASK STATE turn. Defaults to true.
-    pub collapse_assistant_narration: bool,
-
-    // ── Layer 3: Time-based decay ───────────────────────────────────────
-    /// Minutes of inactivity before triggering Micro-Compact (Layer 3).
-    /// Defaults to 60 minutes — assumes Prompt Cache has expired by then.
-    pub micro_compact_idle_minutes: u32,
 
     /// Number of recent tool results to preserve during Micro-Compact.
     pub preserved_tool_results: usize,
-
-    // ── Layer 5: Auto-Compact buffer ─────────────────────────────────────
-    /// Buffer size for Auto-Compact trigger (Layer 5).
-    /// Trigger threshold = max_tokens - autocompact_buffer.
-    /// Defaults to 13K tokens (p99.99 of summarizer output length + safety margin).
-    pub autocompact_buffer: u32,
 
     // ── K2: knowledge budget ─────────────────────────────────────────────
     /// Max share of `max_tokens` the knowledge partition may occupy. Exceeding it emits a
@@ -112,8 +85,7 @@ pub struct ContextConfig {
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
-            snip_threshold: 0.70,
-            micro_threshold: 0.80,
+            micro_threshold: 0.70,
             collapse_threshold: 0.90,
             auto_threshold: 0.95,
             renewal_threshold: 0.98,
@@ -122,16 +94,11 @@ impl Default for ContextConfig {
             carryover_ratio: 0.05,
             recovery_content_ratio: 0.25,
             preserve_recent_units: 2,
-            preserve_recent_turns: 2,
-            verbose_control_notes: false,
-            collapse_assistant_narration: true,
-            micro_compact_idle_minutes: 60,
             preserved_tool_results: 5,
-            autocompact_buffer: 13_000,
             knowledge_budget_ratio: 0.25,
             delegate_tool_result_clearing: false,
             delegate_compaction: false,
-            notes_budget_tokens: 0,
+            notes_budget_tokens: super::notes::DEFAULT_NOTES_BUDGET_TOKENS,
         }
     }
 }
@@ -157,12 +124,6 @@ impl ContextConfig {
     pub fn recovery_content_tokens(&self, max_tokens: u32) -> u32 {
         (max_tokens as f64 * self.recovery_content_ratio) as u32
     }
-
-    /// Auto-Compact trigger threshold (Layer 5).
-    /// Returns `max_tokens - autocompact_buffer` (absolute value).
-    pub fn autocompact_threshold(&self, max_tokens: u32) -> u32 {
-        max_tokens.saturating_sub(self.autocompact_buffer)
-    }
 }
 
 #[cfg(test)]
@@ -170,27 +131,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn noise_reduction_defaults_to_quiet() {
-        let c = ContextConfig::default();
-        assert!(
-            !c.verbose_control_notes,
-            "verbose notes should be off by default"
-        );
-    }
-
-    #[test]
     fn default_thresholds_strictly_increasing() {
         let c = ContextConfig::default();
-        assert!(c.snip_threshold < c.micro_threshold);
         assert!(c.micro_threshold < c.collapse_threshold);
         assert!(c.collapse_threshold < c.auto_threshold);
         assert!(c.auto_threshold < c.renewal_threshold);
     }
 
     #[test]
-    fn target_after_compress_below_snip_threshold() {
+    fn target_after_compress_below_micro_threshold() {
         let c = ContextConfig::default();
-        assert!(c.target_after_compress < c.snip_threshold);
+        assert!(c.target_after_compress < c.micro_threshold);
     }
 
     #[test]

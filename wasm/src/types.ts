@@ -163,7 +163,6 @@ export interface EntropyWatchOptions {
   threshold?: number
   hysteresis?: number
   cooldownTurns?: number
-  notifyModel?: boolean
 }
 
 /**

@@ -169,10 +169,7 @@ impl CanonicalOperationDriver {
                 {
                     // Unlike an empty search, a fetch that finds nothing is an answer the model
                     // needs: the id it read in an index line no longer resolves.
-                    let content = format!(
-                        "[MEMORY record_ref={record_id}] not found: it was deleted, expired, or is \
-                         outside this memory scope."
-                    );
+                    let content = crate::context::voice::memory_not_found(record_id);
                     let engine = self.engine_mut()?;
                     let tokens = engine.ctx.engine.count(&content).max(1);
                     engine
@@ -219,11 +216,11 @@ impl CanonicalOperationDriver {
                     // §22.13 · the host answers with records, never with authority: the recall is
                     // rendered into history as content the model reads, and nothing about it
                     // rewrites this operation's binding, trust or provenance.
-                    let content = format!(
-                        "[MEMORY record_ref={} kind={}] {}",
-                        recall.record_ref,
+                    let content = crate::context::voice::memory_hit(
+                        recall.record_ref.as_str(),
+                        &recall.name,
                         wire_memory_kind_label(recall.kind),
-                        recall.content
+                        &recall.content,
                     );
                     let engine = self.engine_mut()?;
                     let tokens = engine.ctx.engine.count(&content).max(1);
@@ -425,15 +422,13 @@ impl CanonicalOperationDriver {
             EffectKindTag::ExecuteTools => {
                 let root_kind = self.require_root_kind()?;
                 let engine = self.engine_mut()?;
-                let results = engine
+                let results: Vec<ToolResult> = engine
                     .dispatched_tool_calls()
                     .iter()
                     .map(|call| ToolResult {
                         call_id: call.id.clone(),
-                        output: Content::Text(format!(
-                            "not executed: the executor could not run this batch ({}). The call \
-                             did not take effect — try a different approach or a smaller step.",
-                            failure.kind.as_str()
+                        output: Content::Text(crate::context::voice::executor_failed(
+                            failure.kind.as_str(),
                         )),
                         durable_content: None,
                         is_error: true,
@@ -441,6 +436,7 @@ impl CanonicalOperationDriver {
                         error_kind: Some(ToolErrorKind::Fatal),
                     })
                     .collect();
+                engine.ctx.note_kernel_results(&results);
                 let action = engine.feed(LoopEvent::ToolResults { results });
                 self.continue_after(context, action, root_kind)
             }
@@ -658,7 +654,7 @@ impl CanonicalOperationDriver {
                     name: authored.name.clone(),
                     size_bytes: authored.size_bytes,
                 },
-                format!("stored as record {}.", receipt.record_ref),
+                crate::context::voice::proposal_stored(receipt.record_ref.as_str()),
             ),
             (None, Some(error)) => (
                 KernelObservation::MemoryWriteFailed {
@@ -668,7 +664,7 @@ impl CanonicalOperationDriver {
                     record_id: authored.name.clone(),
                     error: error.clone(),
                 },
-                format!("not stored: {error}"),
+                crate::context::voice::proposal_not_stored(&error),
             ),
             (None, None) => unreachable!("a memory resolution is either a receipt or a failure"),
         };
@@ -703,10 +699,7 @@ impl CanonicalOperationDriver {
             candidate_id: candidate.candidate_id.clone(),
             name: authored.name.clone(),
         };
-        let outcome = format!(
-            "pending review as candidate {}; it is not stored until the host accepts it.",
-            candidate.candidate_id
-        );
+        let outcome = crate::context::voice::proposal_pending(&candidate.candidate_id);
         self.settle_memory_write(context, &authored, observation, &outcome)
     }
 
@@ -727,9 +720,12 @@ impl CanonicalOperationDriver {
         }
         let root_kind = self.require_root_kind()?;
         let engine = self.engine_mut()?;
-        let content = format!("[MEMORY PROPOSAL name={}] {outcome}", authored.name);
+        let content = crate::context::voice::memory_proposal_outcome(&authored.name, outcome);
         let tokens = engine.ctx.engine.count(&content).max(1);
-        engine.ctx.push_history(CoreMessage::user(content), tokens);
+        // After the batch's tool results, like a memory hit: the proposal may settle while a host
+        // tool the same turn called is still running, and a user message between an assistant's
+        // calls and their results is a request OpenAI-compatible providers reject.
+        engine.ctx.push_history_after_tool_results(CoreMessage::user(content), tokens);
         let action = engine.resume_after_preload();
         // §5k · a sibling effect of the same batch is still owed; the last of them to settle
         // resumes the turn instead.
@@ -810,7 +806,7 @@ impl CanonicalOperationDriver {
         // The body enters as its own unit of history, exactly as a memory recall does: the preview
         // that stands in for it is left untouched, so nothing that was already rendered is
         // rewritten and the model reads the page-in as the answer to the read it asked for.
-        let body = format!("[PAYLOAD handle_id={}]\n{content}", pending.handle_id);
+        let body = crate::context::voice::payload(&pending.handle_id, &content);
         let tokens = engine.ctx.engine.count(&body).max(1);
         engine.ctx.push_history(CoreMessage::user(body), tokens);
         let previous = engine.ctx.set_payload_residency(

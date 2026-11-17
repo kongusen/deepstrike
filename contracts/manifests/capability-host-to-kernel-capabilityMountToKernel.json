@@ -1,6 +1,6 @@
 {
   "id": "capability.host-to-kernel.capabilityMountToKernel",
-  "version": "0.2.83",
+  "version": "0.2.84",
   "protocol": {
     "family": "host-to-kernel",
     "direction": "project",

@@ -107,9 +107,6 @@ def task_update_to_kernel(update: TaskUpdate) -> dict[str, Any]:
   return {
     "plan": update.plan,
     "current_step": update.current_step,
-    "progress": update.progress,
-    "scratchpad": update.scratchpad,
-    "blocked_on": update.blocked_on,
     "preserved_refs": update.preserved_refs,
   }
 

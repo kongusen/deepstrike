@@ -815,6 +815,7 @@ export class RuntimeRunner {
     operationId: string,
     effectId: string,
     canonicalMemory: Record<string, unknown>,
+    sessionId?: string,
   ): Promise<Record<string, unknown>> {
     const agentId = this.opts.agentId
     const record: MemoryRecord = {
@@ -825,6 +826,8 @@ export class RuntimeRunner {
       content: String(canonicalMemory.content ?? ""),
       description: String(canonicalMemory.description ?? ""),
       provenance: {
+        // The session that proposed it, so the record leads back to its session log (plan 4.1).
+        ...(sessionId ? { session_id: sessionId } : {}),
         author: "model",
         trust: "untrusted",
         evidence_refs: Array.isArray(canonicalMemory.evidence_refs)
@@ -1700,7 +1703,7 @@ export class RuntimeRunner {
 
       } else if (action.kind === "persist_memory") {
         action = await this.commitKernelAction(runtime, this.pendingObservations,
-          await this.persistMemoryEffectResult(runtime.operationId, action.effectId, action.memory))
+          await this.persistMemoryEffectResult(runtime.operationId, action.effectId, action.memory, sessionId))
 
       } else if (action.kind === "query_memory") {
         let hits: MemoryRecall[] = []
@@ -2263,7 +2266,6 @@ export class RuntimeRunner {
         ...(ew.threshold !== undefined ? { threshold: ew.threshold } : {}),
         ...(ew.hysteresis !== undefined ? { hysteresis: ew.hysteresis } : {}),
         ...(ew.cooldownTurns !== undefined ? { cooldown_turns: ew.cooldownTurns } : {}),
-        ...(ew.notifyModel !== undefined ? { notify_model: ew.notifyModel } : {}),
       }
     }
     await this.commitKernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })
@@ -2753,12 +2755,6 @@ export async function replayMessages(
   maxBytes?: number,
   archiveStore?: ArchiveStore,
 ): Promise<ModelMessage[]> {
-  // Build upgraded-summary index: compressed_seq -> upgraded summary
-  const upgradedSummaries = new Map<number, string>()
-  for (const { event: e } of events) {
-    if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
-  }
-
   const messages: ModelMessage[] = []
   const archivedTurns = new Set(events.flatMap(({ event }) =>
     event.kind === "page_out" && event.archive_ref && archiveStore?.read ? [event.turn] : [],
@@ -2782,7 +2778,7 @@ export async function replayMessages(
       })
     } else if (e.kind === "compressed") {
       if (archivedTurns.has(e.turn)) continue
-      const summary = upgradedSummaries.get(seq) ?? e.summary
+      const summary = e.summary
       if (summary) {
         const systemText = `[Compressed context: turn ${e.turn}]\n${summary}`
         messages.push({

@@ -522,16 +522,12 @@ impl KnowledgePartition {
         let entry = self.entries.get(index)?;
         Some(deterministic_retention_score(RetentionFeatures {
             pinned: entry.pinned,
-            // A strong reference weighs as four lexical ones.
-            use_count: entry
-                .value
-                .strong_refs
-                .saturating_mul(4)
-                .saturating_add(entry.value.lexical_refs),
+            // Stage 2 (M6): only strong evidence counts as use, and kinds carry no weight.
+            use_count: entry.value.strong_refs,
             last_used_step: entry.value.last_referenced_step,
             current_step,
             lease_remaining_steps: entry.lease_remaining_turns(self.turn).map(u64::from),
-            kind: retention_kind(entry.key.as_deref()),
+            kind: RetentionKind::Other,
             tokens: entry.tokens,
             confidence_ppm: 0,
             stale_discount_ppm: 0,
@@ -649,23 +645,6 @@ impl KnowledgePartition {
     }
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-}
-
-fn retention_kind(key: Option<&str>) -> RetentionKind {
-    match key
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default()
-    {
-        "user" => RetentionKind::User,
-        "feedback" => RetentionKind::Feedback,
-        "project" | "memory" => RetentionKind::Project,
-        "reference" | "ref" => RetentionKind::Reference,
-        "skill" => RetentionKind::Skill,
-        "artifact" => RetentionKind::Artifact,
-        _ => RetentionKind::Other,
     }
 }
 
@@ -807,14 +786,56 @@ pub struct ContextPartitions {
     pub system: Partition,
     pub knowledge: KnowledgePartition,
     pub task_state: TaskState,
-    /// Runtime signals injected into the current turn (rollback notes, interrupts).
-    /// Rendering is read-only. The prefix delivered to a provider request is consumed only when
-    /// that request's correlated `ProviderResult` commits; later arrivals remain for the next turn.
-    pub signals: Vec<String>,
+    /// Runtime signals injected into the current turn (rollback notes, interrupts, kernel
+    /// notices), in arrival order. Rendering is read-only. A signal is marked delivered when a
+    /// provider request carries it and leaves when that request's correlated `ProviderResult`
+    /// commits; later arrivals remain for the next turn.
+    pub signals: Vec<SignalItem>,
     pub history: Partition,
 }
 
+/// One runtime signal: said once, in the state turn of the next provider request, and gone when
+/// that request commits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignalItem {
+    pub text: String,
+    /// The pending provider request carries it. Delivered signals always form a prefix of
+    /// [`ContextPartitions::signals`] (every signal present is marked when a request is emitted,
+    /// and later arrivals are appended), which is what lets a checkpoint store only their count.
+    pub delivered: bool,
+}
+
+impl SignalItem {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into(), delivered: false }
+    }
+}
+
 impl ContextPartitions {
+    /// Mark every signal present as carried by the request being emitted.
+    pub fn mark_signals_delivered(&mut self) {
+        for signal in &mut self.signals {
+            signal.delivered = true;
+        }
+    }
+
+    /// The request that carried the delivered signals did not go out after all.
+    pub fn unmark_signals_delivered(&mut self) {
+        for signal in &mut self.signals {
+            signal.delivered = false;
+        }
+    }
+
+    /// The request that carried them committed: the delivered signals leave.
+    pub fn drop_delivered_signals(&mut self) {
+        self.signals.retain(|signal| !signal.delivered);
+    }
+
+    /// How many signals the pending request carries (a prefix; see [`SignalItem::delivered`]).
+    pub fn delivered_signals(&self) -> usize {
+        self.signals.iter().take_while(|signal| signal.delivered).count()
+    }
+
     pub fn new(_config: &ContextConfig) -> Self {
         Self {
             system: Partition::new(),

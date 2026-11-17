@@ -178,7 +178,7 @@ impl CanonicalOperationDriver {
         if !disposition.is_allowed() {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "start_workflow",
-                denial_reason(&disposition, "workflow authoring denied"),
+                crate::context::voice::refusal::denial(&disposition, crate::context::voice::refusal::WORKFLOW_AUTHORING_DENIED),
             )));
         }
 

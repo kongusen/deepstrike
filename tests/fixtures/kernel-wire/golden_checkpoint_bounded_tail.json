@@ -1,11 +1,11 @@
 {
-  "base_state_digest": "sha256:0bd87ef02ad72a10892c034911a1b18e1d0ffd904c4cc5d6b327d0d0289a9fa0",
+  "base_state_digest": "sha256:2374cc05c6504b9f83856e4aed5c6074953260966ac83c0b1c4a6996a4579dfe",
   "checkpoint": {
-    "base_record_digest": "sha256:b42a4c03b01a282bb26bf6324e90130954636146851c16484533ef095ba9bd2e",
+    "base_record_digest": "sha256:457f90615d43605d1fc136d1aed8a01890a86bc84c3b866e5eda103202f6687d",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:b60515b4f6e82a9c7d9de945f78b3d60a9472c2ca75067383a9371c1e54ef542",
-    "covered_transaction_head_digest": "sha256:954545ead7ee47a78331e8c42f069adbfc3d0f90d07ca4a79f2c81f17e5e6416",
-    "genesis_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
+    "checkpoint_digest": "sha256:43d3af18e7467dcfd1fbbab16d7058966b22d877aba37a95a4df6fa58a08852d",
+    "covered_transaction_head_digest": "sha256:292b94c865967d1573f70989a51177fe26eba318fb1f9484416adabffdc34357",
+    "genesis_digest": "sha256:ee31f01b238ac8fd7d613cfc7f45992681e5f2011cd957a7c286344c67e965ec",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -20,7 +20,7 @@
               "hash": "cbf29ce484222325",
               "tokens": 1
             },
-            "tail": 24,
+            "tail": 15,
             "tools": {
               "hash": "75b4a0b7173c2ced",
               "tokens": 568
@@ -66,10 +66,8 @@
         "knowledge_reference_step": 1,
         "knowledge_regret": 0,
         "knowledge_wasted_tokens": 0,
-        "last_activity_ms": "1700000001000",
-        "last_compact_ms": null,
         "last_item_id": 1,
-        "last_request_estimate": 604,
+        "last_request_estimate": 595,
         "messages": [
           {
             "body": {
@@ -95,7 +93,6 @@
         "signals": [],
         "system_measurements": [],
         "task_state": {
-          "blocked_on": [],
           "compression_log": [],
           "compression_log_dropped": "0",
           "criteria": [],
@@ -103,10 +100,7 @@
           "directives": [],
           "goal": "write the research brief",
           "plan": [],
-          "preserved_refs": [],
-          "progress": "",
-          "recent_actions": [],
-          "scratchpad": ""
+          "preserved_refs": []
         }
       },
       "scheduler": {
@@ -180,17 +174,14 @@
         "live_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -206,7 +197,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -378,12 +368,12 @@
         "accepted_inputs": [
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:2f4b1fa13094cad5bc65c9484b01b4f33036923fe11fd498128801f470c09e57",
+            "record_digest": "sha256:ee31f01b238ac8fd7d613cfc7f45992681e5f2011cd957a7c286344c67e965ec",
             "step_seq": "0"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:b42a4c03b01a282bb26bf6324e90130954636146851c16484533ef095ba9bd2e",
+            "record_digest": "sha256:457f90615d43605d1fc136d1aed8a01890a86bc84c3b866e5eda103202f6687d",
             "step_seq": "1"
           }
         ],
@@ -399,9 +389,9 @@
             "causation_input_id": "in-start",
             "effect": {
               "context": {
-                "estimated_tokens": 604,
+                "estimated_tokens": 595,
                 "state_turn": {
-                  "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
+                  "content": "[TASK STATE] goal: write the research brief\n\nProceed.",
                   "role": "user"
                 },
                 "turns": [
@@ -528,17 +518,14 @@
         "resolved_config": {
           "budget_grant": null,
           "context_policy": {
-            "collapse_old_assistant_narration": true,
-            "idle_micro_compact_minutes": 60,
             "knowledge_budget_ppm": 250000,
             "notes_budget_tokens": 600,
             "preserve_recent_turns": 2,
             "pressure_thresholds_ppm": {
               "auto": 950000,
               "collapse": 900000,
-              "micro": 800000,
-              "renewal": 980000,
-              "snip": 700000
+              "micro": 700000,
+              "renewal": 980000
             },
             "prompt_budget": {
               "output_reserve_tokens": 0,
@@ -554,7 +541,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -703,8 +689,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:0bd87ef02ad72a10892c034911a1b18e1d0ffd904c4cc5d6b327d0d0289a9fa0",
-    "tail_digest": "sha256:034c53e7eb02148fff4429931146bf084046da5f323319627dd032a042eae122",
+    "state_digest": "sha256:2374cc05c6504b9f83856e4aed5c6074953260966ac83c0b1c4a6996a4579dfe",
+    "tail_digest": "sha256:95b6aafa23e1949b5de3eb2c8b959459cefedbde15c6be39587a34904c57a3d8",
     "tail_inputs": [
       {
         "input": {
@@ -738,7 +724,7 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:327a6d9e2d98e116b9d7faff32ec02c57a508057bc47eb484a9cb03e364e19b7",
+        "record_digest": "sha256:9ac91a87399232e1b0390eccfca6ceb39e347a97fb4baa93c3b4c343df5fd39a",
         "step_seq": "2"
       },
       {
@@ -767,7 +753,7 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:56f4668cbd1f22b67668694d99a37affd82b7c84d2dde5e00f220d6659c2ebb5",
+        "record_digest": "sha256:afb0106b0db17c614ee2731cfe654c7065004afcce1de9ac6d356a73c476402b",
         "step_seq": "3"
       },
       {
@@ -794,7 +780,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:954545ead7ee47a78331e8c42f069adbfc3d0f90d07ca4a79f2c81f17e5e6416",
+        "record_digest": "sha256:292b94c865967d1573f70989a51177fe26eba318fb1f9484416adabffdc34357",
         "step_seq": "4"
       }
     ],

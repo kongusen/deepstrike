@@ -1,6 +1,6 @@
 {
   "id": "run-config.configure-run.normalizeContextPolicy",
-  "version": "0.2.83",
+  "version": "0.2.84",
   "protocol": {
     "family": "host-to-kernel",
     "direction": "project",
@@ -40,17 +40,13 @@
         "pressureThresholds",
         "targetAfterCompress",
         "preserveRecentTurns",
-        "renewalCarryover",
-        "collapseOldAssistantNarration",
-        "idleMicroCompactMinutes"
+        "renewalCarryover"
       ],
       "inferred": [
         "pressureThresholds",
         "targetAfterCompress",
         "preserveRecentTurns",
         "renewalCarryover",
-        "collapseOldAssistantNarration",
-        "idleMicroCompactMinutes",
         "notesBudgetTokens"
       ]
     },
@@ -58,9 +54,7 @@
       "pressure_thresholds_ppm",
       "target_after_compress_ppm",
       "preserve_recent_turns",
-      "renewal_carryover_ppm",
-      "collapse_old_assistant_narration",
-      "idle_micro_compact_minutes"
+      "renewal_carryover_ppm"
     ],
     "forbidden": [],
     "envelope": {

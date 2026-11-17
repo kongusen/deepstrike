@@ -20,8 +20,7 @@
           "enabled": true,
           "threshold_ppm": 650000,
           "hysteresis_ppm": 100000,
-          "cooldown_turns": 3,
-          "notify_model": true
+          "cooldown_turns": 3
         }
       },
       "governance_policy": {
@@ -86,7 +85,6 @@
       },
       "context_policy": {
         "pressure_thresholds_ppm": {
-          "snip": 700000,
           "micro": 800000,
           "collapse": 900000,
           "auto": 950000,
@@ -95,8 +93,6 @@
         "target_after_compress_ppm": 650000,
         "preserve_recent_turns": 3,
         "renewal_carryover_ppm": 50000,
-        "collapse_old_assistant_narration": true,
-        "idle_micro_compact_minutes": 45,
         "knowledge_budget_ppm": 250000,
         "prompt_budget": {
           "prompt_overhead_tokens": 1200,

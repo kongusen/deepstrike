@@ -154,45 +154,22 @@ impl LoopStateMachine {
     pub(super) fn execute_eviction_op(&mut self, op: &crate::mm::EvictionOp) {
         use crate::mm::EvictionOp;
         match op {
-            EvictionOp::Snip { per_msg_ratio: _ } => {
-                // Layer 2: route to SnipCompact via the pipeline (behavior-preserving shim).
-                // Use the public `compress_with_time` which already wires target_tokens from config.
-                let (saved, summary, archived, cache_at) = self
-                    .ctx
-                    .compress_with_time(PressureAction::SnipCompact, self.last_now_ms);
-                if saved > 0 || summary.is_some() {
-                    self.push_compression_observations(
-                        PressureAction::SnipCompact,
-                        summary,
-                        archived,
-                        cache_at,
-                    );
-                }
-            }
-            EvictionOp::TimeDecayMicro => {
-                // Layer 3: idle/time-decay micro-compact. Uses non-time compress path + stamps time.
-                let (_, summary, archived, cache_at) =
-                    self.ctx.compress(PressureAction::MicroCompact);
+            EvictionOp::Micro => {
+                // Old tool results to excerpts (the snip stage caps oversized messages first).
+                let (_, summary, archived, cache_at) = self.ctx.compress(PressureAction::MicroCompact);
                 self.push_compression_observations(
                     PressureAction::MicroCompact,
                     summary,
                     archived,
                     cache_at,
                 );
-                if let Some(now_ms) = self.last_now_ms {
-                    self.ctx.last_compact_ms = Some(now_ms);
-                }
             }
             EvictionOp::Collapse { target_tokens } => {
                 // Layer 4: collapse to the planner's explicit target (W1-1 收口 — the executor honors
                 // the plan's `target_tokens` verbatim instead of re-deriving it from config). The
                 // planner stamps `config.target_tokens(max)`, so this is behavior-identical to the
                 // old config-derived path while making the plan the single decision point.
-                let (saved, summary, archived, cache_at) = self.ctx.compress_with_target(
-                    PressureAction::ContextCollapse,
-                    *target_tokens,
-                    self.last_now_ms,
-                );
+                let (saved, summary, archived, cache_at) = self.ctx.compress_with_target(PressureAction::ContextCollapse, *target_tokens);
                 if saved > 0 || summary.is_some() {
                     self.push_compression_observations(
                         PressureAction::ContextCollapse,
@@ -202,12 +179,9 @@ impl LoopStateMachine {
                     );
                 }
             }
-            EvictionOp::AutoCompact { preserve_turns: _ } => {
-                // Layer 5: auto-compact down to the preserve floor (target 0). The op carries the
-                // truthful `preserve_turns` (= `config.preserve_recent_turns`, stamped by the planner);
-                // the pipeline applies that same value at the compactor, so honoring the op and the
-                // config path are byte-identical here. Per-op preserve plumbing into the pipeline is a
-                // minor follow-up; the headline target placeholder is already gone (see Collapse).
+            EvictionOp::AutoCompact => {
+                // Layer 5: auto-compact down to the preserve floor (target 0); the pipeline applies
+                // `config.preserve_recent_units` at the compactor.
                 let (saved, summary, archived, cache_at) = self.ctx.force_compress();
                 if saved > 0 || summary.is_some() {
                     self.push_compression_observations(

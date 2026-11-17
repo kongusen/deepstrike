@@ -169,11 +169,7 @@ pub enum ItemOrigin {
     DependencyOutput,
     User,
     Assistant,
-    TaskState,
-    Signal,
     ProviderSummary,
-    /// Plan task 9.1 · a note the model wrote with the `note` tool.
-    Note,
 }
 
 impl ItemOrigin {
@@ -208,10 +204,7 @@ impl ItemOrigin {
             Self::DependencyOutput => "dependency_output",
             Self::User => "user",
             Self::Assistant => "assistant",
-            Self::TaskState => "task_state",
-            Self::Signal => "signal",
             Self::ProviderSummary => "provider_summary",
-            Self::Note => "note",
         }
     }
 
@@ -233,10 +226,7 @@ impl ItemOrigin {
             Self::DependencyOutput => (S::Edge, F::Handle, L::Permanent, A::Kernel),
             Self::User => (S::Operation, F::Full, L::Permanent, A::Host),
             Self::Assistant => (S::Operation, F::Full, L::Permanent, A::Model),
-            Self::TaskState => (S::Task, F::Structured, L::Permanent, A::Kernel),
-            Self::Signal => (S::Operation, F::Full, L::SingleUse, A::Host),
             Self::ProviderSummary => (S::Operation, F::Full, L::Permanent, A::Provider),
-            Self::Note => (S::Task, F::Full, L::Permanent, A::Model),
         };
         ItemDefaults { scope, fidelity, lease, authority }
     }
@@ -254,8 +244,6 @@ pub enum ItemScope {
     Edge,
     /// The session the run belongs to.
     Session,
-    /// The agent's identity, whatever it works on.
-    Agent,
     /// A workflow run: every agent it spawns reads it, whatever its context inheritance —
     /// shared state the program hands its agents on purpose, not the parent's transcript.
     Workflow,
@@ -269,15 +257,14 @@ impl ItemScope {
     }
 
     /// Whether a child run spawned with `inheritance` starts with a copy of the parent's item. A
-    /// `system_only` child inherits who the agent is; a `full` child also inherits what the parent
-    /// knows about its operation, task and session. An edge's data reaches only its own
+    /// `full` child inherits what the parent knows about its operation, task and session; a
+    /// `system_only` child inherits none of it (its system prompt reaches it another way). An edge's data reaches only its own
     /// downstream node, as a dependency output.
     pub fn inherited_by(self, inheritance: crate::types::agent::ContextInheritance) -> bool {
         use crate::types::agent::ContextInheritance as I;
         match (self, inheritance) {
             (Self::Workflow, _) => true,
             (Self::Edge, _) | (_, I::None) => false,
-            (Self::Agent, I::SystemOnly) => true,
             (_, I::SystemOnly) => false,
             (_, I::Full) => true,
         }
@@ -291,7 +278,6 @@ impl ItemScope {
 pub enum Fidelity {
     #[default]
     Full,
-    Structured,
     /// Compaction rewrote the item in place to a head/tail or JSON excerpt of the source.
     Excerpt,
     Handle,
@@ -315,8 +301,6 @@ pub enum Lease {
     UntilBoundary,
     /// Leaves once this many turns pass without the item being recalled or referenced.
     Turns(u32),
-    /// Leaves once it has been referenced.
-    SingleUse,
     /// Leaves when the kernel sees `event` happen to the item (see [`LeaseEvent`]).
     Until(LeaseEvent),
 }
@@ -526,7 +510,6 @@ impl ContextItem {
         match self.lease {
             Lease::Permanent | Lease::UntilBoundary | Lease::Until(_) => false,
             Lease::Turns(_) => self.lease_remaining_turns(current_turn) == Some(0),
-            Lease::SingleUse => self.value.ref_count > 0,
         }
     }
 
@@ -603,9 +586,8 @@ mod tests {
     #[test]
     fn scope_decides_what_a_child_inherits_and_what_survives_renewal() {
         use crate::types::agent::ContextInheritance as I;
-        assert!(ItemScope::Agent.inherited_by(I::SystemOnly));
-        assert!(!ItemScope::Operation.inherited_by(I::SystemOnly));
-        for scope in [ItemScope::Operation, ItemScope::Task, ItemScope::Session, ItemScope::Agent] {
+        for scope in [ItemScope::Operation, ItemScope::Task, ItemScope::Session] {
+            assert!(!scope.inherited_by(I::SystemOnly), "{scope:?}");
             assert!(scope.inherited_by(I::Full), "{scope:?}");
             assert!(!scope.inherited_by(I::None), "{scope:?}");
             assert!(scope.survives_renewal(), "{scope:?}");
@@ -626,13 +608,6 @@ mod tests {
         assert_eq!(pinned.lease_remaining_turns(9), None);
     }
 
-    #[test]
-    fn a_single_use_item_expires_once_referenced() {
-        let mut signal = item(ItemOrigin::Signal, false);
-        assert!(!signal.lease_expired(100));
-        signal.value.ref_count = 1;
-        assert!(signal.lease_expired(3));
-    }
 
     #[test]
     fn permanent_and_until_boundary_leases_do_not_expire_by_turn() {

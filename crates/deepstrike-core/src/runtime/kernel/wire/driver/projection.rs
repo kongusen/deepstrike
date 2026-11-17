@@ -236,6 +236,8 @@ impl CanonicalOperationDriver {
             recall_top_k: ctx.recall_top_k,
             recall_due: ctx.recall_due,
             dependency_bodies: ctx.dependency_bodies.clone(),
+            read_result_offered: ctx.read_result_offered,
+            kernel_text_tokens: ctx.kernel_text_tokens,
             handles: ctx
                 .handles
                 .all()
@@ -366,7 +368,8 @@ impl CanonicalOperationDriver {
                     self.project_message(MessagePartition::History, message, *tokens)
                 })
                 .collect(),
-            signals: ctx.partitions.signals.clone(),
+            signals: ctx.partitions.signals.iter().map(|signal| signal.text.clone()).collect(),
+            signals_delivered: ctx.partitions.delivered_signals() as u32,
             messages: ctx
                 .partitions
                 .system
@@ -408,8 +411,6 @@ impl CanonicalOperationDriver {
             },
             history_len: ctx.partitions.history.len() as u32,
             frozen_history_len: ctx.frozen_history_len() as u32,
-            last_activity_ms: WireU64::new(ctx.last_activity_ms),
-            last_compact_ms: ctx.last_compact_ms.map(WireU64::new),
         }
     }
 

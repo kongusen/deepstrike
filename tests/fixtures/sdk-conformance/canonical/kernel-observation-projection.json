@@ -32,7 +32,7 @@
         "observation": {
           "kind": "compressed",
           "turn": 4,
-          "action": "snip_compact",
+          "action": "micro_compact",
           "rho_after": 0.4,
           "summary": null,
           "archived_count": 0
@@ -103,7 +103,7 @@
             { "from": 1, "to": { "operation": "op-parent", "item": 6 }, "relation": "inherited_from", "turn": 0 }
           ],
           "parent_items_used": [{ "operation": "op-parent", "item": 6 }],
-          "prefix_breaks": [{ "turn": 2, "cause": "narration", "kept_tokens": 400, "lost_tokens": 60 }],
+          "prefix_breaks": [{ "turn": 2, "cause": "micro", "kept_tokens": 400, "lost_tokens": 60 }],
           "prefix_breaks_omitted": 1,
           "cache_tail_tokens": 120
         }
@@ -526,7 +526,7 @@
             { "from": 1, "to": { "operation": "op-parent", "item": 6 }, "relation": "inherited_from", "turn": 0 }
           ],
           "parent_items_used": [{ "operation": "op-parent", "item": 6 }],
-          "prefix_breaks": [{ "turn": 2, "cause": "narration", "kept_tokens": 400, "lost_tokens": 60 }],
+          "prefix_breaks": [{ "turn": 2, "cause": "micro", "kept_tokens": 400, "lost_tokens": 60 }],
           "prefix_breaks_omitted": 1,
           "cache_tail_tokens": 120
         },

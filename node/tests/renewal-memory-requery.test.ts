@@ -12,7 +12,7 @@ import type { MemoryStore, MemoryRecall } from "../src/memory/protocols.js"
 import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const RECALL = "LONGTERM_FACT_FOR_SPRINT"
-const RECALL_TURN = `[MEMORY record_id=record-renewal kind=reference trust=host_verified] ${RECALL}`
+const RECALL_TURN = `[MEMORY record_id=record-renewal name=renewal-fact kind=reference trust=host_verified] ${RECALL}`
 const scope = { tenant_id: "agent-k4", namespace: "renewal" }
 
 describe("renewal-boundary memory re-query (K4)", () => {

@@ -37,7 +37,7 @@ export interface ContextItemRecord {
   /** The item's id, shared with history items and item-graph edges. */
   id?: number
   key?: string
-  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary" | "note"
+  origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "provider_summary"
   tokens: number
   value: {
     injected_turn: number
@@ -95,7 +95,7 @@ export interface ContextHistoryItemRecord {
   tokens: number
   injected_turn: number
   /** What it rendered when it left, or renders now; absent = full. */
-  fidelity?: "structured" | "excerpt" | "handle"
+  fidelity?: "excerpt" | "handle"
   /** Why it left; absent while still in history. */
   end?: "removed" | "compacted" | "renewed"
 }
@@ -178,6 +178,8 @@ export type SessionEvent =
       /** Plan task 9.1 · notes the model wrote (rewrites count again) and notes it holds now. */
       notes_written?: number
       notes_active?: number
+      /** Plan task 1.7 · tokens of kernel-written text the model was shown: signals and the results the kernel answered calls with. */
+      kernel_text_tokens?: number
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }
@@ -287,7 +289,6 @@ export type SessionEvent =
       raw: Record<string, unknown>
     }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
-  | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
   // L1 (RunGroup): group-ledger events, appended under a group-anchor key (= the group id) so the
   // governance domain's cumulative budget + membership (lineage) persist and rebuild by fold-on-read.
   | { kind: "group_member_joined"; session_id: string; role?: string; member_kind?: "peer" | "vehicle" }

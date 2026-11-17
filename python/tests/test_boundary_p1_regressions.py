@@ -115,7 +115,7 @@ async def test_p1_7_the_host_never_writes_the_models_task_state():
     return "ok"
 
   provider = Scripted([
-    [ToolCallEvent(id="plan", name="update_plan", arguments={"progress": "drafting section two"})],
+    [ToolCallEvent(id="plan", name="update_plan", arguments={"plan": ["drafting section two"]})],
     [ToolCallEvent(id="noop", name="noop", arguments={})],
   ])
   runner = RuntimeRunner(RuntimeOptions(
@@ -393,6 +393,34 @@ async def test_p1_15_a_model_memory_query_mirrors_the_kernel_derived_count():
 
 
 @pytest.mark.asyncio
+async def test_p1_15_a_memory_query_and_a_proposal_in_one_turn_both_run():
+  """The kernel publishes both effects in one step; the runner must run both before the next
+  provider call. It used to stop after the first ("must return one host action")."""
+  from deepstrike import InMemoryMemoryCandidateSink, MemoryRuntimePolicy
+
+  store = _Store([_stored("crossing")])
+  sink = InMemoryMemoryCandidateSink()
+  provider = Scripted([[
+    ToolCallEvent(id="call_q", name="memory", arguments={"query": "prefs"}),
+    ToolCallEvent(id="call_p", name="propose_memory",
+                  arguments={"name": "brief-style", "kind": "project", "content": "numbered sections"}),
+  ]])
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=provider, session_log=InMemorySessionLog(), execution_plane=LocalExecutionPlane(),
+    max_tokens=8000, max_turns=4, agent_id="p1-15", memory_scope=_SCOPE, memory_store=store,
+    pre_query_memory=lambda goal: [], memory_candidate_sink=sink,
+    memory_runtime_policy=MemoryRuntimePolicy("host", "candidate_sink"),
+  ))
+  events = await _drain(runner, "p1-15-both")
+
+  assert [event for event in events if getattr(event, "type", "") == "error"] == []
+  assert len(provider.contexts) == 2
+  second = _text(provider.contexts[1])
+  assert "[MEMORY record_ref=crossing name=crossing kind=reference] crossing body" in second
+  assert "[MEMORY PROPOSAL name=brief-style]" in second
+
+
+@pytest.mark.asyncio
 async def test_p1_15_reads_one_record_in_full_by_record_id_and_reports_when_it_is_gone():
   elsewhere = _stored("elsewhere")
   elsewhere.scope = MemoryScope(tenant_id="p1-15", namespace="other")
@@ -416,7 +444,7 @@ async def test_p1_15_reads_one_record_in_full_by_record_id_and_reports_when_it_i
   await _drain(runner, "p1-15-fetch", goal="recall")
 
   assert gets == ["crossing", "elsewhere"]
-  assert "[MEMORY record_ref=crossing kind=reference] crossing body" in _text(provider.contexts[1])
+  assert "[MEMORY record_ref=crossing name=crossing kind=reference] crossing body" in _text(provider.contexts[1])
   # a record outside this agent's memory scope is not found, not leaked
   assert "[MEMORY record_ref=elsewhere] not found" in _text(provider.contexts[2])
   assert "elsewhere body" not in _text(provider.contexts[2])

@@ -1935,6 +1935,12 @@ pub(crate) async fn canonical_kernel_action(
 ) -> Result<HostAction> {
     let action = runtime.apply_host_event(event).await?;
     pending.extend(runtime.drain_host_observations());
+    // A turn can publish two kernel-tool effects in one step (`memory` beside `propose_memory`):
+    // the step that settles the first publishes nothing, and the second is still owed.
+    let action = match action {
+        Some(action) => Some(action),
+        None => runtime.current_action()?,
+    };
     action.ok_or_else(|| {
         Error::Other("kernel transition returned no action and no fault".to_string())
     })

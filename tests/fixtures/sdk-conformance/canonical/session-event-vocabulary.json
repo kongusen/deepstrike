@@ -420,7 +420,7 @@
         "prefix_breaks": [
           {
             "turn": 3,
-            "cause": "narration",
+            "cause": "micro",
             "kept_tokens": 1800,
             "lost_tokens": 260
           },
@@ -434,6 +434,7 @@
         "prefix_breaks_omitted": 1,
         "cache_tail_tokens": 840,
         "notes_written": 3,
+        "kernel_text_tokens": 120,
         "notes_active": 2
       },
       "suspended": {
@@ -701,11 +702,6 @@
         "turns_used": 3,
         "total_tokens": 1200
       },
-      "summary_upgraded": {
-        "kind": "summary_upgraded",
-        "compressed_seq": 5,
-        "summary": "better summary"
-      },
       "group_member_joined": {
         "kind": "group_member_joined",
         "session_id": "s2",
@@ -863,6 +859,7 @@
             "history_items",
             "history_items_omitted",
             "items",
+            "kernel_text_tokens",
             "notes_active",
             "notes_written",
             "parent_items_used",
@@ -1395,18 +1392,6 @@
             "node",
             "python",
             "rust",
-            "wasm"
-          ]
-        },
-        "summary_upgraded": {
-          "required": [
-            "compressed_seq",
-            "summary"
-          ],
-          "optional": [],
-          "sdks": [
-            "node",
-            "python",
             "wasm"
           ]
         },

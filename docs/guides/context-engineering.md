@@ -13,7 +13,7 @@ Context 工程决定 Agent 工作时哪些信息应该保留。它把身份、Kn
 | 稳定指令 | Agent 身份、系统规则和长期任务框架 |
 | Knowledge | 已加载 Skill、固定参考和 initial memory |
 | History | 对话 turn、工具结果和检索事实 |
-| 当前状态 | 计划、阻塞原因、Signal 和下一步动作 |
+| 当前状态 | 目标、验收标准、长期指令、计划、模型的笔记和 Signal |
 
 DeepStrike 会压缩旧 turn、保持稳定前缀适合缓存，并分页处理大工具结果，避免每轮 prompt 被结果撑满。
 
@@ -45,7 +45,7 @@ RuntimeOptions(
 )
 ```
 
-内核 `PressureMonitor` 在压力超阈值时自动触发 `CompressionPipeline`（Snip → Drop → Summarize）。
+内核 `PressureMonitor` 在压力超阈值时自动触发 `CompressionPipeline`（Micro → Collapse → Auto）。
 
 ---
 
@@ -118,7 +118,7 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 
 **Skill 卸载 / 租约（K3）**：`deactivate_skill(name)`（仅宿主驱动，无模型侧 unload）—— 工具集在下一次 provider 调用回宽，knowledge 钉在下一个边界摘除；`skill_lease_turns=N` 让每次激活 N 轮后自动走同一条路径。多阶段长任务不再单调累积早期阶段的 skill。
 
-**记忆召回（计划任务 2.1）**：召回由 kernel 发起。配置了 memory store、agentId 和 memoryScope 时，SDK 打开 `memory_policy.recall`，kernel 在第一次 provider 调用前和每次 sprint renewal 后，以当前目标为查询词发出 `query_memory` effect（causation 为 `kernel_recall`）。宿主只执行检索；`pre_query_memory` 钩子可以把这次查询改写成多条带 scope 的查询（`phase` 为 `"initial"` 或 `"renewal"`），命中按 record ID 合并。kernel 把每个命中写成 `memory:<record_id>` 键的 knowledge 索引行 `[MEMORY record_id=… kind=… trust=…] <description>`（没有 description 时用 name），不含记录正文；已在 knowledge 中的记录不重复写入。模型判断相关时用 `memory(record_id=…)` 读取全文。召回计数和 promotion 建议与模型查询走同一条 kernel 路径，每次召回写一个 `memory_retrieval_result` 审计事件。
+**记忆召回（计划任务 2.1）**：召回由 kernel 发起。配置了 memory store、agentId 和 memoryScope 时，SDK 打开 `memory_policy.recall`，kernel 在第一次 provider 调用前和每次 sprint renewal 后，以当前目标为查询词发出 `query_memory` effect（causation 为 `kernel_recall`）。宿主只执行检索；`pre_query_memory` 钩子可以把这次查询改写成多条带 scope 的查询（`phase` 为 `"initial"` 或 `"renewal"`），命中按 record ID 合并。kernel 把每个命中写成 `memory:<record_id>` 键的 knowledge 索引行 `[MEMORY record_id=… name=… kind=… trust=…] <description>`（没有 description 时用 name），不含记录正文；已在 knowledge 中的记录不重复写入。模型判断相关时用 `memory(record_id=…)` 读取全文。召回计数和 promotion 建议与模型查询走同一条 kernel 路径，每次召回写一个 `memory_retrieval_result` 审计事件。
 
 ```python
 RuntimeOptions(
@@ -141,7 +141,7 @@ Provider 配置为执行某一档时，会在 descriptor 里声明 `nativeContex
 
 | 声明 | 内核跳过 | 仍然保留 |
 | ------ | ------ | ------ |
-| `tool_result_clearing` | Snip / Micro 压缩、idle TimeDecayMicro、handle 折叠预览 | Collapse / Auto 归档、renewal |
+| `tool_result_clearing` | Micro 压缩、handle 折叠预览 | Collapse / Auto 归档、renewal |
 | `compaction` | Collapse / Auto 归档（只委托这一档时降级为 Micro） | 工具结果清理、renewal |
 
 委托的档位只会被跳过，不会被升级成更重的档位。**Renewal 永不委托**：内核在完整的本地 history 上判断压力，压力取 Provider 观测值与本地估算值的较大者，所以服务端清理后上报的较小 input usage 不会压住续期，renewal 仍是安全网。
@@ -175,7 +175,7 @@ API 在输入达到阈值时，在 assistant 回复开头返回一个 `compactio
 两点要注意：
 
 - 本地 history 并不会因此变短。内核压力仍取 Provider 观测值与本地估算值中的较大者，所以 renewal 照常在本地阈值触发。服务端阈值要设得低于内核的 renewal 阈值，否则服务端还没压缩，内核已经先续期了。
-- 内核如果改写了这一轮的文本（例如 `collapse_old_assistant_narration`），replay 就对不上了。此时块不会再发出，API 收到的是未压缩的完整历史，多花一些输入 token，但不会出错。
+- 内核如果改写了这一轮的文本（例如压缩把它归档了），replay 就对不上了。此时块不会再发出，API 收到的是未压缩的完整历史，多花一些输入 token，但不会出错。
 
 ---
 
@@ -207,13 +207,14 @@ Rust：`RuntimeOptions.notes_budget_tokens = Some(0)` 关闭。
 
 ## 运行时行为摘要
 
-1. **压缩**：Snip 截断过长消息，Micro 缩减旧工具结果，Collapse / Auto 归档较低价值的旧对话，并由内核 `RuleSummarizer` 生成确定性摘要。无需配置 LLM 摘要器；Node 的 `asyncSummarizer` 可在后台升级摘要。
+1. **压缩**：Micro 先截断过长消息、再把旧工具结果降为摘录；Collapse / Auto 按最旧优先归档旧对话，压缩记录只写一行机械记录（归档条数、token、用过的工具）。模型要留住的内容由它自己写进笔记；没有 LLM 摘要器，也没有按关键词分槽的规则摘要。
 2. **Renewal**：分级压缩后仍超过续期阈值，才重建 history。按 carryover 预算保留近期完整对话事务，避免拆开工具调用与结果；单个事务放不进预算时不会保留半个事务。系统、Knowledge 与任务状态继续保留。
-3. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入 progress footer
+3. **内核的话**：内核写给模型的文本（signal、替调用回答的结果、拒绝理由、`[TASK STATE]` 块、内核工具说明）都来自 `context/voice.rs`；lifecycle report 的 `kernel_text_tokens` 统计模型看到了多少。模型经 `update_plan` 只能设 `plan` 与 `current_step`。
+4. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入重复熔断的调用签名
 
 ### Node 上下文预算与恢复
 
-`contextPolicy` 的阈值、`targetAfterCompress`、`preserveRecentTurns`、`renewalCarryover` 和 idle 设置均在创建 kernel 时安装。大段继承历史在首次 Provider 请求前向压缩目标收缩；近期保留下限和不可压缩的系统、任务状态可能使结果高于目标。
+`contextPolicy` 的阈值、`targetAfterCompress`、`preserveRecentTurns`、`renewalCarryover` 均在创建 kernel 时安装。大段继承历史在首次 Provider 请求前向压缩目标收缩；近期保留下限和不可压缩的系统、任务状态可能使结果高于目标。
 
 Node 的条目、系统提示、Knowledge 和请求启发式预算统一使用 kernel 的 cl100k BPE 加 10% 余量。它不是 DeepSeek 等模型的原生 tokenizer。适配器提供已编码请求时，请求估算包含最终 body，包括回放的 reasoning 字段；自定义 adapter-input Provider 则估算 `context` 与工具 schema。
 
@@ -228,4 +229,5 @@ Provider 实际 input usage 写入同一 fingerprint 的 `postflight` 测量，�
 - [执行平面与工具](./execution-plane-and-tools) — 大工具结果、external payload、handle 投影
 - [Skill 门控](./skills) — `active_skills` 收窄工具暴露
 - [Memory](./memory) — knowledge 分区注入
-- 源码：`context/manager.rs`、`context/renderer.rs`
+- [Context Item 表](../concepts/context-item) — 每个 item 的作用域、形态、寿命、写入权
+- 源码：`context/manager/`、`context/renderer.rs`

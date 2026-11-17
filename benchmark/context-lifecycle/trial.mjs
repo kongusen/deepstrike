@@ -212,8 +212,32 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
     },
     token_estimates: tokenEstimates,
     ...(provider.trace?.length ? { trace: provider.trace } : {}),
+    memory_tools: memoryTools(events),
     lifecycle: events.filter(event => event.kind === "context_lifecycle_reported"),
   }
+}
+
+/** The tools a model keeps its own memory with. */
+const MEMORY_TOOLS = new Set(["note", "propose_memory", "memory"])
+
+/** Kernel-distillation plan task 4.2 · what the model spent on keeping memory, from its recorded
+ *  turns: `calls` to `note` / `propose_memory` / `memory`, the model `turns` of the task and how
+ *  many of them called nothing but those tools (`solo_turns`: a whole request spent on upkeep),
+ *  and the characters the model wrote in those calls against everything it wrote. */
+export function memoryTools(events) {
+  const tally = { calls: 0, turns: 0, solo_turns: 0, chars: 0, output_chars: 0 }
+  for (const event of events) {
+    if (event.kind !== "llm_completed") continue
+    const calls = event.tool_calls ?? []
+    const size = call => (typeof call.arguments === "string" ? call.arguments : JSON.stringify(call.arguments ?? "")).length
+    const kept = calls.filter(call => MEMORY_TOOLS.has(call.name))
+    tally.turns += 1
+    tally.calls += kept.length
+    if (kept.length > 0 && kept.length === calls.length) tally.solo_turns += 1
+    tally.chars += kept.reduce((sum, call) => sum + size(call), 0)
+    tally.output_chars += String(event.content ?? "").length + calls.reduce((sum, call) => sum + size(call), 0)
+  }
+  return tally
 }
 
 /** Plan task 8.0 · each provider request's usage in the order sent, with the run (session) that

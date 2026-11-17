@@ -102,13 +102,13 @@ The kernel keeps exactly three things: **admission** (governance, quotas, edge l
 
 ### Boundaries and the cache invariant
 
-The system knowledge block renders ahead of the turns; change one byte of it and the whole cached conversation behind it is invalidated. So the kernel rewrites it only at two kinds of **boundary** (compaction, renewal); every other change — expiry, removal, same-key update — is merely marked and lands at the next boundary. Knowledge arriving mid-run stages in the state turn, at a counted cache cost. Compaction itself escalates through tiers (truncate → collapse tool results → archive by utility → summarize → renew), and re-anchors the cache only when a pass actually breaks the prefix.
+The system knowledge block renders ahead of the turns; change one byte of it and the whole cached conversation behind it is invalidated. So the kernel rewrites it only at two kinds of **boundary** (compaction, renewal); every other change — expiry, removal, same-key update — is merely marked and lands at the next boundary. Knowledge arriving mid-run stages in the state turn, at a counted cache cost. Compaction itself escalates through tiers (excerpt old tool results → archive the oldest → renew), and re-anchors the cache only when a pass actually breaks the prefix.
 
 ### Progressive loading everywhere
 
 | Content | Resident form | Expanded on demand |
 | --- | --- | --- |
-| Memory | one index line `[MEMORY record_id=… kind=… trust=…] description` | `memory(record_id=…)` point lookup of the full record |
+| Memory | one index line `[MEMORY record_id=… name=… kind=… trust=…] description` | `memory(record_id=…)` point lookup of the full record |
 | Dependency output | a 600-character preview | `read_result("dep:<node>")`, answered by the kernel itself |
 | Tool result | collapsed to a preview under pressure, or paged out | `read_result(call_id)` pages it back in |
 | Skill | catalog metadata only | the body loads on activation, and the toolset narrows with it |
@@ -117,8 +117,8 @@ Every expansion path is limited to content the caller already holds an address f
 
 ### One truth about what the model sees
 
-- The provider compacted or cleared context server-side? The kernel absorbs it as a fact: covered history becomes a `provider_summary` item, cleared tool results degrade to handles — pressure, utility and renewal now reason over exactly what the model sees.
-- Reasoning replay is held by the kernel alongside its item: after narration collapse, compaction, or renewal, it still renders back, verbatim.
+- The provider compacted or cleared context server-side? The kernel absorbs it as a fact: covered history becomes a `provider_summary` item, cleared tool results degrade to handles — pressure and renewal now reason over exactly what the model sees.
+- Reasoning replay is held by the kernel alongside its item: after compaction or renewal, it still renders back, verbatim.
 - Token estimates are calibrated per request against the provider's own counts — raised, never lowered.
 
 ## Measured results

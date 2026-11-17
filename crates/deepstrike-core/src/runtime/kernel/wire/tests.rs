@@ -664,7 +664,7 @@ fn child_completion_carries_the_attempt_and_its_parent_requests() {
             "result": { "status": "completed", "output": "done" },
             "parent_requests": [
                 { "kind": "activate_skill", "name": "research" },
-                { "kind": "update_task", "update": { "progress": "half" } }
+                { "kind": "update_task", "update": { "current_step": 1 } }
             ],
         },
     }));

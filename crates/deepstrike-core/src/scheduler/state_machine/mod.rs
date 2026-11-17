@@ -30,7 +30,7 @@ use crate::types::task::RuntimeTask;
 /// flagged as a no-progress repeat) and to read sensibly in the "just did: …" footer. Empty for
 /// no-arg / `{}` calls. Lives in the volatile State turn, so length here never churns the cache.
 ///
-/// The 2c STOP and the O6 fuse compare these digests for EQUALITY, so identity must cover the
+/// The O6 fuse compares these digests for EQUALITY, so identity must cover the
 /// FULL arguments even though the display truncates: serde_json orders keys alphabetically, and
 /// a long leading value (an `edit` call's `file_path`) otherwise swallows the whole window —
 /// collapsing distinct same-file edits into one signature. A truncated digest therefore carries
@@ -234,6 +234,10 @@ pub struct AnsweredCall {
     pub call_id: CompactString,
     pub output: String,
     pub is_error: bool,
+    /// The call named a kernel tool the turn did not expose. It was refused without being
+    /// executed, and it counts toward the repeat fuse like any other call (a meta tool's name
+    /// does not exempt a call the model could not legally make).
+    pub unexposed: bool,
 }
 
 /// What a provider turn does when the kernel's own adjudication left nothing for a host to run.
@@ -359,10 +363,6 @@ pub struct LoopStateMachine {
     /// Kernel-owned signal routing: dedup set + attention policy + bounded queue.
     /// Always initialized; `set_attention` rebuilds it with a new queue size.
     pub(super) signal_router: SignalRouter,
-    /// Prefix of `ctx.partitions.signals` included in the currently pending provider request.
-    /// A correlated `ProviderResult` consumes exactly this prefix; signals arriving while the
-    /// provider is in flight remain for the next request.
-    pub(super) delivered_signals_len: usize,
     /// Accepted envelope time of the operation's first timed transition.
     /// Used by the wall-time budget axis in `SchedulerBudget::should_terminate`.
     pub(super) started_at_ms: Option<u64>,
@@ -372,6 +372,14 @@ pub struct LoopStateMachine {
     pub(super) suspend_state: Option<SuspendState>,
     /// Denied tool results to merge into the next `ToolResults` feed after resume.
     pub(super) pending_denied_results: Vec<ToolResult>,
+    /// The provider turn being fed published kernel-owned work of its own (a memory query, a
+    /// memory write) while its syscalls were adjudicated. Set for that turn before the fuse and
+    /// the gates run; read only by [`Self::commit_synthetic_results`]. Never checkpointed: it is
+    /// written and consumed inside one `feed`.
+    pub(super) turn_awaits_kernel_work: bool,
+    /// A synthetic tool-result commit must not call the provider: the turn resumes when its
+    /// kernel-owned work resolves. Consumed by the tool-results arm.
+    pub(super) defer_provider_call: bool,
     /// Host-provided tool accounting keyed by call id. Measurements stay outside canonical
     /// `ToolResult` state and are consumed exactly once at the tool-result boundary.
     pub(super) pending_tool_measurements: HashMap<CompactString, u32>,
@@ -403,11 +411,10 @@ pub struct LoopStateMachine {
     pub(super) pending_host_effects: VecDeque<PendingHostEffect>,
     pub(super) active_host_effect: Option<PendingHostEffect>,
     pub(super) deferred_action: Option<Box<LoopAction>>,
-    /// O6: repeat-fuse thresholds (the hard rungs above the 2c soft STOP). Default enabled with
+    /// O6: repeat-fuse thresholds. Default enabled with
     /// generous thresholds; tune/disable via `SetRepeatFuse` / `ConfigureRun.repeat_fuse`.
     pub(super) repeat_fuse: RepeatFuseConfig,
-    /// O6: the previous turn's action signature (non-meta `name(args)` joined — the same key the
-    /// 2c STOP uses). NOT part of the turn checkpoint: a fuse deny's rollback must not launder
+    /// O6: the previous turn's action signature (non-meta `name(args)` joined). NOT part of the turn checkpoint: a fuse deny's rollback must not launder
     /// the streak it just tripped on.
     pub(super) repeat_sig: Option<String>,
     /// O6: consecutive turns whose signature equalled `repeat_sig` (1 = first occurrence).
@@ -478,11 +485,12 @@ impl LoopStateMachine {
             resource_quota: None,
             memory_write_times: Vec::new(),
             signal_router: SignalRouter::new(64),
-            delivered_signals_len: 0,
             started_at_ms: None,
             last_now_ms: None,
             suspend_state: None,
             pending_denied_results: Vec::new(),
+            turn_awaits_kernel_work: false,
+            defer_provider_call: false,
             pending_tool_measurements: HashMap::new(),
             workflow: None,
             root_workflow: false,
@@ -970,19 +978,10 @@ impl LoopStateMachine {
     ///
     /// The canonical driver calls this once per transition, before any semantic call, so that
     /// every clock-dependent decision this step makes — signal TTL and deadline escalation, the
-    /// governance rate-limit window, the wall-time budget axis, idle time-decay — reads the one
-    /// host clock fact the journal already holds. The kernel itself never reads a system clock.
-    ///
-    /// Beyond [`Self::set_observed_time`] it anchors context *activity* at the first accepted
-    /// time. Without the anchor, `last_activity_ms` starts at 0 while the accepted clock is an
-    /// epoch value, so the very first turn would look idle for ~55 years and trip time-decay
-    /// compaction on an empty context.
+    /// governance rate-limit window, the wall-time budget axis — reads the one host clock fact the
+    /// journal already holds. The kernel itself never reads a system clock.
     pub fn observe_accepted_time(&mut self, now_ms: u64) {
-        let first = self.started_at_ms.is_none();
         self.set_observed_time(now_ms);
-        if first {
-            self.ctx.record_activity(now_ms);
-        }
     }
 
     /// Feed the current wall-clock time (ms) to scheduler/governance budget axes.
@@ -1162,7 +1161,7 @@ impl LoopStateMachine {
         // before the first render instead of selecting a nearly full prompt while retaining the
         // entire oversized history internally. No archive effect may precede an agent's first
         // provider effect; the summary and the retained history are part of this atomic start.
-        if self.session_history_baseline > 0 && self.ctx.rho() > self.ctx.config.snip_threshold {
+        if self.session_history_baseline > 0 && self.ctx.rho() > self.ctx.config.micro_threshold {
             let action = crate::context::pressure::PressureAction::ContextCollapse;
             let (saved, summary, archived, invalidates_prefix_at) = self.ctx.compress(action);
             if saved > 0 || summary.is_some() {
@@ -1204,11 +1203,9 @@ impl LoopStateMachine {
                 // §7.6 · taken unconditionally, so a staged adjudication can never survive into a
                 // later turn — a turn with no tool calls at all simply has nothing to apply it to.
                 let adjudicated = self.adjudicated_turn.take().unwrap_or_default();
-                let delivered = self
-                    .delivered_signals_len
-                    .min(self.ctx.partitions.signals.len());
-                self.ctx.partitions.signals.drain(..delivered);
-                self.delivered_signals_len = 0;
+                // The request that carried the delivered signals committed; signals that arrived
+                // while it was in flight stay for the next request.
+                self.ctx.commit_delivered_signals();
                 // Signals admitted while the provider was in flight were not in the completed
                 // request. Promote queued items at this boundary and keep a no-tool response from
                 // terminating before the model receives them in a follow-up request.
@@ -1222,7 +1219,7 @@ impl LoopStateMachine {
                 // Max-output-tokens recovery (mirrors query.ts): a response cut off at the output
                 // cap reports stop_reason = max_tokens (Anthropic) / length (OpenAI). A clean finish
                 // resets the ladder.
-                const OUTPUT_TRUNCATION_NUDGE: &str = "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.";
+                use crate::context::voice::OUTPUT_TRUNCATION_NUDGE;
                 let truncated = std::mem::take(&mut self.pending_output_truncated);
                 if !truncated {
                     self.output_recovery_attempts = 0;
@@ -1278,12 +1275,8 @@ impl LoopStateMachine {
                         self.criteria_gate_fired = true;
                         let criteria = self.ctx.partitions.task_state.criteria.clone();
                         self.ctx.push_history(message, tokens);
-                        self.ctx.push_signal(format!(
-                            "[CRITERIA CHECK] You are about to finish. Verify each acceptance \
-                             criterion first: {}. If any is NOT met, continue working on it now. \
-                             If all are met, give the final answer.",
-                            criteria.join(" | ")
-                        ));
+                        self.ctx
+                            .push_signal(crate::context::voice::criteria_check_finish(&criteria));
                         self.observations
                             .push(KernelObservation::CriteriaGateFired {
                                 turn: self.turn,
@@ -1303,15 +1296,23 @@ impl LoopStateMachine {
                 let calls = message.tool_calls.clone();
                 self.ctx.push_history(message, tokens);
 
-                // ━━ 记录活动时间（Layer 3时间衰减使用）
-                if let Some(now_ms) = self.last_now_ms {
-                    self.ctx.record_activity(now_ms);
-                }
-
                 // §7.6 · the P1 syscalls in this batch were already adjudicated by the canonical
                 // driver. The assistant message keeps every call the model made — it must see the
                 // turn it emitted — but a syscall is never dispatched: it is closed here with the
                 // kernel's own answer, before the fuse/gate, which meter host work only.
+                // Calls to kernel tools this turn did not expose: already refused by the driver,
+                // and still metered by the repeat fuse below.
+                let unexposed_ids: HashSet<CompactString> = adjudicated
+                    .answered_calls
+                    .iter()
+                    .filter(|answer| answer.unexposed)
+                    .map(|answer| answer.call_id.clone())
+                    .collect();
+                let unexposed_calls: Vec<ToolCall> = calls
+                    .iter()
+                    .filter(|call| unexposed_ids.contains(&call.id))
+                    .cloned()
+                    .collect();
                 let calls = if adjudicated.answered_calls.is_empty() {
                     calls
                 } else {
@@ -1332,6 +1333,13 @@ impl LoopStateMachine {
                         .filter(|call| !answered.contains(&call.id))
                         .collect()
                 };
+                self.turn_awaits_kernel_work =
+                    adjudicated.idle_continuation == IdleContinuation::Await;
+                if calls.is_empty() && !unexposed_calls.is_empty() {
+                    if let Some(action) = self.check_repeat_fuse(&calls, &unexposed_calls) {
+                        return action;
+                    }
+                }
                 if calls.is_empty() {
                     // §5k · a syscall-only batch leaves nothing for a host to execute. Either the
                     // adjudication already published kernel-owned work — and the turn resumes when
@@ -1362,7 +1370,7 @@ impl LoopStateMachine {
                         for sibling in calls.iter().filter(|c| c.id != call.id) {
                             self.push_synthetic_tool_result(
                                 &sibling.id,
-                                "not executed: superseded by pace — the round is ending",
+                                crate::context::voice::SUPERSEDED_BY_PACE,
                                 false,
                             );
                         }
@@ -1370,27 +1378,15 @@ impl LoopStateMachine {
                     }
                 }
 
-                // 2b: record this turn's tool activity into the task-state recency log (meta-tools
-                // filtered inside). The State-turn footer renders it as "just did: …" + a forward
-                // nudge / STOP, so progress is kernel-derived and never depends on the model
-                // remembering to call `update_plan`. Tool *names* live only on the request (results
-                // carry call_id only), so this is the turn to capture them.
-                //
-                // Capture name AND a compact arg digest: the no-progress STOP keys on whether the
-                // SAME call repeats, and a legit loop (same tool, DIFFERENT args — e.g. processing 20
-                // items) is real progress, not a stall. Keying on the name alone false-positives those
-                // loops; including args distinguishes "step(n=1), step(n=2)…" from a true repeat.
-                let action_sigs: Vec<(String, String)> = calls
-                    .iter()
-                    .map(|c| (c.name.to_string(), compact_tool_args(&c.arguments)))
-                    .collect();
-                self.ctx.note_tool_actions(&action_sigs);
 
-                // O6 RepeatFuse: the hard rungs above the 2c soft STOP. Runs BEFORE the governance
+                // O6 RepeatFuse: deny, then terminate, on a repeated identical turn. Runs BEFORE the governance
                 // gate and independent of whether a policy is loaded — a batteries-included kernel
                 // protection, not a policy feature. Deny commits a visible synthetic error result;
                 // the terminate rung ends the run `NoProgress` after one final no-tools report turn.
-                if let Some(action) = self.check_repeat_fuse(&calls) {
+                // A fuse or gate that answers this batch with synthetic results must not call the
+                // provider while work the turn's syscalls published is still outstanding: that
+                // call would race the work, and its result would be rendered without it.
+                if let Some(action) = self.check_repeat_fuse(&calls, &unexposed_calls) {
                     return action;
                 }
 
@@ -1426,14 +1422,14 @@ impl LoopStateMachine {
                     .iter()
                     .find_map(|result| self.rollback_reason_for_tool_result(result))
                 {
-                    let note = CoreMessage::user(super::rollback::build_rollback_note(
-                        &reason,
-                        self.ctx.config.verbose_control_notes,
-                    ));
+                    let note = CoreMessage::user(super::rollback::build_rollback_note(&reason));
                     self.rollback(reason);
                     self.ctx
                         .push_signal(note.content.as_text().unwrap_or_default().to_string());
                     self.phase = LoopPhase::Reason;
+                    if std::mem::take(&mut self.defer_provider_call) {
+                        return LoopAction::AwaitingResume;
+                    }
                     return self.emit_call_llm();
                 }
                 // Tool errors are committed to history so the LLM can see them and self-correct
@@ -1468,19 +1464,8 @@ impl LoopStateMachine {
                 // this arm — the single provider-call funnel — so the eviction checkpoint and
                 // entropy sample below still run on the exhaustion turn before the final report.
 
-                // ━━ Eviction checkpoint (M3): one decision model (`plan_eviction`), one
-                // execution funnel (`execute_eviction_op`). Layer 3 (idle/time-decay) must run
-                // before the rho recommendation is read, since it mutates token usage — so the
-                // plan is built in that interleaved order and the ops are executed in plan order.
-                let idle_decay = self
-                    .last_now_ms
-                    .is_some_and(|now_ms| self.ctx.should_time_decay_compact(now_ms));
-                if idle_decay {
-                    self.execute_eviction_op(&crate::mm::EvictionOp::TimeDecayMicro);
-                }
-
-                // Layer 4 read-time projection: recompute handle residency on the post-time-decay rho.
-                self.ctx.recompute_handle_residency();
+                // ━━ Eviction checkpoint: one decision (`plan_eviction`), one execution funnel
+                // (`execute_eviction_op`), driven by pressure alone.
                 // K2: knowledge budget check — marks over-budget unpinned entries for the next
                 // boundary sweep (marks are idempotent; drops only apply there) and stashes a
                 // warn-once-per-generation notice, drained into an observation here.
@@ -1492,26 +1477,11 @@ impl LoopStateMachine {
                             budget,
                         });
                 }
-                // Layers 2/4/5: execute the pressure-driven ops from the plan (skip TimeDecayMicro
-                // if already executed). The plan carries specific ops stamped with real config-derived
-                // params (W1-1 収口 — no magic-number placeholders), not the umbrella `Pressure` wrapper.
-                let (target_tokens, preserve_turns) = self.ctx.plan_compaction_params();
                 let plan = crate::mm::plan_eviction(
                     self.ctx.should_compress(),
-                    idle_decay,
-                    target_tokens,
-                    preserve_turns,
+                    self.ctx.compaction_target_tokens(),
                 );
-                // `idle_decay` ⇒ the plan carries a `TimeDecayMicro` (so the skip-on-already-executed
-                // below is meaningful). The converse does NOT hold: a pressure-driven `MicroCompact`
-                // also emits `TimeDecayMicro` independent of `idle_decay` (W1 unified planner), so we
-                // assert the implication, not equality.
-                debug_assert!(!idle_decay || plan.has_time_decay());
                 for op in &plan.ops {
-                    // Skip TimeDecayMicro if we already executed it (prevents double-execution).
-                    if matches!(op, crate::mm::EvictionOp::TimeDecayMicro) && idle_decay {
-                        continue;
-                    }
                     self.execute_eviction_op(op);
                 }
 
@@ -1556,37 +1526,13 @@ impl LoopStateMachine {
                     window_turns: sample.window_turns,
                 });
                 // Opt-in entropy watch: threshold + hysteresis + cooldown. The alert is an
-                // observation (host-facing); with `notify_model` it is ALSO routed through
-                // the kernel's own signal dispatch as a Heartbeat/Alert directive — High
-                // urgency while running ⇒ a durable [SIGNAL] note on the turn we are about
-                // to emit anyway, never an extra provider call.
+                // observation for the host supervisor; the kernel does not tell the model.
                 if self.entropy.should_alert(&self.entropy_watch, &sample) {
                     self.observations.push(KernelObservation::EntropyAlert {
                         turn: sample.turn,
                         score: sample.score,
                         threshold: self.entropy_watch.threshold,
                     });
-                    if self.entropy_watch.notify_model {
-                        use crate::types::signal::{
-                            RuntimeSignal, SignalSource, SignalType, Urgency,
-                        };
-                        let signal = RuntimeSignal::new(
-                            SignalSource::Heartbeat,
-                            SignalType::Alert,
-                            Urgency::High,
-                            format!(
-                                "[entropy] session disorder {:.2} ≥ {:.2} (repeat {:.2} / failures {:.2} / pressure {:.2}). \
-                                 Stop and reassess: state what is not working and try a different approach.",
-                                sample.score,
-                                self.entropy_watch.threshold,
-                                sample.repeat_pressure,
-                                sample.failure_rate,
-                                sample.rho,
-                            ),
-                        )
-                        .with_dedupe(format!("entropy_alert:{}", sample.turn));
-                        let _ = self.dispatch_signal(signal);
-                    }
                 }
 
                 // Turn boundary: drain any kernel-queued signals into context so they
@@ -1594,6 +1540,11 @@ impl LoopStateMachine {
                 self.drain_queued_signals();
 
                 self.phase = LoopPhase::Reason;
+                if std::mem::take(&mut self.defer_provider_call) {
+                    // The turn's kernel-owned work resolves later and resumes it
+                    // (`resume_after_preload`), with that work's outcome in context.
+                    return LoopAction::AwaitingResume;
+                }
                 self.emit_call_llm()
             }
 
@@ -1614,11 +1565,8 @@ impl LoopStateMachine {
                             .iter()
                             .map(|call| ToolResult {
                                 call_id: call.id.clone(),
-                                output: Content::Text(format!(
-                                    "Tool call `{}` timed out before completing. The operation \
-                                     may or may not have taken effect — verify before assuming, \
-                                     then retry with a smaller step or a faster approach.",
-                                    call.name
+                                output: Content::Text(crate::context::voice::tool_timed_out(
+                                    &call.name,
                                 )),
                                 durable_content: None,
                                 is_error: true,
@@ -1626,14 +1574,12 @@ impl LoopStateMachine {
                                 error_kind: Some(ToolErrorKind::Timeout),
                             })
                             .collect();
+                        self.ctx.note_kernel_results(&results);
                         return self.feed(LoopEvent::ToolResults { results });
                     }
                 }
                 let reason = RollbackReason::Timeout;
-                let note = CoreMessage::user(super::rollback::build_rollback_note(
-                    &reason,
-                    self.ctx.config.verbose_control_notes,
-                ));
+                let note = CoreMessage::user(super::rollback::build_rollback_note(&reason));
                 self.rollback(reason);
                 self.ctx
                     .push_signal(note.content.as_text().unwrap_or_default().to_string());
@@ -1686,14 +1632,10 @@ impl LoopStateMachine {
                 // Malformed proposal: governance-style directive note + fresh reason turn.
                 let rejection_reason =
                     format!("invalid pace next={other:?} (expected continue|sleep|stop)");
-                let note = super::rollback::build_control_rejection_note(
-                    "pace",
-                    &rejection_reason,
-                    self.ctx.config.verbose_control_notes,
-                );
+                let note = super::rollback::build_control_rejection_note("pace", &rejection_reason);
                 self.push_synthetic_tool_result(
                     &call.id,
-                    "pace rejected: next must be continue|sleep|stop",
+                    crate::context::voice::PACE_REJECTED,
                     false,
                 );
                 self.ctx.push_signal(note);
@@ -1730,15 +1672,10 @@ impl LoopStateMachine {
             let criteria = self.ctx.partitions.task_state.criteria.clone();
             self.push_synthetic_tool_result(
                 &call.id,
-                "pace(stop) noted — verify the acceptance criteria first, then pace again.",
+                crate::context::voice::PACE_STOP_VERIFY,
                 false,
             );
-            self.ctx.push_signal(format!(
-                "[CRITERIA CHECK] You proposed stopping the loop. Verify each acceptance \
-                 criterion first: {}. If any is NOT met, continue working (or pace(continue)). \
-                 If all are met, call pace(stop) again.",
-                criteria.join(" | ")
-            ));
+            self.ctx.push_signal(crate::context::voice::criteria_check_pace(&criteria));
             self.observations
                 .push(KernelObservation::CriteriaGateFired {
                     turn: self.turn,
@@ -1780,14 +1717,7 @@ impl LoopStateMachine {
         });
         self.push_synthetic_tool_result(
             &call.id,
-            &format!(
-                "pace acknowledged: {}{} — wrap up with a brief round report.",
-                decision.action.label(),
-                decision
-                    .delay_ms
-                    .map(|d| format!(" {d}ms"))
-                    .unwrap_or_default()
-            ),
+            &crate::context::voice::pace_acknowledged(decision.action.label(), decision.delay_ms),
             false,
         );
         self.pending_pace = Some(decision);
@@ -1799,6 +1729,7 @@ impl LoopStateMachine {
     /// Close a kernel-handled tool call's transcript pair with a synthetic result so
     /// providers always see call → result.
     fn push_synthetic_tool_result(&mut self, call_id: &str, output: &str, is_error: bool) {
+        self.ctx.note_kernel_text(output);
         let msg = CoreMessage::tool(vec![crate::types::message::ContentPart::ToolResult {
             call_id: call_id.into(),
             output: output.to_string(),
@@ -1844,6 +1775,7 @@ impl LoopStateMachine {
             cache_tail_tokens: metrics.cache_tail_tokens,
             notes_written: metrics.notes_written,
             notes_active: metrics.notes_active,
+            kernel_text_tokens: metrics.kernel_text_tokens,
         });
         // ③ attach the round's pacing decision. Stashed by the trap when the model
         // called `pace`; otherwise the spec's default_action ("stop" for goal loops,
@@ -1959,7 +1891,7 @@ impl LoopStateMachine {
         self.checkpoint.history_len = self.ctx.partitions.history.len();
         self.checkpoint.signals_len = self.ctx.partitions.signals.len();
         self.checkpoint.task_state = Some(self.ctx.partitions.task_state.clone());
-        self.delivered_signals_len = self.ctx.partitions.signals.len();
+        self.ctx.partitions.mark_signals_delivered();
         self.observations.push(KernelObservation::CheckpointTaken {
             turn: self.turn,
             history_len: self.checkpoint.history_len as u32,
@@ -1986,10 +1918,11 @@ impl LoopStateMachine {
                 overflow.kind,
                 crate::context::renderer::ContextBudgetOverflowKind::FixedContext
             ) {
-                self.delivered_signals_len = 0;
+                self.ctx.partitions.unmark_signals_delivered();
                 return self.terminate(TerminationReason::ContextOverflow, None);
             }
         }
+        self.ctx.latch_read_result_offer();
         let tools = if self.pending_termination.is_some() {
             Vec::new()
         } else {
@@ -2011,6 +1944,7 @@ impl LoopStateMachine {
         }
         self.sync_governance_surface_note();
         let context = self.ctx.render();
+        self.ctx.latch_read_result_offer();
         let tools = if self.pending_termination.is_some() {
             Vec::new()
         } else {

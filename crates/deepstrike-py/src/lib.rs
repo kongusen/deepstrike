@@ -750,33 +750,21 @@ pub struct TaskUpdate {
     #[pyo3(get, set)]
     pub current_step: Option<u32>,
     #[pyo3(get, set)]
-    pub progress: Option<String>,
-    #[pyo3(get, set)]
-    pub scratchpad: Option<String>,
-    #[pyo3(get, set)]
-    pub blocked_on: Option<Vec<String>>,
-    #[pyo3(get, set)]
     pub preserved_refs: Option<Vec<String>>,
 }
 
 #[pymethods]
 impl TaskUpdate {
     #[new]
-    #[pyo3(signature = (plan = None, current_step = None, progress = None, scratchpad = None, blocked_on = None, preserved_refs = None))]
+    #[pyo3(signature = (plan = None, current_step = None, preserved_refs = None))]
     fn new(
         plan: Option<Vec<String>>,
         current_step: Option<u32>,
-        progress: Option<String>,
-        scratchpad: Option<String>,
-        blocked_on: Option<Vec<String>>,
         preserved_refs: Option<Vec<String>>,
     ) -> Self {
         Self {
             plan,
             current_step,
-            progress,
-            scratchpad,
-            blocked_on,
             preserved_refs,
         }
     }

@@ -93,7 +93,7 @@ describe("P2-3: journal transitions are serialized, cheap, and lose no facts", (
     await rt.startAgent({ goal: "answer" })
     const host = (rt as unknown as { host: CanonicalKernelHost }).host
     events.length = 0
-    const update = (progress: string) => host.transition({ kind: "host_control", command: { kind: "update_task", update: { progress } } })
+    const update = (step: string) => host.transition({ kind: "host_control", command: { kind: "update_task", update: { plan: [step] } } })
     const outcomes = await Promise.allSettled([update("a"), update("b")])
     expect(outcomes.map(outcome => outcome.status)).toEqual(["fulfilled", "fulfilled"])
     expect(events).toEqual(["stage", "clear", "stage", "clear"])

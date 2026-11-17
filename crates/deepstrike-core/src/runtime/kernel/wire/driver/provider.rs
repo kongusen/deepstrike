@@ -11,8 +11,11 @@ impl CanonicalOperationDriver {
     ///
     /// * the effect is not one this driver published as a provider call — there is no turn to
     ///   attribute the request to;
-    /// * the tool name was never exposed on that turn — a result may not invent a surface, and a
-    ///   forged `start_workflow` in a run that never offered one dies here;
+    /// * the tool name was never exposed on that turn — a result may not invent a surface. The
+    ///   provider-turn path never hands such a call to this function: it answers it with a
+    ///   visible "not available on this turn" error and executes nothing, so a forged
+    ///   `start_workflow` moves nothing while the run continues. The refusal here is the
+    ///   backstop for any other caller;
     /// * the call id already produced a syscall — a causation is spent once, so re-delivering the
     ///   same result under a fresh input id buys nothing.
     pub(super) fn derive_provider_syscalls(
@@ -89,13 +92,24 @@ impl CanonicalOperationDriver {
     ) -> Result<PlannedStep, KernelFault> {
         let root_kind = self.require_root_kind()?;
         self.require_pending_provider_call(effect_id)?;
-        let syscalls: Vec<WireToolCall> = completed
-            .message
-            .tool_calls
-            .iter()
-            .filter(|call| is_syscall_tool(&call.name))
-            .cloned()
-            .collect();
+        // A kernel tool the turn did not expose is refused, not executed, and the run goes on: the
+        // model gets an error result naming the way out, exactly as for a host tool it does not
+        // have (`gate_exposed_tool_calls`), and repeats of it burn the repeat fuse. Nothing about
+        // the call is decoded, so a forged surface still moves nothing.
+        let (syscalls, unexposed): (Vec<WireToolCall>, Vec<WireToolCall>) = {
+            let exposed = &self
+                .provider_calls
+                .get(effect_id)
+                .expect("require_pending_provider_call checked the effect")
+                .exposed_tools;
+            completed
+                .message
+                .tool_calls
+                .iter()
+                .filter(|call| is_syscall_tool(&call.name))
+                .cloned()
+                .partition(|call| exposed.contains(call.name.as_str()))
+        };
         let derived = self.derive_provider_syscalls(effect_id, &syscalls)?;
         let message = core_provider_message(&completed.message)?;
 
@@ -114,7 +128,15 @@ impl CanonicalOperationDriver {
         let mut index = 0u32;
         let mut effects = Vec::new();
         let mut syscall_focus: Option<ExecutionFocus> = None;
-        let mut answered: Vec<AnsweredCall> = Vec::with_capacity(derived.len());
+        let mut answered: Vec<AnsweredCall> = Vec::with_capacity(derived.len() + unexposed.len());
+        for call in &unexposed {
+            answered.push(AnsweredCall {
+                call_id: call.call_id.as_str().into(),
+                output: crate::context::voice::tool_not_available_this_turn(&call.name),
+                is_error: true,
+                unexposed: true,
+            });
+        }
         let mut round_caller: Option<TaskId> = None;
         for (causation, call) in &derived {
             let outcome = match decode_syscall(call) {
@@ -130,8 +152,9 @@ impl CanonicalOperationDriver {
                         output: outcome
                             .ack
                             .clone()
-                            .unwrap_or_else(|| syscall_ack(&call.name).to_string()),
+                            .unwrap_or_else(|| crate::context::voice::syscall_ack(&call.name).to_string()),
                         is_error: false,
+                        unexposed: false,
                     });
                     effects.extend(outcome.effects);
                     if let Some(next) = outcome.focus {
@@ -147,6 +170,7 @@ impl CanonicalOperationDriver {
                         call_id: call.call_id.as_str().into(),
                         output: rejection.reason.clone(),
                         is_error: true,
+                        unexposed: false,
                     });
                     self.note_rejection(rejection.by(&causation_task(causation)))
                 }

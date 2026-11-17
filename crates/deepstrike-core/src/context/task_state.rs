@@ -24,13 +24,6 @@ pub struct TaskState {
     pub plan: Vec<PlanStep>,
     /// Index of the step currently executing (0-based). None before planning.
     pub current_step: Option<usize>,
-    /// Free-text progress note updated after each significant action.
-    pub progress: String,
-    /// Ephemeral scratch space for model use. Cleared on renewal. NOT used by the
-    /// compression pipeline (use compression_log instead).
-    pub scratchpad: String,
-    /// Reasons the current step cannot proceed.
-    pub blocked_on: Vec<String>,
     /// Explicit durable user directives / standing constraints (e.g. "don't do X"). Unlike
     /// runtime signals, these are intentionally persisted across compression and renewal.
     /// Bounded + recency-ordered (oldest dropped past [`MAX_DIRECTIVES`]); newest last.
@@ -39,13 +32,6 @@ pub struct TaskState {
     /// Call IDs or artifact hashes that must be preserved from compression.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preserved_refs: Vec<String>,
-    /// Rolling log of recent *task* activity — one entry per turn, each a compact summary of that
-    /// turn's tool calls (e.g. "module_read, module_list"). Kernel-maintained from REAL tool
-    /// activity (not model-curated), so the State turn always shows forward motion even when the
-    /// model never maintains `plan`. Lives in the volatile State turn (out of the cacheable prefix),
-    /// so updating it never churns the prompt cache. Bounded + recency-ordered; newest last.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent_actions: Vec<String>,
     /// Rolling log of compression events, newest last. Bounded at [`MAX_COMPRESSION_LOG`]
     /// (oldest dropped past the cap, counted in `compression_log_dropped`).
     /// Rendered into systemVolatile so the model always sees compression history.
@@ -124,23 +110,16 @@ pub struct Note {
 impl Note {
     /// The note's line in the state turn.
     pub fn render(&self) -> String {
-        format!("  - [{}] {}: {}", self.kind.label(), self.title, self.body)
+        super::voice::note_line(self)
     }
 }
 
-/// The heading of the notes block in the state turn.
-pub const NOTES_HEADING: &str =
-    "notes (yours, kept verbatim through compaction; rewrite a note by its title as it changes):";
+pub use super::voice::NOTES_HEADING;
 
 impl TaskState {
     /// The notes block as rendered in the state turn, or empty without notes.
     pub fn render_notes(&self) -> String {
-        if self.notes.is_empty() {
-            return String::new();
-        }
-        let mut lines = vec![NOTES_HEADING.to_string()];
-        lines.extend(self.notes.iter().map(Note::render));
-        lines.join("\n")
+        super::voice::notes_block(&self.notes)
     }
 
     /// The index of the note titled `title` (case and surrounding space ignored).
@@ -172,9 +151,6 @@ impl PlanStep {
 /// Maximum durable directives retained; past this the oldest is dropped (recency window).
 pub const MAX_DIRECTIVES: usize = 8;
 
-/// Maximum recent action-turns retained for the recency footer (bounded ring).
-pub const MAX_RECENT_ACTIONS: usize = 6;
-
 /// Compression-log entries retained in state (rolling window; render shows the last 3).
 pub const MAX_COMPRESSION_LOG: usize = 64;
 
@@ -183,9 +159,6 @@ pub const MAX_COMPRESSION_LOG: usize = 64;
 pub struct TaskUpdate {
     pub plan: Option<Vec<String>>,
     pub current_step: Option<usize>,
-    pub progress: Option<String>,
-    pub scratchpad: Option<String>,
-    pub blocked_on: Option<Vec<String>>,
     pub preserved_refs: Option<Vec<String>>,
     /// Replace the durable directive list wholesale (SDK/model curation).
     pub directives: Option<Vec<String>>,
@@ -195,78 +168,7 @@ impl TaskState {
     /// Compact text block for embedding in `system_text`.
     /// Returns an empty string when the task has not been initialised.
     pub fn format_compact(&self) -> String {
-        if self.goal.is_empty() && self.plan.is_empty() && self.progress.is_empty() {
-            return String::new();
-        }
-
-        let mut lines = Vec::new();
-        lines.push(format!("[TASK STATE] goal: {}", self.goal));
-
-        if !self.criteria.is_empty() {
-            lines.push(format!("criteria: {}", self.criteria.join(" | ")));
-        }
-
-        // Active directives render right after the goal — highest salience after the objective, so
-        // a recent user command keeps its imperative force across compaction/renewal.
-        if !self.directives.is_empty() {
-            lines.push("active_directives (most recent last):".to_string());
-            for d in &self.directives {
-                lines.push(format!("  - {d}"));
-            }
-        }
-
-        if !self.plan.is_empty() {
-            lines.push("plan:".to_string());
-            for (i, step) in self.plan.iter().enumerate() {
-                let marker = if step.done {
-                    "done"
-                } else if Some(i) == self.current_step {
-                    "active"
-                } else {
-                    "todo"
-                };
-                lines.push(format!("  [{}] {}. {}", marker, i + 1, step.label));
-            }
-        }
-
-        if !self.progress.is_empty() {
-            lines.push(format!("progress: {}", self.progress));
-        }
-
-        if !self.blocked_on.is_empty() {
-            lines.push(format!("blocked_on: {}", self.blocked_on.join(", ")));
-        }
-
-        let notes = self.render_notes();
-        if !notes.is_empty() {
-            lines.push(notes);
-        }
-
-        if !self.scratchpad.is_empty() {
-            lines.push(format!("scratchpad: {}", self.scratchpad));
-        }
-
-        // Render only the most recent compression events (fixed cap of 3). A wider budgeted
-        // window was tried and withdrawn: live A/B at n≤4 (12-PR review @ 2048, DeepSeek)
-        // could not distinguish it from provider drift — a control run on the unmodified
-        // kernel showed the same failures — and a window full of old `tool X args` digest
-        // lines is plausible re-execution bait. Absent replay-lab evidence FOR widening, the
-        // proven shape stays. Older digests remain in `compression_log` (bounded at
-        // [`MAX_COMPRESSION_LOG`]); making their *content* durably useful to the model is
-        // semantic-summary (P2) territory, not a bigger raw window.
-        if !self.compression_log.is_empty() {
-            lines.push("compression_history:".to_string());
-            let start = self.compression_log.len().saturating_sub(3);
-            for entry in &self.compression_log[start..] {
-                if entry.summary.is_empty() {
-                    lines.push(format!("  [{}]", entry.action));
-                } else {
-                    lines.push(format!("  [{}] {}", entry.action, entry.summary));
-                }
-            }
-        }
-
-        lines.join("\n")
+        super::voice::task_state_block(self)
     }
 
     /// Record a durable user directive (deduped against the most recent, recency-capped at
@@ -283,21 +185,6 @@ impl TaskState {
         if self.directives.len() > MAX_DIRECTIVES {
             let overflow = self.directives.len() - MAX_DIRECTIVES;
             self.directives.drain(0..overflow);
-        }
-    }
-
-    /// Record one turn's tool activity into the recency log (kernel-driven). `summary` is a compact
-    /// string of the turn's task tool names; blank input is ignored. Bounded at
-    /// [`MAX_RECENT_ACTIONS`] (oldest dropped past the cap).
-    pub fn note_actions(&mut self, summary: impl Into<String>) {
-        let summary = summary.into();
-        if summary.trim().is_empty() {
-            return;
-        }
-        self.recent_actions.push(summary);
-        if self.recent_actions.len() > MAX_RECENT_ACTIONS {
-            let overflow = self.recent_actions.len() - MAX_RECENT_ACTIONS;
-            self.recent_actions.drain(0..overflow);
         }
     }
 
@@ -321,15 +208,6 @@ impl TaskState {
         }
         if let Some(step) = update.current_step {
             self.current_step = Some(step);
-        }
-        if let Some(p) = update.progress {
-            self.progress = p;
-        }
-        if let Some(s) = update.scratchpad {
-            self.scratchpad = s;
-        }
-        if let Some(b) = update.blocked_on {
-            self.blocked_on = b;
         }
         if let Some(r) = update.preserved_refs {
             self.preserved_refs = r;
@@ -503,11 +381,11 @@ mod tests {
     fn apply_updates_fields() {
         let mut ts = TaskState::default();
         ts.apply(TaskUpdate {
-            progress: Some("half done".to_string()),
-            blocked_on: Some(vec!["waiting for data".to_string()]),
+            plan: Some(vec!["read".to_string(), "write".to_string()]),
+            current_step: Some(1),
             ..Default::default()
         });
-        assert_eq!(ts.progress, "half done");
-        assert_eq!(ts.blocked_on, ["waiting for data"]);
+        assert_eq!(ts.plan.len(), 2);
+        assert_eq!(ts.current_step, Some(1));
     }
 }

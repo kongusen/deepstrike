@@ -24,8 +24,8 @@ const recallVectorRecord: MemoryRecord = {
   description: "how briefs are laid out", provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
   created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.5, links: [], pinned: false,
 }
-const RECALL_TURN_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
-const RECALL_TURN_NAME_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
+const RECALL_TURN_VECTOR = "[MEMORY record_id=record-v name=fact kind=project trust=untrusted] how briefs are laid out"
+const RECALL_TURN_NAME_VECTOR = "[MEMORY record_id=record-v name=fact kind=project trust=untrusted] fact"
 
 function record(recordId: string, content: string, recallCount: number) {
   return {
@@ -122,7 +122,7 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
 
     const recallLines = (knowledge ?? "").split("\n").filter(line => line.startsWith("[MEMORY "))
     expect(recallLines).toEqual([
-      "[MEMORY record_id=record-t5 kind=reference trust=host_verified] t5 fixture",
+      "[MEMORY record_id=record-t5 name=record-t5 kind=reference trust=host_verified] t5 fixture",
     ])
     const audited = (await sessionLog.read("t5-projection")).filter(entry => entry.event.kind === "memory_retrieval_result")
     expect(audited).toHaveLength(1)

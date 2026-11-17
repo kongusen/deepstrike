@@ -1,7 +1,6 @@
 export const PPM_SCALE = 1_000_000 as const
 
 export interface ContextPressureThresholds {
-  snip: number
   micro: number
   collapse: number
   auto: number
@@ -13,8 +12,6 @@ export interface ContextPolicy {
   targetAfterCompress: number
   preserveRecentTurns: number
   renewalCarryover: number
-  collapseOldAssistantNarration: boolean
-  idleMicroCompactMinutes: number
   /** Plan task 9.1 · tokens the model's notes may hold in the state turn (kernel default 600, on since
    *  0.2.82); 0 turns the `note` tool off. Notes are written by the model and kept verbatim through
    *  compaction. */
@@ -26,8 +23,6 @@ export interface ContextPolicyWire {
   target_after_compress_ppm: number
   preserve_recent_turns: number
   renewal_carryover_ppm: number
-  collapse_old_assistant_narration: boolean
-  idle_micro_compact_minutes: number
   notes_budget_tokens?: number
 }
 
@@ -36,12 +31,10 @@ export interface ContextPolicyOverrides extends Partial<Omit<ContextPolicy, "pre
 }
 
 export const DEFAULT_CONTEXT_POLICY: Readonly<ContextPolicy> = Object.freeze({
-  pressureThresholds: Object.freeze({ snip: 0.70, micro: 0.80, collapse: 0.90, auto: 0.95, renewal: 0.98 }),
+  pressureThresholds: Object.freeze({ micro: 0.70, collapse: 0.90, auto: 0.95, renewal: 0.98 }),
   targetAfterCompress: 0.65,
   preserveRecentTurns: 2,
   renewalCarryover: 0.05,
-  collapseOldAssistantNarration: true,
-  idleMicroCompactMinutes: 60,
 })
 
 /** Resolve ergonomic partial SDK options into one complete, atomically validated policy. */
@@ -61,7 +54,6 @@ export function contextPolicy(overrides: ContextPolicyOverrides = {}): ContextPo
 /** Convert the public ratio-based policy to the canonical integer-only ABI wire shape. */
 export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire {
   const pressure_thresholds_ppm = {
-    snip: ratioToPpm(policy.pressureThresholds.snip, "pressureThresholds.snip"),
     micro: ratioToPpm(policy.pressureThresholds.micro, "pressureThresholds.micro"),
     collapse: ratioToPpm(policy.pressureThresholds.collapse, "pressureThresholds.collapse"),
     auto: ratioToPpm(policy.pressureThresholds.auto, "pressureThresholds.auto"),
@@ -69,17 +61,13 @@ export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire
   }
   const ordered = Object.values(pressure_thresholds_ppm)
   if (!ordered.every((value, index) => index === 0 || ordered[index - 1] < value)) {
-    throw new RangeError("context pressure thresholds must satisfy snip < micro < collapse < auto < renewal")
+    throw new RangeError("context pressure thresholds must satisfy micro < collapse < auto < renewal")
   }
   const target_after_compress_ppm = ratioToPpm(policy.targetAfterCompress, "targetAfterCompress")
-  if (target_after_compress_ppm >= pressure_thresholds_ppm.snip) {
-    throw new RangeError("targetAfterCompress must be lower than the snip threshold")
+  if (target_after_compress_ppm >= pressure_thresholds_ppm.micro) {
+    throw new RangeError("targetAfterCompress must be lower than the micro threshold")
   }
   assertIntegerAtLeast(policy.preserveRecentTurns, 1, "preserveRecentTurns")
-  assertIntegerAtLeast(policy.idleMicroCompactMinutes, 0, "idleMicroCompactMinutes")
-  if (typeof policy.collapseOldAssistantNarration !== "boolean") {
-    throw new TypeError("collapseOldAssistantNarration must be boolean")
-  }
   if (policy.notesBudgetTokens !== undefined) assertIntegerAtLeast(policy.notesBudgetTokens, 0, "notesBudgetTokens")
 
   return {
@@ -87,8 +75,6 @@ export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire
     target_after_compress_ppm,
     preserve_recent_turns: policy.preserveRecentTurns,
     renewal_carryover_ppm: ratioToPpm(policy.renewalCarryover, "renewalCarryover"),
-    collapse_old_assistant_narration: policy.collapseOldAssistantNarration,
-    idle_micro_compact_minutes: policy.idleMicroCompactMinutes,
     ...(policy.notesBudgetTokens !== undefined ? { notes_budget_tokens: policy.notesBudgetTokens } : {}),
   }
 }

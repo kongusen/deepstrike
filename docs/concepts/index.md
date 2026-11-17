@@ -15,8 +15,9 @@ Concepts 解释那些会影响 Agent 行为的 **设计选择**。它们位于�
 | 文档 | 代码主入口 | 说明 |
 |------|------------|------|
 | [Agent Process Runtime](../architecture/agent-process-runtime) | `scheduler/tcb.rs`、`scheduler/wait_index.rs`、`runtime/kernel/wire/` | 进程树、持久等待、权限、预算、IPC、监督和恢复如何组成统一运行时 |
+| [Context Item 表](./context-item) | `context/item.rs`、`context/authority.rs`、`context/voice.rs` | 每个 item 的作用域、形态、寿命、写入权由 origin 决定，以及各自在哪里执行 |
 | [角色与隔离](./roles-and-isolation) | `types/agent.rs`、`orchestration/workflow/`、`scheduler/tcb.rs` | sub-agent / workflow node 的 role、isolation、capability、trust 如何变成内核可执行约束 |
-| [Prompt Cache 设计](./prompt-cache-design) | `context/renderer.rs`、`context/manager.rs`、`mm/handle.rs` | 四槽位渲染、state_turn、handle projection、frozen prefix 如何共同保护 cache |
+| [Prompt Cache 设计](./prompt-cache-design) | `context/renderer.rs`、`context/manager/`、`mm/handle.rs` | 四槽位渲染、state_turn、handle projection、frozen prefix 如何共同保护 cache |
 | [RunGroup 预算](./run-group-budget) | `python/deepstrike/runtime/run_group.py`、`node/src/runtime/run-group.ts`、`scheduler/state_machine/gate.rs` | 多个 stateless run 如何共享累计 token / spawn 治理域 |
 
 ## 与架构页的区别

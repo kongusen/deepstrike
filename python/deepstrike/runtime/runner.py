@@ -319,10 +319,9 @@ class RuntimeOptions:
   knowledge_budget_ratio: float | None = None
   # Opt-in kernel entropy watch: threshold alerting over the per-turn session-entropy score
   # (entropy_sample events stream unconditionally regardless). A dict of
-  # {"threshold": float, "hysteresis": float, "cooldown_turns": int, "notify_model": bool,
-  #  "enabled": bool} — absent keys keep kernel defaults (0.65 / 0.1 / 4 / False); passing a dict
-  # enables unless {"enabled": False}. notify_model additionally feeds the model a durable
-  # [SIGNAL] directive when the alert fires. None ⇒ disabled (kernel default).
+  # {"threshold": float, "hysteresis": float, "cooldown_turns": int,
+  #  "enabled": bool} — absent keys keep kernel defaults (0.65 / 0.1 / 4); passing a dict
+  # enables unless {"enabled": False}. The alert goes to the host only. None ⇒ disabled.
   entropy_watch: dict[str, Any] | None = None
   # K3: default lease (in turns) for every skill activation. After that many turns the kernel
   # auto-deactivates the skill — toolset re-widens, knowledge pin boundary-swept — exactly like an
@@ -2478,8 +2477,6 @@ class RuntimeRunner:
         payload["hysteresis"] = float(ew["hysteresis"])
       if ew.get("cooldown_turns") is not None:
         payload["cooldown_turns"] = int(ew["cooldown_turns"])
-      if ew.get("notify_model") is not None:
-        payload["notify_model"] = bool(ew["notify_model"])
       await apply_host(runtime, self._pending_observations, {"kind": "set_entropy_watch", **payload})
 
     reliability = _kernel_reliability_to_kernel(self._opts.kernel_reliability)

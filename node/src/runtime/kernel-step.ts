@@ -396,9 +396,6 @@ export interface KernelTaskUpdate {
   [key: string]: unknown
   plan?: string[]
   current_step?: number
-  progress?: string
-  scratchpad?: string
-  blocked_on?: string[]
   preserved_refs?: string[]
 }
 
@@ -505,9 +502,6 @@ export function taskUpdateToKernel(update: TaskUpdate): KernelTaskUpdate {
   return {
     plan: update.plan,
     current_step: update.currentStep,
-    progress: update.progress,
-    scratchpad: update.scratchpad,
-    blocked_on: update.blockedOn,
     preserved_refs: update.preservedRefs,
   }
 }

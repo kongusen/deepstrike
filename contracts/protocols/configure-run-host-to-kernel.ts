@@ -24,8 +24,8 @@ export const CONFIGURE_RUN_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
       source: { type: "ContextPolicy", layer: "host", authority: "host-runtime" },
       target: { type: "ContextPolicyWire", layer: "kernel", authority: "kernel" },
       fields: {
-        drops: ["pressureThresholds", "targetAfterCompress", "preserveRecentTurns", "renewalCarryover", "collapseOldAssistantNarration", "idleMicroCompactMinutes"],
-        derived: ["pressure_thresholds_ppm", "target_after_compress_ppm", "preserve_recent_turns", "renewal_carryover_ppm", "collapse_old_assistant_narration", "idle_micro_compact_minutes"],
+        drops: ["pressureThresholds", "targetAfterCompress", "preserveRecentTurns", "renewalCarryover"],
+        derived: ["pressure_thresholds_ppm", "target_after_compress_ppm", "preserve_recent_turns", "renewal_carryover_ppm"],
         forbidden: [],
       },
     },
