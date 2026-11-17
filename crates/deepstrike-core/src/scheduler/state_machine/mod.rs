@@ -530,8 +530,7 @@ impl LoopStateMachine {
 
     /// O4: enable/disable the turn-end criteria gate (default enabled; no-op without criteria).
     pub fn set_criteria_gate(&mut self, enabled: bool) {
-        // EXP m8 · minimal: no criteria gate.
-        self.criteria_gate_enabled = enabled && !false;
+        self.criteria_gate_enabled = enabled;
     }
 
     /// Declare that the workflow this machine runs **is** the operation's root (spec §6.1.7).

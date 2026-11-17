@@ -522,21 +522,12 @@ impl KnowledgePartition {
         let entry = self.entries.get(index)?;
         Some(deterministic_retention_score(RetentionFeatures {
             pinned: entry.pinned,
-            // A strong reference weighs as four lexical ones.
-            // EXP m6 · minimal: only strong evidence counts as use, and no kind weights (below).
-            use_count: if true {
-                entry.value.strong_refs
-            } else {
-                entry.value.strong_refs.saturating_mul(4).saturating_add(entry.value.lexical_refs)
-            },
+            // Stage 2 (M6): only strong evidence counts as use, and kinds carry no weight.
+            use_count: entry.value.strong_refs,
             last_used_step: entry.value.last_referenced_step,
             current_step,
             lease_remaining_steps: entry.lease_remaining_turns(self.turn).map(u64::from),
-            kind: if true {
-                crate::mm::value::RetentionKind::Other
-            } else {
-                retention_kind(entry.key.as_deref())
-            },
+            kind: RetentionKind::Other,
             tokens: entry.tokens,
             confidence_ppm: 0,
             stale_discount_ppm: 0,
@@ -654,23 +645,6 @@ impl KnowledgePartition {
     }
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-}
-
-fn retention_kind(key: Option<&str>) -> RetentionKind {
-    match key
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default()
-    {
-        "user" => RetentionKind::User,
-        "feedback" => RetentionKind::Feedback,
-        "project" | "memory" => RetentionKind::Project,
-        "reference" | "ref" => RetentionKind::Reference,
-        "skill" => RetentionKind::Skill,
-        "artifact" => RetentionKind::Artifact,
-        _ => RetentionKind::Other,
     }
 }
 
