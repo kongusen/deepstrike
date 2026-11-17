@@ -1647,10 +1647,7 @@ impl ContextManager {
                             .strip_prefix("skill:")
                             .is_some_and(|name| self.active_skills.contains_key(name)) =>
                 {
-                    return Err(format!(
-                        "knowledge {key:?} is the body of an active skill; deactivate the skill \
-                         instead of removing its body"
-                    ));
+                    return Err(crate::context::voice::refusal::active_skill_body(key));
                 }
                 _ => {}
             }

@@ -44,13 +44,7 @@ pub fn admit_write(origin: ItemOrigin, writer: Authority, op: WriteOp) -> Result
     if allowed {
         Ok(())
     } else {
-        Err(format!(
-            "a {} item is written by the {}; the {} may not {} it",
-            origin.label(),
-            author.label(),
-            writer.label(),
-            op.label()
-        ))
+        Err(crate::context::voice::refusal::item_write(origin.label(), author.label(), writer.label(), op.label()))
     }
 }
 
@@ -133,12 +127,7 @@ pub fn admit_task_update(update: &TaskUpdate, writer: Authority) -> Result<(), S
         .filter(|field| field.writable_by(writer))
         .map(TaskField::label)
         .collect();
-    Err(format!(
-        "the {} may not set {}; nothing was applied. Fields it may set: {}",
-        writer.label(),
-        refused.join(", "),
-        if writable.is_empty() { "none".to_string() } else { writable.join(", ") }
-    ))
+    Err(crate::context::voice::refusal::task_fields(writer.label(), &refused, &writable))
 }
 
 #[cfg(test)]

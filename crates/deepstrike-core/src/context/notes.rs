@@ -81,14 +81,14 @@ impl ContextManager {
     /// Apply one `note` call. `Ok` is the model-facing acknowledgement; `Err` the rejection.
     pub fn write_note(&mut self, request: &NoteRequest, turn: u32) -> Result<String, String> {
         if !self.notes_enabled() {
-            return Err("notes are not enabled for this run".into());
+            return Err(crate::context::voice::refusal::NOTES_DISABLED.into());
         }
         let title = request.title.trim();
         if title.is_empty() {
-            return Err("a note needs a title".into());
+            return Err(crate::context::voice::refusal::NOTE_NEEDS_TITLE.into());
         }
         if title.chars().count() > NOTE_TITLE_MAX_CHARS {
-            return Err(format!("a note title may have at most {NOTE_TITLE_MAX_CHARS} characters"));
+            return Err(crate::context::voice::refusal::note_title_too_long(NOTE_TITLE_MAX_CHARS));
         }
         match request.action {
             NoteAction::Retire => self.retire_note(title, request.replaced_by.as_deref()),
@@ -99,7 +99,8 @@ impl ContextManager {
     fn retire_note(&mut self, title: &str, replaced_by: Option<&str>) -> Result<String, String> {
         let state = &self.partitions.task_state;
         let Some(index) = state.note_index(title) else {
-            return Err(format!("there is no note titled {title:?}; {}", self.note_titles()));
+            let titles: Vec<&str> = state.notes.iter().map(|n| n.title.as_str()).collect();
+            return Err(crate::context::voice::refusal::no_such_note(title, &titles));
         };
         let replacement = replaced_by.and_then(|other| state.note_index(other)).map(|i| state.notes[i].item);
         let old = self.partitions.task_state.notes.remove(index);
@@ -107,13 +108,13 @@ impl ContextManager {
         if let Some(new) = replacement {
             self.add_note_edge(new, old.item, Relation::Supersedes);
         }
-        Ok(format!("note {:?} retired; {} note(s) left", old.title, self.partitions.task_state.notes.len()))
+        Ok(crate::context::voice::note_retired(&old.title, self.partitions.task_state.notes.len()))
     }
 
     fn save_note(&mut self, title: &str, request: &NoteRequest, turn: u32) -> Result<String, String> {
         let body = request.body.as_deref().map(str::trim).unwrap_or("");
         if body.is_empty() {
-            return Err("a note needs a body".into());
+            return Err(crate::context::voice::refusal::NOTE_NEEDS_BODY.into());
         }
         let existing = self.partitions.task_state.note_index(title);
         let kind = request
@@ -145,10 +146,7 @@ impl ContextManager {
                     self.partitions.task_state.notes.pop();
                 }
             }
-            return Err(format!(
-                "notes are full ({used} of {budget} tokens with this one): merge notes into \
-                 fewer, shorten them, or retire ones you no longer need, then write again"
-            ));
+            return Err(crate::context::voice::refusal::notes_full(used, budget));
         }
 
         if note.item == 0 {
@@ -173,29 +171,21 @@ impl ContextManager {
         let state = &mut self.partitions.task_state;
         state.notes_written += 1;
         state.notes_watermark = self.last_item_id;
-        let verb = if existing.is_some() { "updated" } else { "saved" };
-        let mut ack = format!(
-            "note {:?} {verb}; it shows in [TASK STATE] from your next turn ({} note(s), {used} of \
-             {budget} tokens); linked to {} result(s)",
-            note.title,
+        Ok(crate::context::voice::note_saved(
+            &note.title,
+            existing.is_some(),
             self.partitions.task_state.notes.len(),
-            evidence.len()
-        );
-        if !dead.is_empty() {
-            ack.push_str(&format!("; no note yet for link(s) {dead:?}"));
-        }
-        Ok(ack)
+            used,
+            budget,
+            evidence.len(),
+            &dead,
+        ))
     }
 
     fn add_note_edge(&mut self, from: ItemId, to: ItemId, relation: Relation) {
         if from != 0 && to != 0 && from != to {
             self.add_graph_edge(from, to, relation);
         }
-    }
-
-    fn note_titles(&self) -> String {
-        let titles: Vec<&str> = self.partitions.task_state.notes.iter().map(|n| n.title.as_str()).collect();
-        if titles.is_empty() { "there are no notes".into() } else { format!("notes: {titles:?}") }
     }
 
     /// The items a note's evidence names. Each reference is a tool call id, a handle's source, or

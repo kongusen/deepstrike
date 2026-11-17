@@ -123,7 +123,7 @@ use crate::scheduler::tcb::{
 use crate::scheduler::wait_index::WaitKey;
 use crate::signals::queue::QueuedSignalRuntimeState;
 use crate::signals::router::SignalRouterRuntimeState;
-use crate::syscall::{Disposition, Syscall as CoreSyscall};
+use crate::syscall::Syscall as CoreSyscall;
 use crate::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, LoopRoundSpec,
@@ -1570,18 +1570,6 @@ fn authority(message: &str) -> SyscallRefusal {
     ))
 }
 
-fn denial_reason(disposition: &Disposition, fallback: &str) -> String {
-    match disposition {
-        Disposition::Deny { stage, reason } => format!("{stage}: {reason}"),
-        Disposition::RateLimited { retry_after_ms } => {
-            format!("rate limited; retry after {retry_after_ms}ms")
-        }
-        Disposition::Gate { reason, .. } => format!("awaiting approval: {reason}"),
-        Disposition::Defer { slot } => format!("deferred at slot {slot}"),
-        Disposition::Allow => fallback.to_string(),
-    }
-}
-
 /// What the kernel authored for a pending `PersistMemory` effect (§22.13).
 #[derive(Debug, Clone, PartialEq)]
 struct AuthoredMemoryWrite {
@@ -1848,7 +1836,7 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
         arguments: serde_json::Value,
     ) -> Result<T, SyscallRejection> {
         serde_json::from_value(arguments)
-            .map_err(|error| SyscallRejection::new(name, format!("malformed arguments: {error}")))
+            .map_err(|error| SyscallRejection::new(name, crate::context::voice::refusal::malformed_arguments(&error.to_string())))
     }
 
     match name {
@@ -1929,13 +1917,10 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
             let record_id = args.record_id.filter(|id| !id.trim().is_empty());
             match (&record_id, args.query.trim().is_empty()) {
                 (Some(_), false) => {
-                    return Err(SyscallRejection::new(
-                        name,
-                        "pass either query or record_id, not both",
-                    ));
+                    return Err(SyscallRejection::new(name, crate::context::voice::refusal::MEMORY_QUERY_AND_RECORD));
                 }
                 (None, true) => {
-                    return Err(SyscallRejection::new(name, "pass a query or a record_id"));
+                    return Err(SyscallRejection::new(name, crate::context::voice::refusal::MEMORY_QUERY_NEITHER));
                 }
                 _ => {}
             }
@@ -1957,7 +1942,7 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
             }
             let args: Args = decode(name, arguments)?;
             let handle_id = super::scalar::HandleId::new(args.call_id).map_err(|error| {
-                SyscallRejection::new(name, format!("malformed handle: {}", error.message))
+                SyscallRejection::new(name, crate::context::voice::refusal::malformed_handle(&error.message))
             })?;
             Ok(SyscallRequest::PageIn(super::syscall::PageInRequest {
                 handle_id,
@@ -2816,7 +2801,7 @@ fn validate_ipc_labels(message_id: &str, kind: &str) -> Result<(), SyscallRefusa
     if message_id.is_empty() || kind.is_empty() || message_id.len() > 256 || kind.len() > 256 {
         return Err(SyscallRefusal::Rejected(SyscallRejection::new(
             "local_ipc",
-            "message_id and message_kind must contain 1..=256 bytes",
+            crate::context::voice::refusal::IPC_LABELS,
         )));
     }
     Ok(())
@@ -2839,27 +2824,13 @@ fn resolve_ipc_handle(
         .ok_or_else(|| {
             SyscallRefusal::Rejected(SyscallRejection::new(
                 "local_ipc",
-                format!("payload handle {handle_id} is not reachable by this operation"),
+                crate::context::voice::refusal::ipc_handle_unreachable(handle_id.as_str()),
             ))
         })
 }
 
 fn local_ipc_refusal(error: crate::scheduler::tcb::LocalIpcError) -> SyscallRefusal {
-    let reason = match error {
-        crate::scheduler::tcb::LocalIpcError::UnknownCaller => "unknown caller",
-        crate::scheduler::tcb::LocalIpcError::CallerTerminal => "caller is terminal",
-        crate::scheduler::tcb::LocalIpcError::UnknownRecipient => "unknown recipient",
-        crate::scheduler::tcb::LocalIpcError::ChannelSubscribersMismatch => {
-            "channel subscriber set is immutable"
-        }
-        crate::scheduler::tcb::LocalIpcError::NotSubscriber => "caller is not a channel subscriber",
-        crate::scheduler::tcb::LocalIpcError::Full => "IPC capacity is full",
-        crate::scheduler::tcb::LocalIpcError::Expired => "message TTL already expired",
-        crate::scheduler::tcb::LocalIpcError::ObjectConflict => {
-            "object id already names a different descriptor"
-        }
-    };
-    SyscallRefusal::Rejected(SyscallRejection::new("local_ipc", reason))
+    SyscallRefusal::Rejected(SyscallRejection::new("local_ipc", crate::context::voice::refusal::local_ipc(&error)))
 }
 
 fn local_ipc_outcome(accepted: bool) -> SyscallOutcome {
@@ -3459,14 +3430,8 @@ fn skill_grant_attenuation_message(
     skill_name: &str,
     violations: &[crate::types::capability::Capability],
 ) -> String {
-    format!(
-        "skill {skill_name:?} declares capability grants that would widen the mounting agent's authority: {}",
-        violations
-            .iter()
-            .map(|capability| capability.id.0.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    let ids: Vec<&str> = violations.iter().map(|capability| capability.id.0.as_str()).collect();
+    crate::context::voice::refusal::skill_grants_widen(skill_name, &ids)
 }
 
 fn core_tool_schema(schema: &WireToolSchema) -> crate::types::message::ToolSchema {

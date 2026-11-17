@@ -330,7 +330,7 @@ impl CanonicalOperationDriver {
                 Err(SyscallRefusal::Fault(fault)) => self.note_rejection(
                     SyscallRejection::new(
                         "parent_request",
-                        format!("request {seq} refused: {}", fault.message),
+                        crate::context::voice::refusal::parent_request_refused(seq, &fault.message),
                     )
                     .by(&completed.task_id),
                 ),
@@ -439,7 +439,7 @@ impl CanonicalOperationDriver {
             Ok(()) => {
                 let disposition = engine.gate_memory_write_proposal();
                 (!disposition.is_allowed())
-                    .then(|| denial_reason(&disposition, "memory write denied"))
+                    .then(|| crate::context::voice::refusal::denial(&disposition, crate::context::voice::refusal::MEMORY_WRITE_DENIED))
             }
         };
         if let Some(error) = refusal {

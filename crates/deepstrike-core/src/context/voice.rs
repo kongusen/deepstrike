@@ -385,6 +385,211 @@ pub fn task_state_block(state: &TaskState) -> String {
     lines.join("\n")
 }
 
+// ── Refusals: why a kernel-tool call was not carried out ────────────────────────────────────────
+//
+// The reason of a refused call is both an audit fact (`syscall_rejected`) and the result the model
+// reads on its next turn. Reasons that only pass on another component's message (a validation
+// fault, a host policy's denial) carry that message unchanged.
+
+pub mod refusal {
+    pub fn quarantined(caller: &str, family: &str) -> String {
+        format!(
+            "quarantine: task {caller} is quarantined and may not widen its authority \
+             through a {family} syscall"
+        )
+    }
+
+    pub const EMPTY_WORKFLOW: &str = "an authored workflow with no nodes has nothing to spawn";
+    pub const EMPTY_SUBMISSION: &str = "an empty submission appends nothing";
+    pub const NO_WORKFLOW_IN_FLIGHT: &str =
+        "no workflow is in flight, so there is no graph to append to";
+
+    pub const CHANNEL_EMPTY: &str = "channel_id and subscribers must be non-empty";
+    pub const CHANNEL_SUBSCRIBERS_DUPLICATE: &str = "channel subscribers must be unique";
+    pub const MAILBOX_LIMIT: &str = "limit must be between 1 and 64";
+    pub const IPC_LABELS: &str = "message_id and message_kind must contain 1..=256 bytes";
+
+    pub fn ipc_handle_unreachable(handle_id: &str) -> String {
+        format!("payload handle {handle_id} is not reachable by this operation")
+    }
+
+    /// One reason per local-IPC failure.
+    pub(crate) fn local_ipc(error: &crate::scheduler::tcb::LocalIpcError) -> &'static str {
+        use crate::scheduler::tcb::LocalIpcError;
+        match error {
+            LocalIpcError::UnknownCaller => "unknown caller",
+            LocalIpcError::CallerTerminal => "caller is terminal",
+            LocalIpcError::UnknownRecipient => "unknown recipient",
+            LocalIpcError::ChannelSubscribersMismatch => "channel subscriber set is immutable",
+            LocalIpcError::NotSubscriber => "caller is not a channel subscriber",
+            LocalIpcError::Full => "IPC capacity is full",
+            LocalIpcError::Expired => "message TTL already expired",
+            LocalIpcError::ObjectConflict => "object id already names a different descriptor",
+        }
+    }
+
+    pub fn object_not_registered(object_id: &str) -> String {
+        format!("object {object_id} is not registered")
+    }
+
+    pub fn no_read_capability(caller: &str, object_id: &str) -> String {
+        format!("caller {caller} has no read capability for object {object_id}")
+    }
+
+    pub fn no_read_capability_shared(caller: &str, object_id: &str) -> String {
+        format!("caller {caller} has no read capability for shared object {object_id}")
+    }
+
+    pub const MEMORY_UNBOUND_WRITE: &str =
+        "this operation holds no memory binding, so it can author no memory record";
+    pub const MEMORY_READ_ONLY: &str = "this operation's memory binding is read-only";
+    pub const MEMORY_PROPOSAL_PENDING: &str = "Another memory proposal is already pending review. Propose this one again after its outcome arrives.";
+    pub const MEMORY_UNBOUND_READ: &str =
+        "this operation holds no memory binding, so it can read no memory record";
+    pub const MEMORY_WRITE_ONLY: &str = "this operation's memory binding is write-only";
+    pub const MEMORY_QUERY_PENDING: &str =
+        "A different memory query is already pending. Retry this query after its result arrives.";
+    pub const MEMORY_QUERY_AND_RECORD: &str = "pass either query or record_id, not both";
+    pub const MEMORY_QUERY_NEITHER: &str = "pass a query or a record_id";
+    pub const MEMORY_WRITE_DENIED: &str = "memory write denied";
+    pub const WORKFLOW_AUTHORING_DENIED: &str = "workflow authoring denied";
+
+    pub fn malformed_record_id(message: &str) -> String {
+        format!("malformed record_id: {message}")
+    }
+
+    pub fn malformed_arguments(error: &str) -> String {
+        format!("malformed arguments: {error}")
+    }
+
+    pub fn malformed_handle(message: &str) -> String {
+        format!("malformed handle: {message}")
+    }
+
+    pub fn parent_request_refused(seq: usize, message: &str) -> String {
+        format!("request {seq} refused: {message}")
+    }
+
+    /// A host admission policy's answer, or `fallback` when it allowed the call.
+    pub fn denial(disposition: &crate::syscall::Disposition, fallback: &str) -> String {
+        use crate::syscall::Disposition;
+        match disposition {
+            Disposition::Deny { stage, reason } => format!("{stage}: {reason}"),
+            Disposition::RateLimited { retry_after_ms } => {
+                format!("rate limited; retry after {retry_after_ms}ms")
+            }
+            Disposition::Gate { reason, .. } => format!("awaiting approval: {reason}"),
+            Disposition::Defer { slot } => format!("deferred at slot {slot}"),
+            Disposition::Allow => fallback.to_string(),
+        }
+    }
+
+    pub fn no_dependency_output(agent_id: &str) -> String {
+        format!("this run has no dependency output from {agent_id}")
+    }
+
+    pub fn handle_unreachable(handle_id: &str) -> String {
+        format!(
+            "handle {handle_id} is not reachable in this operation's handle table; a \
+             page-in addresses only what the caller already holds"
+        )
+    }
+
+    pub fn handle_not_paged(handle_id: &str, residency: &str) -> String {
+        format!(
+            "handle {handle_id} is {residency} — its body is held by this kernel, not by the \
+             payload store, so there is nothing to page in"
+        )
+    }
+
+    pub fn unknown_skill(name: &str) -> String {
+        format!(
+            "this operation declares no skill named {name:?}; activation is a \
+             capability mutation and is refused rather than invented"
+        )
+    }
+
+    pub fn skill_grants_widen(skill_name: &str, capability_ids: &[&str]) -> String {
+        format!(
+            "skill {skill_name:?} declares capability grants that would widen the mounting agent's authority: {}",
+            capability_ids.join(", ")
+        )
+    }
+
+    // `note`
+    pub const NOTES_DISABLED: &str = "notes are not enabled for this run";
+    pub const NOTE_NEEDS_TITLE: &str = "a note needs a title";
+    pub const NOTE_NEEDS_BODY: &str = "a note needs a body";
+
+    pub fn note_title_too_long(max: usize) -> String {
+        format!("a note title may have at most {max} characters")
+    }
+
+    pub fn no_such_note(title: &str, titles: &[&str]) -> String {
+        let listing = if titles.is_empty() {
+            "there are no notes".to_string()
+        } else {
+            format!("notes: {titles:?}")
+        };
+        format!("there is no note titled {title:?}; {listing}")
+    }
+
+    pub fn notes_full(used: u32, budget: u32) -> String {
+        format!(
+            "notes are full ({used} of {budget} tokens with this one): merge notes into \
+             fewer, shorten them, or retire ones you no longer need, then write again"
+        )
+    }
+
+    // Write authority (`context::authority`).
+    pub fn item_write(origin: &str, author: &str, writer: &str, op: &str) -> String {
+        format!("a {origin} item is written by the {author}; the {writer} may not {op} it")
+    }
+
+    pub fn task_fields(writer: &str, refused: &[&str], writable: &[&str]) -> String {
+        format!(
+            "the {writer} may not set {}; nothing was applied. Fields it may set: {}",
+            refused.join(", "),
+            if writable.is_empty() { "none".to_string() } else { writable.join(", ") }
+        )
+    }
+
+    pub fn active_skill_body(key: &str) -> String {
+        format!(
+            "knowledge {key:?} is the body of an active skill; deactivate the skill \
+             instead of removing its body"
+        )
+    }
+
+    // Memory policy validation.
+    pub const MEMORY_NAME_EMPTY: &str = "memory name must not be empty";
+
+    pub fn memory_name_too_long(max: u32) -> String {
+        format!("memory name exceeds {max} characters")
+    }
+
+    pub fn memory_content_too_large(max: u32) -> String {
+        format!("memory content exceeds {max} bytes")
+    }
+}
+
+/// `note` acknowledgements.
+pub fn note_retired(title: &str, left: usize) -> String {
+    format!("note {title:?} retired; {left} note(s) left")
+}
+
+pub fn note_saved(title: &str, updated: bool, count: usize, used: u32, budget: u32, linked: usize, dead: &[String]) -> String {
+    let verb = if updated { "updated" } else { "saved" };
+    let mut ack = format!(
+        "note {title:?} {verb}; it shows in [TASK STATE] from your next turn ({count} note(s), {used} of \
+         {budget} tokens); linked to {linked} result(s)"
+    );
+    if !dead.is_empty() {
+        ack.push_str(&format!("; no note yet for link(s) {dead:?}"));
+    }
+    ack
+}
+
 // ── Kernel tools: what each says it does ───────────────────────────────────────────────────────
 
 pub fn read_result_tool_description() -> String {

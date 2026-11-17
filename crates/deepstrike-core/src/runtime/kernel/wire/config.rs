@@ -887,19 +887,13 @@ impl ResolvedMemoryPolicy {
             return Ok(());
         }
         if name.trim().is_empty() {
-            return Err("memory name must not be empty".to_string());
+            return Err(crate::context::voice::refusal::MEMORY_NAME_EMPTY.to_string());
         }
         if name.chars().count() > self.max_name_length as usize {
-            return Err(format!(
-                "memory name exceeds {} characters",
-                self.max_name_length
-            ));
+            return Err(crate::context::voice::refusal::memory_name_too_long(self.max_name_length));
         }
         if content_bytes > self.max_content_bytes as usize {
-            return Err(format!(
-                "memory content exceeds {} bytes",
-                self.max_content_bytes
-            ));
+            return Err(crate::context::voice::refusal::memory_content_too_large(self.max_content_bytes));
         }
         Ok(())
     }

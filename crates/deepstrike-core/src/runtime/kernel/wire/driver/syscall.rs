@@ -23,10 +23,7 @@ impl CanonicalOperationDriver {
             // coercion to be exhaustive.
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 family,
-                format!(
-                    "quarantine: task {caller} is quarantined and may not widen its authority \
-                     through a {family} syscall"
-                ),
+                crate::context::voice::refusal::quarantined(caller.as_str(), family),
             )));
         }
 
@@ -35,7 +32,7 @@ impl CanonicalOperationDriver {
                 if submit.spec.nodes.is_empty() {
                     return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                         "start_workflow",
-                        "an authored workflow with no nodes has nothing to spawn",
+                        crate::context::voice::refusal::EMPTY_WORKFLOW,
                     )));
                 }
                 if self
@@ -71,7 +68,7 @@ impl CanonicalOperationDriver {
                 if append.nodes.is_empty() {
                     return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                         "submit_workflow_nodes",
-                        "an empty submission appends nothing",
+                        crate::context::voice::refusal::EMPTY_SUBMISSION,
                     )));
                 }
                 if !self
@@ -81,7 +78,7 @@ impl CanonicalOperationDriver {
                 {
                     return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                         "submit_workflow_nodes",
-                        "no workflow is in flight, so there is no graph to append to",
+                        crate::context::voice::refusal::NO_WORKFLOW_IN_FLIGHT,
                     )));
                 }
                 self.append_nodes(
@@ -208,7 +205,7 @@ impl CanonicalOperationDriver {
         if request.channel_id.is_empty() || request.subscribers.is_empty() {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "publish_channel",
-                "channel_id and subscribers must be non-empty",
+                crate::context::voice::refusal::CHANNEL_EMPTY,
             )));
         }
         let mut subscribers: Vec<_> = request
@@ -221,7 +218,7 @@ impl CanonicalOperationDriver {
         if subscribers.len() != request.subscribers.len() {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "publish_channel",
-                "channel subscribers must be unique",
+                crate::context::voice::refusal::CHANNEL_SUBSCRIBERS_DUPLICATE,
             )));
         }
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
@@ -276,7 +273,7 @@ impl CanonicalOperationDriver {
         if limit == 0 || limit > 64 {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "receive_mailbox",
-                "limit must be between 1 and 64",
+                crate::context::voice::refusal::MAILBOX_LIMIT,
             )));
         }
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
@@ -315,7 +312,7 @@ impl CanonicalOperationDriver {
             .ok_or_else(|| {
                 SyscallRefusal::Rejected(SyscallRejection::new(
                     "read_object",
-                    format!("object {object_id} is not registered"),
+                    crate::context::voice::refusal::object_not_registered(&object_id.to_string()),
                 ))
             })?;
         if descriptor.owner.as_str() != caller.as_str()
@@ -328,7 +325,7 @@ impl CanonicalOperationDriver {
         {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "read_object",
-                format!("caller {caller} has no read capability for object {object_id}"),
+                crate::context::voice::refusal::no_read_capability(caller.as_str(), &object_id.to_string()),
             )));
         }
         Ok(SyscallOutcome {
@@ -413,13 +410,13 @@ impl CanonicalOperationDriver {
         let Some(binding) = context.config.memory_access.clone() else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "write_memory",
-                "this operation holds no memory binding, so it can author no memory record",
+                crate::context::voice::refusal::MEMORY_UNBOUND_WRITE,
             )));
         };
         if !binding.capabilities.write {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "write_memory",
-                "this operation's memory binding is read-only",
+                crate::context::voice::refusal::MEMORY_READ_ONLY,
             )));
         }
         self.require_effect_support(context.config, EffectKindTag::PersistMemory)
@@ -471,14 +468,14 @@ impl CanonicalOperationDriver {
             }
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "write_memory",
-                "Another memory proposal is already pending review. Propose this one again after its outcome arrives.",
+                crate::context::voice::refusal::MEMORY_PROPOSAL_PENDING,
             )));
         }
         let disposition = engine.gate_memory_write_proposal();
         if !disposition.is_allowed() {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "write_memory",
-                denial_reason(&disposition, "memory write denied"),
+                crate::context::voice::refusal::denial(&disposition, crate::context::voice::refusal::MEMORY_WRITE_DENIED),
             )));
         }
         // Plan task 4.1 · the evidence is resolved against this run's history now, while the
@@ -535,13 +532,13 @@ impl CanonicalOperationDriver {
         let Some(binding) = context.config.memory_access.clone() else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "query_memory",
-                "this operation holds no memory binding, so it can read no memory record",
+                crate::context::voice::refusal::MEMORY_UNBOUND_READ,
             )));
         };
         if !binding.capabilities.read {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "query_memory",
-                "this operation's memory binding is write-only",
+                crate::context::voice::refusal::MEMORY_WRITE_ONLY,
             )));
         }
         self.require_effect_support(context.config, EffectKindTag::QueryMemory)
@@ -553,7 +550,7 @@ impl CanonicalOperationDriver {
             Some(id) => Some(MemoryRecordRef::new(id.clone()).map_err(|error| {
                 SyscallRefusal::Rejected(SyscallRejection::new(
                     "query_memory",
-                    format!("malformed record_id: {}", error.message),
+                    crate::context::voice::refusal::malformed_record_id(&error.message),
                 ))
             })?),
             None => None,
@@ -586,7 +583,7 @@ impl CanonicalOperationDriver {
             }
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "query_memory",
-                "A different memory query is already pending. Retry this query after its result arrives.",
+                crate::context::voice::refusal::MEMORY_QUERY_PENDING,
             )));
         }
         let authored = AuthoredMemoryQuery {
@@ -647,7 +644,7 @@ impl CanonicalOperationDriver {
             let Some(body) = engine.ctx.dependency_bodies.get(agent_id) else {
                 return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                     READ_RESULT_TOOL_NAME,
-                    format!("this run has no dependency output from {agent_id}"),
+                    crate::context::voice::refusal::no_dependency_output(agent_id),
                 )));
             };
             return Ok(SyscallOutcome {
@@ -669,30 +666,20 @@ impl CanonicalOperationDriver {
         {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 READ_RESULT_TOOL_NAME,
-                format!(
-                    "caller {caller} has no read capability for shared object {}",
-                    descriptor.id
-                ),
+                crate::context::voice::refusal::no_read_capability_shared(caller.as_str(), &descriptor.id.to_string()),
             )));
         }
         let Some(residency) = engine.ctx.payload_residency(handle_id.as_str()).cloned() else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 READ_RESULT_TOOL_NAME,
-                format!(
-                    "handle {handle_id} is not reachable in this operation's handle table; a \
-                     page-in addresses only what the caller already holds"
-                ),
+                crate::context::voice::refusal::handle_unreachable(handle_id.as_str()),
             )));
         };
         let (Some(payload_ref), Some(digest)) = (residency.payload_ref(), residency.digest())
         else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 READ_RESULT_TOOL_NAME,
-                format!(
-                    "handle {handle_id} is {} — its body is held by this kernel, not by the \
-                     payload store, so there is nothing to page in",
-                    residency.label()
-                ),
+                crate::context::voice::refusal::handle_not_paged(handle_id.as_str(), residency.label()),
             )));
         };
         let payload_ref = PayloadRef::new(payload_ref).map_err(|error| {
@@ -739,11 +726,7 @@ impl CanonicalOperationDriver {
         if !engine.ctx.skill_available(&activate.name) {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 "skill",
-                format!(
-                    "this operation declares no skill named {:?}; activation is a \
-                     capability mutation and is refused rather than invented",
-                    activate.name
-                ),
+                crate::context::voice::refusal::unknown_skill(&activate.name),
             )));
         }
         ensure_skill_grants_are_attenuated(
