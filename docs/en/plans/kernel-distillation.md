@@ -302,17 +302,17 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
       counts them instead.
     - `ContextPartitions.signals` is a public field read directly by `tests/rust`, so this is a
       breaking change to the Rust public API, recorded in the CHANGELOG and MIGRATION.
-- [ ] 1.2 **Notes become items.** Each note in `TaskState.notes` is an item of origin `Note`;
+- [-] 1.2 **Notes become items.** (Dropped, user 2026-11-17.) Notes live in the task state and the kernel gives them item ids to record edges; making them items found no payoff.
   budget refusal, rewrite by title and the three graph relations are unchanged. `notes_tokens()`
   sums items.
   - Acceptance: the 8 tests in `context/notes.rs` pass without changing assertions; the `notes:`
     block is byte for byte the same.
-- [ ] 1.3 **Dependency outputs become items.** `dependency_bodies` becomes items of origin
+- [-] 1.3 **Dependency outputs become items.** (Dropped, user 2026-11-17.) Same: no payoff found.
   `DependencyOutput`, scope `Edge`, fidelity `Handle`; `read_result("dep:<agent>")` reads the item.
   Only then does `survives_renewal` have something real to filter; add a test showing that
   dependency outputs after renewal behave as the table says. If today's behavior is "still readable
   after renewal", keep the behavior and fix the table.
-- [ ] 1.4 **One vocabulary for form.** The four `Residency` states fold into the item's fidelity (a
+- [-] 1.4 **One vocabulary for form.** (Dropped, user 2026-11-17.) After stage 2 removed narration collapse and per-turn collapse, what is left is two records: the history item records its form (full or excerpt), the handle table records where a body lives (resident, external, paged out, cleared by the provider); `history_fidelity` combines them for the report and the item graph, and the renderer reads the handle table directly. Merging would move payload locators and digests into items and change the checkpoint shape, the renderer and the cache ledger, with nothing the model sees changing and no known defect: the riskiest change of the release. `ObjectDescriptor` stays its own concept (read authority over objects shared across tasks).
   handle carries a locator and digest). `HandleTable` becomes an index from `call_id` to item and
   holds no state of its own. `history_fidelity()` is deleted.
   - Narration collapse and collapse previews become "downgrade written back to the item's
@@ -324,7 +324,7 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
     merging.
   - Acceptance: golden renders unchanged byte for byte; the cache ledger's break attribution
     unchanged.
-- [ ] 1.5 **One lifetime.** `sweep_expired_leases`, `sweep_expired_skill_leases` and
+- [-] 1.5 **One lifetime.** (Dropped, user 2026-11-17.) The three sweeps govern different things (effect capability leases, skill activations, knowledge items); merging them found no payoff.
   `sweep_expired_item_leases` (called in a row at the top of `feed` in `state_machine/mod.rs`)
   become one table-driven sweep. `active_skills` expiry turns fold into the skill item's lease.
   `CapabilityLease` belongs to effect admission, stays separate, and is documented as such.
@@ -349,7 +349,7 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
     its schema": the rest is refused whole with an error result, nothing applied, and the run goes
     on; the host still sets all 7. Regression test `update_plan_cannot_write_fields_its_schema_hides`.
     Recorded in the CHANGELOG and MIGRATION.
-- [~] 1.7 **Kernel text in one place.** (two and a half of three slices, 2026-11-16 to 17) A new `context/voice.rs` (name negotiable) holds every
+- [x] 1.7 **Kernel text in one place.** (2026-11-16 to 17) A new `context/voice.rs` (name negotiable) holds every
   string constant and format function the kernel writes to the model; the lifecycle report gains
   `kernel_text_tokens`.
   - Acceptance: renders unchanged byte for byte; grep finds no model-facing literal outside that
@@ -377,15 +377,24 @@ Ordered by dependency. Each task removes one "value that exists only in the tabl
       `skill`) moved into `voice`, and the dead branch the experiment left in `update_plan`'s
       schema is gone. Goldens unchanged. Workflow tool schemas (`start_workflow`, …) come from the
       host's configuration and are not kernel text.
-    - **Not done: the refusal reasons of rejected kernel-tool calls** (`SyscallRejection::new`, about
-      40 sites and 30 distinct texts, mostly protocol and authority errors, several embedding a
-      fault's or the host's message). Until it is, the acceptance "no model-facing literal outside
-      the module" does not hold.
-- [ ] 1.8 **Split `ContextManager` by responsibility.** After 1.1–1.7, when it has fewer fields.
+    - **Third slice, second half (`be1a83a1`)**: the refusal reasons of rejected kernel-tool calls
+      (`SyscallRejection::new`, about 40 sites), the `note` acknowledgements and refusals, the
+      write-authority refusals and the memory-policy validation messages all move into
+      `voice::refusal`. A reason that only passes on another component's message (a validation
+      fault, a host policy's denial) carries it unchanged. Goldens unchanged. The entropy alert's
+      sentence to the model went with `notify_model` (see stage 2).
+- [x] 1.8 **Split `ContextManager` by responsibility.** After 1.1–1.7, when it has fewer fields.
   Split along the natural groups of the existing fields: item store, budget and pressure (estimate
   calibration included), cache ledger, capabilities and tool exposure (skills, capabilities,
   meta-tool schemas), reporting. Moves only, no logic changes.
-- [ ] 1.9 Delete table values that still have no producer or consumer.
+  - **Record (2026-11-17, `b0a0ceb7`).** The struct stays whole; the files split by
+    responsibility under `context/manager/`: `mod.rs` (struct, constructor, render, task state),
+    `handles`, `pressure` (calibration, compaction, renewal), `items` (history admission, ids, the
+    item graph, recall, item leases, kernel-text counting), `cache` (the cache ledger), `report`,
+    `knowledge`, `capabilities` (skills, the manifest, kernel tool schemas), and tests in
+    `tests.rs`. Methods private to the old file are `pub(super)`. Splitting the struct would change
+    field access paths across the crate, which is not a move.
+- [x] 1.9 Delete table values that still have no producer or consumer. (2026-11-17, `6b9c722a`) `ItemOrigin::{TaskState, Signal, Note}` (task state, signals and notes are not stored as items), `ItemScope::Agent` (no origin defaults to it), `Fidelity::Structured` and `Lease::UntilDelivered` (referenced only by those origins). The four SDKs' report types follow. Goldens unchanged.
 
 Stage 1 changes the checkpoint shape. Each task keeps a restore path for old checkpoints, with a
 test, and records the change in `MIGRATION-0.2.83-to-<next>.md`. The host-facing ABI (`KernelInput`,
@@ -444,6 +453,7 @@ Notes:
   - The cost difference is almost entirely the cache: minimal hits the cache more in every scenario; default breaks the prefix 2–7 times as often, almost all tagged `collapse` (M5) and `narration` (M1).
   - long-horizon answers were read one by one: wrong answers on both sides are counts off by 1–2 lines, with no error type unique to one side; the 6 discordant pairs split 4 to 2, within chance. minimal never hit the turn limit (0/10); the only turn-limit run was default's.
 - **Decision (user, 2026-11-16): "delete most of them."** M1–M7 are deleted. M8 (the criteria gate, which fires only when the host passes acceptance criteria; no benchmark sets any, so there is no data) and M9 (`update_plan`'s progress / blocked_on and the scratchpad, part of the four SDKs' API) stay for now, to be decided separately. long-horizon was not topped up to 30 pairs.
+- **Second decision (user, 2026-11-17).** M9 is deleted: `update_plan` keeps `plan` and `current_step`; `progress`, `blocked_on` and the scratchpad leave the kernel, the wire, the checkpoint and the four SDKs (`05129489`). M8 stays: the criteria gate is on by default and fires when the host passes acceptance criteria; it has no measurement yet and waits for a benchmark with criteria. §8 item 2's `notify_model` is deleted too.
 - **How the deletion was done and checked.** First the switches were fixed (M1–M7 stripped, M8–M9 kept) and the regenerated goldens were byte-identical to the `minimal` measured on the experiment branch; then the dead code and the configuration surface were removed, after which the goldens differ only by the removed config fields and the digests that follow. In detail:
   - M1 narration collapse: projection, `collapseOldAssistantNarration` and the `narration` break cause removed.
   - M2 utility scoring: `context/utility.rs` replaced by `context/archive.rs`, oldest first, keeping only the recent units by rule.
@@ -461,14 +471,18 @@ After stage 2, converge the configuration: `PressureThresholds` keeps only thres
 stays authoritative and the other is renamed or deleted; `EntropyWatchConfig.notify_model` is
 deleted under "no dormant switches" (needs the user's confirmation, §8).
 
+**Configuration convergence, done (2026-11-17, `1d861cb1`).** All four thresholds are still used, so `PressureThresholds` stays. `context::policy::ContextPolicy`, a second copy of the resolved wire policy with its own duplicate validation, is deleted; the driver writes `ContextConfig` directly (`ContextManager::apply_config`). `preserve_recent_turns` (compaction) and `preserve_recent_units` (render) are one field, `preserve_recent_units`, set by the wire's `preserve_recent_turns`; both defaulted to 2. `notify_model` is deleted (`05129489`).
+
+**About older checkpoints.** Stage 2's note that older checkpoints still restore was wrong: the kernel decodes strictly and re-hashes what it decodes, so a checkpoint carrying a removed field either fails to decode or fails its digest, and journal replay decodes strictly too. Operations in flight under 0.2.83 cannot be resumed by this release; MIGRATION says so, and the read-only compatibility fields are removed.
+
 ### Stage 3: documentation
 
-- [ ] 3.1 A new page `docs/concepts/context-item.md` holding only §4's table and the origin defaults
+- [x] 3.1 A new page `docs/concepts/context-item.md` holding only §4's table and the origin defaults
   table, stating each column's single point of enforcement in code. Other docs link to it instead
   of each explaining the partitions.
-- [ ] 3.2 Update P3 in `docs/architecture/agent-os.md`, Phases 3–4 of `execution-model.md`, and
+- [x] 3.2 Update P3 in `docs/architecture/agent-os.md`, Phases 3–4 of `execution-model.md`, and
   `docs/guides/context-engineering.md`.
-- [ ] 3.3 Sync `docs/en/`. The repository's docs check requires zh/en pairs (PR #4 once failed on
+- [x] 3.3 Sync `docs/en/`. The repository's docs check requires zh/en pairs (PR #4 once failed on
   it). This translation of the plan is part of that.
 
 ### Stage 4: the memory evidence chain, and measuring memory when it goes wrong
@@ -744,8 +758,7 @@ are items, the two evidence resolvers become one); 4.4 after 4.3
 ## 8. Decisions for the user
 
 1. The spending cap for stage 2's measurements.
-2. Whether `EntropyWatchConfig.notify_model` (off by default) is deleted under "no dormant
-   switches". It is a second channel beside the host supervisor, with no measurement behind it.
+2. ~~Whether `EntropyWatchConfig.notify_model` is deleted.~~ User, 2026-11-17: deleted.
 3. The conflicts between today's behavior and the write-authority table that 1.6 lists, one by one.
 4. Stage 1 changes the checkpoint shape. Proceeding under the earlier agreement ("breaking changes
    allowed, with a MIGRATION note"); say so if stronger compatibility than restoring old
@@ -769,101 +782,30 @@ are items, the two evidence resolvers become one); 4.4 after 4.3
 - Verify against the code every conclusion §2 marks "to verify" and every "unused" claim before
   acting; where the code disagrees with this plan, the code wins and the plan is updated.
 
-## 10. Handoff (2026-11-16)
+## 10. Handoff (2026-11-17)
 
-Whoever picks this up starts here. Branch `refactor/kernel-distill-phase0`, based on `main`
-(`df26eabf`, v0.2.83); not pushed, no PR yet.
+Branch `refactor/kernel-distill-phase0`, based on `main` (`df26eabf`, v0.2.83). Every task of this plan is done or was dropped by the user; it ships as 0.2.84.
 
-### 10.1 Done, all on this branch
+### 10.1 Status
 
-| Commit subject | Content |
+| Part | Status |
 |---|---|
-| stage 0 cleanup | 0.1–0.7 of stage 0: removes `asyncSummarizer`, `summary_upgraded` and unread configuration; one compactor instead of two |
-| benchmarks and lab | the four memory upkeep metrics of 4.2; `multi-session --drift` of 4.3; the result files |
-| protocol fixes | the order of the `propose_memory` outcome (kernel); `memory` + `propose_memory` in one turn (Node runner); the reproduction script `scripts/kernel-tool-batches.mjs` |
-| name in memory headers | 4.4, on by default; CHANGELOG, MIGRATION, docs |
-| the plan | this document |
+| Stage 0 | Done |
+| Stage 1 | 1.1, 1.6, 1.7, 1.8, 1.9 done; 1.2, 1.3, 1.4, 1.5 dropped (user, 2026-11-17; reasons in each item) |
+| Stage 2 | M1–M7 and M9 deleted; M8 kept, unmeasured; `notify_model` deleted; configuration converged |
+| Stage 3 | Done: `docs/concepts/context-item.md` (zh and en), P3 and the guide updated |
+| Stage 4 | 4.1–4.4 done; 4.5 unscheduled |
 
-### 10.2 To do, in order
+### 10.2 What could come next
 
-1. **Two defects.**
-   - [x] The repeat fuse beside `memory` in one turn (2026-11-16, `dfcb62fb`). Root cause: when the
-     fuse or a gate answered a turn's host calls with synthetic results, the engine called the
-     provider at once, whether or not the same turn's syscalls had published kernel work (a memory
-     query or write); one step published `QueryMemory` and `CallProvider` together, and the next
-     request raced the query and was rendered without its result. Fix: in that case the synthetic
-     commit returns `AwaitingResume`, and the turn continues through `resume_after_preload` once the
-     work settles, as an unfused turn does (`turn_awaits_kernel_work` / `defer_provider_call` in
-     `state_machine/mod.rs`, `commit_synthetic_results` in `gate.rs`). Kernel regression test
-     `a_fused_turn_waits_for_the_memory_query_it_made`, which fails without the fix.
-   - [x] **An unexposed kernel tool ended the run** (2026-11-16, `dd6d11e4`). The user's decision:
-     "First ask why the kernel tool was not exposed — that is the core. Calling a tool that does not
-     exist should return an error, so the model goes looking for the real tool; after repeated
-     failures, move on to the summary."
-     - **Why it was not exposed.** `read_result` was offered only while some tool result was out of
-       context. A page-in brought the result back, and so did `reset_collapse_generation` at a
-       compaction or renewal; once the last such result was back, the tool vanished from the next
-       turn's toolset, although the model's history showed it using the tool and its description
-       tells it to page through large results with `offset`. The golden
-       `golden_lifecycle_external_payload` recorded exactly this: the request after the page-in had
-       no `read_result`. Fix: once offered, always offered (`ContextManager::read_result_offered`,
-       checkpointed). The toolset no longer shrinks, which also removes one source of cache prefix
-       breaks.
-     - **Calling a tool it does not have.** The driver no longer ends the run with
-       `invalid_authority`; like an unexposed host tool, the call gets an error result ("Tool '…'
-       is not available on this turn. Choose from the tools listed in your tools schema.") and is
-       not executed. Such calls count toward the repeat fuse, meta-tool names included: denied
-       after 5 repeats, and after 8 the run moves to the report turn and ends `NoProgress`. The
-       terminate rung's report turn itself offers no tools; a tool call there ends the run
-       `NoProgress` as usual.
-     - Tests: `a_tool_the_turn_never_exposed_has_no_caller_to_derive` (submit path),
-       `repeated_calls_to_an_unexposed_kernel_tool_burn_the_repeat_fuse` and the regenerated
-       golden, each failing without the fix. `scripts/kernel-tool-batches.mjs` 117/117; three random
-       seeds, 40 runs each, no failure. Full test suites of all four SDKs pass.
-     - Both change what the model sees on error paths. They were handled as defect fixes, not
-       through the DEC-13 gate, and are recorded in the CHANGELOG and MIGRATION.
-2. **Gaps left by the previous round.**
-   - [x] A regression test for the Node runner's fallback (`b97c9c13`), failing without the fix.
-   - [x] The WASM, Python and Rust runners had the same problem; fixed with the same fallback, each
-     with a regression test that fails without the fix (`b3f012b0`).
-   - [x] Python: the old venv pointed at a Python 3.11 that no longer exists. A fresh Python 3.12
-     venv in a scratch directory plus `maturin develop --release` runs the full pytest suite green
-     (913 passed). The local shell sets a SOCKS proxy; clear `ALL_PROXY` / `HTTP(S)_PROXY` before
-     running pytest, or httpx complains that `socksio` is missing.
-   - [x] This English version, which `node scripts/check-docs-drift.mjs` requires.
-3. **Stage 1 (1.1–1.9)**, then **4.1** (after 1.2; the wire optional field is approved).
-4. ~~**Stage 2's DEC-13 audit.**~~ First round done, M1–M7 deleted (see stage 2's record). M8 and M9 open.
-5. **Stage 3, documentation.**
+- **Put M8 through the gate.** It needs a benchmark that passes acceptance criteria; without one there is no basis for keeping or deleting the criteria gate.
+- **The cost of memory upkeep.** 4.2 and 4.3 show over a third of model turns doing only memory upkeep, including repeated searches of an empty store. Data only, nothing done.
+- **Recovery after drift.** Names fixed "records only grow"; they did not fix "the model does not learn the new rule" (14 / 40).
 
-### 10.3 Lessons of this round, before you start
+### 10.3 Operational pitfalls
 
-- **Read the data before concluding; do not conclude from an oracle's number.** Both keyword
-  oracles designed for 4.3 were worthless, which only reading the records themselves revealed; it
-  is also why 4.4's candidate changed from "a retire action" to "show the name". For every keep or
-  delete in stage 2, open a few raw trials.
-- **Session-paired samples are not independent.** Multi-session's 80 pairs come from 10 sequences.
-  Report wins and losses by sequence as well.
-- **Recovery after the drift is still poor** (14 / 40). The name fixed "records only grow", not "the
-  model cannot learn the new rule". The `retry` rule (request id ending in 0) was never mentioned by
-  any record in any run, so it may be too hard for the benchmark; confirm with the user before
-  changing the benchmark, since that makes old and new results incomparable.
-- **Memory upkeep takes over 30% of model turns**, and in session 0 the model searches an empty
-  store about ten times. Not addressed, only measured (4.2, 4.3). It is the most visible cost
-  outside stage 2.
-- **Measurements cost more than estimated.** 4.3's first run went about 45% over. Leave a margin
-  when asking for a budget, and since the balance cannot be checked from here, ask the user to
-  confirm it.
-
-### 10.4 Operational pitfalls
-
-- There is no `napi` CLI on this machine. To rebuild the addon: `cargo build --release -p
-  deepstrike-node`, then copy `target/release/libdeepstrike_node.dylib` to
-  `crates/deepstrike-node/deepstrike-core.darwin-arm64.node`. If the binding interface
-  (`crates/deepstrike-node/src`) changes, this does not regenerate `index.js` / `index.d.ts`;
-  install `@napi-rs/cli` v2 for that.
-- While a benchmark runs in the background, do not overwrite the `.node` file in place and do not
-  run `npm run build` (it deletes `node/dist` first). Replace the addon by copying to a temporary
-  name and then `mv`.
-- Under zsh, `echo ====X` and an unquoted `--include=*.rs` fail; quote path globs.
-- Do not chain other commands after a test command with `&&` for convenience. A previous round ran
-  a `git stash` by accident that way.
+- There is no `napi` CLI here. Rebuild the addon with `cargo build --release -p deepstrike-node`, copy `target/release/libdeepstrike_node.dylib` to a temporary name, then `mv` it to `crates/deepstrike-node/deepstrike-core.darwin-arm64.node`.
+- Node and WASM use jest (`npm test`), not vitest; WASM also has `npm run test:canonical-binding`.
+- Python: run `maturin develop --release` from `python/`, which writes `python/deepstrike/_kernel.abi3.so`; running it from `crates/deepstrike-py` installs a different package and the tests still load the old `.so`. Clear `ALL_PROXY` / `HTTP(S)_PROXY` before pytest.
+- Regenerate goldens with `BLESS_KERNEL_RECORD_FIXTURES=1 cargo test -p deepstrike-core --lib`; some tests read fixtures through `include_str!`, so run once more after blessing.
+- Do not chain other commands after a test command with `&&`.

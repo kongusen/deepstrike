@@ -65,6 +65,7 @@ function sidebar(prefix: '' | '/en'): SidebarGroup[] {
       text: prefix ? 'Concepts' : '概念',
       items: [
         { text: prefix ? 'Concept Index' : '概念索引', link: `${p}/concepts/` },
+        { text: prefix ? 'Context Items' : 'Context Item 表', link: `${p}/concepts/context-item` },
         { text: prefix ? 'Roles & Isolation' : '角色与隔离', link: `${p}/concepts/roles-and-isolation` },
         { text: prefix ? 'Prompt Cache Design' : 'Prompt Cache 设计', link: `${p}/concepts/prompt-cache-design` },
         { text: prefix ? 'RunGroup Budget' : 'RunGroup 预算', link: `${p}/concepts/run-group-budget` },

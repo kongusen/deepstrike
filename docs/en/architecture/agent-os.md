@@ -86,7 +86,7 @@ Root agent and every sub-agent / workflow node share one `TaskTable`. `AgentProc
 
 ### P3 — Context VM
 
-Context is partitioned address space — not an append-only chat log. Compression, handles, and capability manifests live here.
+Context is partitioned address space — not an append-only chat log. Compression, handles, and capability manifests live here. Every piece of it is an item whose scope, fidelity, lease and authority come from its origin (see [The Context Item Table](/en/concepts/context-item)); the text the kernel writes to the model comes from `context/voice.rs`.
 
 ## Six harness patterns
 

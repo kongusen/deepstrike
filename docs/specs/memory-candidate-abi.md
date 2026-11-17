@@ -250,7 +250,7 @@ DEC-3 只允许一个未结算的 PersistMemory。模型提案撞上时不再报
 - 内容不同：作为普通工具拒绝返回 "Another memory proposal is already pending review. Propose this one again after its outcome arrives."，不占配额。
 - 子 agent 请求撞上 DEC-3 仍按 fault 处理。
 
-不做批量提交；一次一条由工具描述约束（`context/manager.rs` 中 `propose_memory` 的描述，同时写明该记什么、不该记什么、先 `memory` 搜索并复用 name）。
+不做批量提交；一次一条由工具描述约束（`context/voice.rs` 中 `propose_memory` 的描述，同时写明该记什么、不该记什么、先 `memory` 搜索并复用 name）。
 
 尚未做的：
 

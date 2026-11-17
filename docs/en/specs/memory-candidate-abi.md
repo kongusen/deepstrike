@@ -559,7 +559,7 @@ longer aborted with `ResourceLimitExceeded`:
 - A child request hitting DEC-3 is still a fault.
 
 There is no batch submission; one at a time is enforced by the tool description (the `propose_memory`
-description in `context/manager.rs`, which also says what to record and what not to, and to search
+description in `context/voice.rs`, which also says what to record and what not to, and to search
 with `memory` first and reuse the name).
 
 Not done:

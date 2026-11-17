@@ -5,7 +5,7 @@ DeepStrike 的 Context 渲染不是把 messages 简单拼起来，而是把 prom
 主要实现入口：
 
 - `crates/deepstrike-core/src/context/renderer.rs`
-- `crates/deepstrike-core/src/context/manager.rs`
+- `crates/deepstrike-core/src/context/manager/`
 - `crates/deepstrike-core/src/context/compression.rs`
 - `crates/deepstrike-core/src/mm/handle.rs`
 - `node/src/types.ts` / `python/deepstrike/runtime/runner.py` 的 turn metrics

@@ -13,7 +13,7 @@ Context 工程决定 Agent 工作时哪些信息应该保留。它把身份、Kn
 | 稳定指令 | Agent 身份、系统规则和长期任务框架 |
 | Knowledge | 已加载 Skill、固定参考和 initial memory |
 | History | 对话 turn、工具结果和检索事实 |
-| 当前状态 | 计划、阻塞原因、Signal 和下一步动作 |
+| 当前状态 | 目标、验收标准、长期指令、计划、模型的笔记和 Signal |
 
 DeepStrike 会压缩旧 turn、保持稳定前缀适合缓存，并分页处理大工具结果，避免每轮 prompt 被结果撑满。
 
@@ -209,7 +209,8 @@ Rust：`RuntimeOptions.notes_budget_tokens = Some(0)` 关闭。
 
 1. **压缩**：Micro 先截断过长消息、再把旧工具结果降为摘录；Collapse / Auto 按最旧优先归档旧对话，压缩记录只写一行机械记录（归档条数、token、用过的工具）。模型要留住的内容由它自己写进笔记；没有 LLM 摘要器，也没有按关键词分槽的规则摘要。
 2. **Renewal**：分级压缩后仍超过续期阈值，才重建 history。按 carryover 预算保留近期完整对话事务，避免拆开工具调用与结果；单个事务放不进预算时不会保留半个事务。系统、Knowledge 与任务状态继续保留。
-3. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入重复熔断的调用签名
+3. **内核的话**：内核写给模型的文本（signal、替调用回答的结果、拒绝理由、`[TASK STATE]` 块、内核工具说明）都来自 `context/voice.rs`；lifecycle report 的 `kernel_text_tokens` 统计模型看到了多少。模型经 `update_plan` 只能设 `plan` 与 `current_step`。
+4. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入重复熔断的调用签名
 
 ### Node 上下文预算与恢复
 
@@ -228,4 +229,5 @@ Provider 实际 input usage 写入同一 fingerprint 的 `postflight` 测量，�
 - [执行平面与工具](./execution-plane-and-tools) — 大工具结果、external payload、handle 投影
 - [Skill 门控](./skills) — `active_skills` 收窄工具暴露
 - [Memory](./memory) — knowledge 分区注入
-- 源码：`context/manager.rs`、`context/renderer.rs`
+- [Context Item 表](../concepts/context-item) — 每个 item 的作用域、形态、寿命、写入权
+- 源码：`context/manager/`、`context/renderer.rs`

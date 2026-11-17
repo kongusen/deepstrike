@@ -5,7 +5,7 @@ DeepStrike does not render context by concatenating messages. It treats the prom
 Main implementation entry points:
 
 - `crates/deepstrike-core/src/context/renderer.rs`
-- `crates/deepstrike-core/src/context/manager.rs`
+- `crates/deepstrike-core/src/context/manager/`
 - `crates/deepstrike-core/src/context/compression.rs`
 - `crates/deepstrike-core/src/mm/handle.rs`
 - `node/src/types.ts` / `python/deepstrike/runtime/runner.py` turn metrics

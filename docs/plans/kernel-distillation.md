@@ -179,27 +179,28 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
     - 回归测试 `a_delivered_signal_is_not_sent_again_after_a_restore`，去掉改动即失败。golden 没有变化。
     - **与原计划的两处偏差。** ① signal 没有从共享分配器取 item id：取了的话之后每个历史 item 的 id 都后移一位，渲染里带 `item_id`，golden 会变，违反本任务"渲染逐字节不变"的验收；等到 1.7 内核文本集中时与内核提示一起决定。② lifecycle report 没有加 signal 的条数与 token：`history` 汇总的语义是"进入历史的 item"，signal 不进历史，硬塞会混淆；改由 1.7 的 `kernel_text_tokens` 统一计数。
     - `ContextPartitions.signals` 是公开字段，`tests/rust` 直接读它，这是 Rust 公开 API 的破坏式变更，已写入 CHANGELOG 与 MIGRATION。
-- [ ] 1.2 **note 成为 item。** `TaskState.notes` 的每条笔记是 origin `Note` 的 item，预算拒写、标题重写、图上的三种边保持不变。`notes_tokens()` 改为对 item 求和。
+- [-] 1.2 **note 成为 item。**（不做，用户 2026-11-17）笔记存在 task state 里，内核为它们分配 item id 记边，已经够用；改成 item 没有找到实际收益。
   - 验收：`context/notes.rs` 的 8 个测试不改断言通过；`notes:` 块逐字节不变。
-- [ ] 1.3 **依赖输出成为 item。** `dependency_bodies` 改为 origin `DependencyOutput`、scope `Edge`、fidelity `Handle` 的 item；`read_result("dep:<agent>")` 读 item。完成后 `survives_renewal` 才有真实的过滤对象，补一个测试证明 renewal 之后依赖输出的处理符合表的定义；如果现有行为是"renewal 后仍可读"，以现有行为为准并修正表。
-- [ ] 1.4 **形态合一。** `Residency` 的四个状态并入 item 的 fidelity（handle 需要携带 locator 与 digest）。`HandleTable` 降为按 `call_id` 查 item 的索引，不再持有独立状态。`history_fidelity()` 删除。
+- [-] 1.3 **依赖输出成为 item。**（不做，用户 2026-11-17）同上，没有找到实际收益。
+- [-] 1.4 **形态合一。**（不做，用户 2026-11-17）阶段 2 删掉叙述折叠与每轮折叠之后，剩下的只是两处记录：history item 记形态（完整或摘录），handle 表记正文在哪里（驻留、外部、换出、被 provider 清理），由 `history_fidelity` 合并给报告与 item 图，渲染器直接读 handle 表。合一要把 payload locator 与 digest 搬进 item、改 checkpoint 形状、改渲染器与缓存账本，模型可见内容不变、没有已知缺陷，是这一版风险最大的改动。`ObjectDescriptor` 保持独立概念（跨任务共享对象的读权限），不并入 item。
   - 叙述折叠与 collapse 预览改为"降级写回 item 的 fidelity，渲染器只读"。这一步不改变何时折叠，只改变记录在哪。
   - `ObjectDescriptor`：先读 `scheduler/cross_operation.rs` 与 `wire/driver/syscall.rs` 的用法，再决定它是 item 的跨任务投影（保留为一个纯函数）还是独立概念（保留并在文档中说明边界）。不要为了合并而合并。
   - 验收：golden 渲染逐字节不变；缓存账本的断点归因不变。
-- [ ] 1.5 **寿命合一。** `sweep_expired_leases`、`sweep_expired_skill_leases`、`sweep_expired_item_leases`（`state_machine/mod.rs` 的 `feed` 开头连续调用）合成一个按表执行的 sweep。`active_skills` 的到期 turn 并入 skill item 的 lease。`CapabilityLease` 属于 effect 准入，保持独立，在文档里说明。
+- [-] 1.5 **寿命合一。**（不做，用户 2026-11-17）三个 sweep 各管不同的对象（effect 能力租约、skill 激活、knowledge item），合成一个没有找到实际收益。
 - [x] 1.6 **写入权合一。**（2026-11-16） 新增 `admit_write(origin, writer, op)`，表里为每种 origin 写明谁能创建、替换、删除。`push_knowledge_item` 现有的三段检查迁入；`TaskUpdate` 的 7 个字段各标明写入方，模型经 `update_plan` 写不在名单里的字段时拒绝。
   - 验收：一个表驱动测试枚举 origin × writer × op 的全部组合并固定结果。现有行为与表冲突的地方逐条列在 PR 里，由用户裁决，不自行改行为。
   - **执行记录。** `context/authority.rs`：item 表 `admit_write(origin, writer, op)`（内核什么都能写；宿主能创建一切，能替换、删除的不包括内核或 provider 写的；模型和 provider 只写自己作者的 origin），task state 字段表 `TaskField::writable_by` 与 `admit_task_update`（整条接受或整条拒绝）。两张表各有一个固定全部格子的测试。宿主写 knowledge 的检查（`check_host_knowledge_write`）改为问这张表，行为不变；"技能激活期间不能删正文"取决于运行时状态，不是表格，留在原处。
   - **发现的冲突（用户 2026-11-16 裁决）。** 模型的 `update_plan` schema 只给 4 个字段，内核却接受全部 7 个：已验证一次调用就能写入 `directives`（用户的长期指令，紧跟 goal 渲染）、`preserved_refs`（让结果免于压缩）和 `scratchpad`，并报告成功。用户选择"模型只能写 schema 里的 4 个"：其余字段整条拒绝、回错误结果、不应用，运行继续；宿主仍可写全部 7 个。回归测试 `update_plan_cannot_write_fields_its_schema_hides`。写入 CHANGELOG 与 MIGRATION。
-- [~] 1.7 **内核文本集中。**（三片中已完成两片半，2026-11-16 至 17） 新建 `context/voice.rs`（名字可改），所有内核写给模型的字符串常量与格式函数迁入；lifecycle report 增加 `kernel_text_tokens`。
+- [x] 1.7 **内核文本集中。**（2026-11-16 至 17） 新建 `context/voice.rs`（名字可改），所有内核写给模型的字符串常量与格式函数迁入；lifecycle report 增加 `kernel_text_tokens`。
   - 验收：渲染逐字节不变；`grep` 在该模块之外找不到面向模型的字面量（测试除外）。
   - **执行记录（第一片）。** 按"文本进入模型上下文的出口"盘点，约 180 处，分三片做。第一片是内核主动对模型说的话：signal 与提示（知识移除、技能租约到期、里程碑、中断与 signal、子 agent 结果、重复熔断、输出截断、criteria 自检、回滚与控制拒绝说明）、内核替调用回答的结果（执行器失败、超时、pace、权限拒绝、未在工具表、未在本轮提供、重复拒绝）、内核工具的确认语（`syscall_ack`）。全部移入 `context/voice.rs`，每个函数返回与原调用点逐字节相同的文本；所有 golden 不变。
     - `kernel_text_tokens`：signal 在携带它的请求结清时计一次，内核替调用回答的每条结果在产生处计入；宿主工具输出不计。进 checkpoint（为零时不写）与 lifecycle report，contract、四端类型与 `deepstrike-lab` 同步。测试 `kernel_text_tokens_count_signals_once_and_kernel_answers`。
     - **第二片（`7c8bb05e`）**：写进 history 的内核提示（记忆索引行、命中、未找到，提案结果，`[PAYLOAD …]`，依赖简报）、输出截断标记、`[context resumed]`、`Proceed.` 锚点、整个 `[TASK STATE]` 块与笔记块。顺带删掉了阶段 2 实验留下的恒为假的 M9 标志。golden 不变。
     - **第三片前半**：内核自己的 7 个工具（`read_result`、`update_plan`、`memory`、`propose_memory`、`knowledge`、`note`、`skill`）的说明与参数 schema 全部移入 `voice`，并删掉 `update_plan` schema 里实验留下的死分支。golden 不变。工作流类工具（`start_workflow` 等）的 schema 来自宿主配置，不是内核文本。
-    - **未做：被拒绝的内核工具调用的拒绝理由**（`SyscallRejection::new` 约 40 处、约 30 种文本，多为协议与权限错误，不少嵌入了故障或宿主错误信息）。这一块做完之前，验收里"模块外找不到面向模型的字面量"不成立。
-- [ ] 1.8 **`ContextManager` 按职责拆开。** 1.1–1.7 之后再做，届时字段已减少。按现有字段的自然分组拆为：item 存储、预算与压力（含估算校准）、缓存账本、能力与工具暴露（skills、capabilities、meta-tool schema）、报告。只移动，不改逻辑。
-- [ ] 1.9 表里仍无生产者或消费者的值，删除。
+    - **第三片后半（`be1a83a1`）**：被拒绝的内核工具调用的拒绝理由（`SyscallRejection::new` 约 40 处）、`note` 的确认与拒绝、写入权表的拒绝、记忆策略的校验信息，全部移入 `voice::refusal`。只转述其它组件信息的理由（校验故障、宿主策略的拒绝）原样携带那条信息。golden 不变。熵告警给模型的那句话随 notify_model 一起删除（见阶段 2）。
+- [x] 1.8 **`ContextManager` 按职责拆开。** 1.1–1.7 之后再做，届时字段已减少。按现有字段的自然分组拆为：item 存储、预算与压力（含估算校准）、缓存账本、能力与工具暴露（skills、capabilities、meta-tool schema）、报告。只移动，不改逻辑。
+  - **执行记录（2026-11-17，`b0a0ceb7`）。** 结构体不拆，按职责拆文件：`context/manager/` 下 `mod.rs`（结构体、构造、渲染、task state）、`handles`、`pressure`（校准、压缩、renewal）、`items`（history 准入、id、item 图、recall、item 寿命、内核文本计数）、`cache`（缓存账本）、`report`、`knowledge`、`capabilities`（skill、manifest、内核工具 schema），测试移到 `tests.rs`。原文件私有的方法改为 `pub(super)`。拆成多个结构体会改动全 crate 的字段访问路径，不属于"只移动"。
+- [x] 1.9 表里仍无生产者或消费者的值，删除。（2026-11-17，`6b9c722a`）`ItemOrigin::{TaskState, Signal, Note}`（task state、signal、笔记都不存为 item）、`ItemScope::Agent`（没有 origin 默认到它）、`Fidelity::Structured` 与 `Lease::UntilDelivered`（只被前述 origin 引用）。四端报告类型同步。golden 不变。
 
 阶段 1 的 checkpoint 形状会变。每个任务保留旧 checkpoint 的恢复路径并加测试，变化写进 `MIGRATION-0.2.83-to-<下一版>.md`。面向宿主的 ABI（`KernelInput`、`KernelEffect`、wire `ContextPolicy`）在阶段 0–1 不变。
 
@@ -246,6 +247,7 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
   - 成本差几乎全来自缓存：minimal 在每个场景的缓存命中率都更高，default 的前缀断点是 minimal 的 2–7 倍，断点原因几乎都是 `collapse`（M5）与 `narration`（M1）。
   - long-horizon 逐题读过答案：两边错题都是计数差 1–2 行，没有只出现在某一边的错误类型；10 对里不一致的 6 对是 4 比 2，在随机波动范围内。minimal 没有跑满轮数（0/10），唯一一次跑满轮数在 default。
 - **决定（用户 2026-11-16）："大部分都删除。"** 删除 M1–M7；M8（criteria gate，只在宿主给出验收标准时触发，这一轮没有任何基准设置它，没有数据）与 M9（`update_plan` 的 progress / blocked_on 与 scratchpad，属于四端 SDK 的 API）暂留，另行决定。long-horizon 没有补到 30 对。
+- **第二次决定（用户 2026-11-17）。** M9 删除：`update_plan` 只剩 `plan` 与 `current_step`，`progress`、`blocked_on`、scratchpad 从内核、wire、checkpoint 与四端 SDK 删除（`05129489`）。M8 保留：criteria gate 默认开启，宿主给出验收标准时生效，没有实测数据，留待有验收标准的基准过 gate。§8 第 2 条的 `notify_model` 一并删除。
 - **删除的做法与验证。** 先把实验开关按 M1–M7 剥离、M8–M9 保留固定下来，重新生成的 golden 与实验分支上测过的 `minimal` 逐字节相同；再删掉死代码与配置面，此时 golden 的差异只剩被删的配置字段与随之变化的摘要值。具体：
   - M1 叙述折叠：删除投影、`collapseOldAssistantNarration`、缓存断点原因 `narration`。
   - M2 效用打分：`context/utility.rs` 换成 `context/archive.rs`，最旧优先，只按规则保留最近的单元。
@@ -260,11 +262,15 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 
 阶段 2 结束后做一次配置收敛：`PressureThresholds` 只留仍被使用的阈值；`preserve_recent_units` 与 `preserve_recent_turns` 合并；两个同名 `ContextPolicy` 留一个权威，另一个改名或删除；`EntropyWatchConfig.notify_model` 按"没有休眠开关"删除（需用户确认，见 §8）。
 
+**配置收敛的执行记录（2026-11-17，`1d861cb1`）。** 四个阈值都仍在使用，`PressureThresholds` 不动。`context::policy::ContextPolicy` 是 wire 已解析策略的中转副本，带一套重复的校验，删除；driver 直接写 `ContextConfig`（`ContextManager::apply_config`）。`preserve_recent_turns`（压缩）与 `preserve_recent_units`（渲染）合并为 `preserve_recent_units`，由 wire 的 `preserve_recent_turns` 设置，两者原默认都是 2。`notify_model` 已删（`05129489`）。
+
+**旧 checkpoint 的事实。** 阶段 2 写的"旧 checkpoint 仍可恢复"不成立：内核严格解码并对解码结果重新求摘要，带已删字段的 checkpoint 要么解码失败、要么摘要不符；journal 回放同样严格解码。0.2.83 下仍在运行的 operation 不能由本版恢复，MIGRATION 已如实写明，那几个只读兼容字段也一并删除。
+
 ### 阶段 3：文档
 
-- [ ] 3.1 新增一页 `docs/concepts/context-item.md`：只放 §4 的表和 origin 默认值表，说明每一列在代码里的唯一执行点。其它文档引用它，不再各自解释分区。
-- [ ] 3.2 更新 `docs/architecture/agent-os.md` 的 P3、`execution-model.md` 的 Phase 3–4、`docs/guides/context-engineering.md`。
-- [ ] 3.3 `docs/en/` 同步。仓库的 docs 检查要求中英文成对（PR #4 曾因此失败）；本文的英文版也要在第一个 PR 前补上。
+- [x] 3.1 新增一页 `docs/concepts/context-item.md`：只放 §4 的表和 origin 默认值表，说明每一列在代码里的唯一执行点。其它文档引用它，不再各自解释分区。
+- [x] 3.2 更新 `docs/architecture/agent-os.md` 的 P3、`execution-model.md` 的 Phase 3–4、`docs/guides/context-engineering.md`。（2026-11-17：`execution-model.md` 的 Phase 3–4 在阶段 2 时已更新；P3 与指南补了 item 表与内核文本的说明）
+- [x] 3.3 `docs/en/` 同步。仓库的 docs 检查要求中英文成对（PR #4 曾因此失败）；本文的英文版也要在第一个 PR 前补上。
 
 ### 阶段 4：记忆的证据链与出错时的度量
 
@@ -405,7 +411,7 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 ## 8. 需要用户决定
 
 1. 阶段 2 的实测预算上限。
-2. `EntropyWatchConfig.notify_model`（默认关闭）是否按"没有休眠开关"删除。它是给宿主监督者之外的第二条通道，没有实测数据。
+2. ~~`EntropyWatchConfig.notify_model` 是否删除。~~ 用户 2026-11-17 裁决：删除。
 3. 1.6 列出的"现有行为与写入权表冲突"的条目，逐条裁决。
 4. 阶段 1 改变 checkpoint 形状。按此前"允许破坏式更新、写 MIGRATION"的约定执行；如需保持旧 checkpoint 可恢复之外的更强兼容，请说明。
 5. ~~4.1 给 `CanonicalMemoryWrite` 与 `memory_written` 事件加可选字段，触及 §7"不动 wire ABI 类型"的约束。~~ 用户 2026-11-15 裁决：放行。4.1 排在 1.2 之后。
@@ -420,49 +426,30 @@ DEC-13 的"后果"一节写明：0.2.82 之前的规则机制没有按新标准�
 - gate：`deepstrike-lab gate` 不带参数即 DEC-13 规则。
 - 本文 §2 标了"需核实"的结论，以及所有"无使用"的判断，动手前用代码确认；与本文不符时以代码为准，并更新本文。
 
-## 10. 交接（2026-11-16）
+## 10. 交接（2026-11-17）
 
-接手者从这里读起。分支 `refactor/kernel-distill-phase0`，基于 `main`（`df26eabf`，v0.2.83），未推送，未开 PR。
+分支 `refactor/kernel-distill-phase0`，基于 `main`（`df26eabf`，v0.2.83）。本文计划的工作已全部完成或由用户决定不做，按 0.2.84 发布。
 
-### 10.1 已完成，都在这个分支上
+### 10.1 状态
 
-| 提交主题 | 内容 |
+| 部分 | 状态 |
 |---|---|
-| 阶段 0 清理 | §5 阶段 0 的 0.1–0.7：删除 `asyncSummarizer`、`summary_upgraded`、无人读取的配置；两个 compactor 合一 |
-| 基准与 lab | 4.2 的四个记忆维护指标；4.3 的 `multi-session --drift`；实测结果文件 |
-| 协议层修复 | `propose_memory` 结果消息的顺序（内核）；`memory` + `propose_memory` 同轮（Node runner）；复现脚本 `scripts/kernel-tool-batches.mjs` |
-| name 进入记忆头部 | 4.4，默认开启；CHANGELOG、MIGRATION、文档 |
-| 计划 | 本文 |
+| 阶段 0 | 完成 |
+| 阶段 1 | 1.1、1.6、1.7、1.8、1.9 完成；1.2、1.3、1.4、1.5 不做（用户 2026-11-17，原因见各条） |
+| 阶段 2 | M1–M7、M9 删除；M8 保留，未测；`notify_model` 删除；配置收敛完成 |
+| 阶段 3 | 完成：`docs/concepts/context-item.md`（中英），P3 与指南更新 |
+| 阶段 4 | 4.1–4.4 完成；4.5 不排期 |
 
-### 10.2 待办，按顺序
+### 10.2 之后可以做的
 
-1. **两个缺陷。**
-   - [x] 重复熔断与 `memory` 同轮（2026-11-16，`dfcb62fb`）。根因：熔断或门禁用合成结果回答本轮宿主调用时，引擎立刻调用 provider，不管同一轮的 syscall 是否已发布内核工作（记忆查询或写入）；一个 step 同时发布 `QueryMemory` 与 `CallProvider`，下一次请求与查询赛跑，渲染时没有查询结果。修复：这种情况下合成提交返回 `AwaitingResume`，工作结清后经 `resume_after_preload` 继续，与未熔断的轮次一致（`state_machine/mod.rs` 的 `turn_awaits_kernel_work` / `defer_provider_call`，`gate.rs` 的 `commit_synthetic_results`）。内核回归测试 `a_fused_turn_waits_for_the_memory_query_it_made`，去掉修复即失败。
-   - [x] **未暴露的内核工具终止运行**（2026-11-16，`dd6d11e4`）。用户的裁决："先问为何没有暴露对应的内核工具，这才是核心；调用没有的工具应返回错误，让模型去找真实的工具，多次无果进入总结。"
-     - **为何没有暴露。** `read_result` 只在有工具结果离开上下文时才提供。page-in 让结果回到上下文，压缩或 renewal 时 `reset_collapse_generation` 也让折叠的结果回来；最后一个离开的结果回来后，工具就从下一轮的工具表里消失，而模型的历史里刚刚用过它，工具说明还让它用 `offset` 分页读大结果。golden `golden_lifecycle_external_payload` 原本就记录了这一点：page-in 之后的请求里没有 `read_result`。修复：提供过一次就一直提供（`ContextManager::read_result_offered`，进 checkpoint）。工具表不再缩小，也少了一类缓存前缀断点。
-     - **调用没有的工具。** 驱动不再以 `invalid_authority` 终止，而是像未暴露的宿主工具一样回错误结果（"Tool '…' is not available on this turn. Choose from the tools listed in your tools schema."），不执行。这类调用计入重复熔断，元工具名也不豁免：重复 5 次拒绝，8 次进入总结轮后以 `NoProgress` 结束。终止档的总结轮本身不提供工具，模型在这一轮调用工具，运行照常以 `NoProgress` 结束。
-     - 测试：`a_tool_the_turn_never_exposed_has_no_caller_to_derive`（submit 路径）、`repeated_calls_to_an_unexposed_kernel_tool_burn_the_repeat_fuse`、重新生成的 golden，去掉修复均失败。`scripts/kernel-tool-batches.mjs` 117/117，三个随机种子各 40 次运行零失败。四端全量测试通过。
-     - 这两项改变了模型在出错路径上看到的内容，按缺陷修复处理，没有过 DEC-13 的 gate；写进了 CHANGELOG 与 MIGRATION。
-2. **补上一轮留下的缺口。**
-   - [x] Node runner 的回退补了回归测试（`b97c9c13`），去掉修复即失败。
-   - [x] WASM、Python、Rust 的 runner 有同样的问题，已用同一种回退修复，各加一个回归测试，去掉修复即失败（`b3f012b0`）。
-   - [x] Python：旧 venv 指向已不存在的 Python 3.11。在临时目录用 Python 3.12 新建 venv、`maturin develop --release` 后全量 pytest 通过（913 passed）。本机 shell 设了 SOCKS 代理，跑 pytest 要先清掉 `ALL_PROXY` / `HTTP(S)_PROXY`，否则 httpx 报缺 `socksio`。
-   - [x] 英文版 `docs/en/plans/kernel-distillation.md`（`check-docs-drift` 要求中英文成对）。中文版是工作副本，先改中文再同步英文。
-3. **阶段 1（1.1–1.9）**，然后 **4.1**（排在 1.2 之后，wire 可选字段已获放行）。
-4. ~~**阶段 2 的 DEC-13 审计。**~~ 第一轮已完成，M1–M7 已删除（见阶段 2 的执行记录）。M8、M9 待定。
-5. **阶段 3 文档。**
+- **M8 过 gate。** 需要一个给出验收标准的基准；没有它，criteria gate 的去留没有依据。
+- **记忆维护的成本。** 4.2、4.3 的数据显示三成以上的模型轮次只做记忆维护，空存储上也会反复搜索。只有数据，没有处理。
+- **漂移后的恢复。** name 解决了"记录只增不改"，没有解决"模型学不会新规则"（14 / 40）。
 
-### 10.3 这一轮学到的，动手前要知道
+### 10.3 操作上的坑
 
-- **读数据再下结论，不要读 oracle 的数字就下结论。** 4.3 设计的两个关键词 oracle 数值全部无效，是直接读记录原文才发现的；4.4 的候选机制也因此从"退役动作"换成了"显示 name"。阶段 2 每个去留都要打开 trial 看几条原始记录。
-- **按会话配对的样本不独立。** multi-session 的 80 对来自 10 个序列。报告时同时给出按序列的胜负数。
-- **漂移后的恢复仍然不好**（14 / 40）。name 解决了"记录只增不改"，没有解决"模型学不会新规则"。`retry` 规则（req 以 0 结尾）在全部运行里没有被任何记录提到过，基准的这条规则可能太难；改基准之前先和用户确认，因为它会让新旧结果不可比。
-- **记忆维护占三成以上的模型轮次**，第 0 个会话在空存储上平均搜索十次左右。没有处理，只有数据（4.2、4.3）。这是阶段 2 之外最明显的成本项。
-- **实测花费会超估算。** 4.3 的首轮超了约 45%。报预算时留余量，并且查不了余额，要请用户确认。
-
-### 10.4 操作上的坑
-
-- 本机没有 `napi` CLI。重建 addon：`cargo build --release -p deepstrike-node`，然后把 `target/release/libdeepstrike_node.dylib` 复制为 `crates/deepstrike-node/deepstrike-core.darwin-arm64.node`。绑定层接口（`crates/deepstrike-node/src`）变了的话，这样做不会重新生成 `index.js` / `index.d.ts`，需要装 `@napi-rs/cli` v2。
-- 有基准在后台跑的时候，不要原地覆盖 `.node` 文件，也不要 `npm run build`（它先删 `node/dist`）。替换 addon 用"复制到临时名再 `mv`"。
-- zsh 下 `echo ====X`、未加引号的 `--include=*.rs` 会报错；路径通配加引号。
-- 不要把别的命令接在测试命令后面用 `&&` 串起来图省事。上一轮因此误执行过一次 `git stash`。
+- 本机没有 `napi` CLI。重建 addon：`cargo build --release -p deepstrike-node`，复制 `target/release/libdeepstrike_node.dylib` 到临时名再 `mv` 为 `crates/deepstrike-node/deepstrike-core.darwin-arm64.node`。
+- Node 和 WASM 用 jest（`npm test`），不是 vitest；WASM 另有 `npm run test:canonical-binding`。
+- Python：`maturin develop --release` 要在 `python/` 目录下跑，它写的是 `python/deepstrike/_kernel.abi3.so`；在 `crates/deepstrike-py` 下跑装的是另一个包，测试仍会加载旧的 `.so`。跑 pytest 先清掉 `ALL_PROXY` / `HTTP(S)_PROXY`。
+- golden 重新生成：`BLESS_KERNEL_RECORD_FIXTURES=1 cargo test -p deepstrike-core --lib`；有些测试用 `include_str!` 读 fixture，bless 之后要再跑一次。
+- 不要把别的命令接在测试命令后面用 `&&` 串起来。

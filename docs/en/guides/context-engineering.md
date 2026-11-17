@@ -10,11 +10,10 @@ Context engineering is how an Agent keeps the right information available while 
 
 | Context area | What it contains |
 | --- | --- |
-| --- | --- |
 | Stable instructions | Agent identity, system rules, and durable task framing |
 | Knowledge | Loaded skills, pinned references, and initial memory |
 | History | Conversation turns, tool results, and retrieved facts |
-| Current state | Plan, blockers, signals, and the next useful action |
+| Current state | Goal, acceptance criteria, standing directives, plan, the model's notes, and signals |
 
 DeepStrike can compress older turns, keep stable prefixes cache-friendly, and page large tool results so the Agent can keep working without flooding every prompt.
 
@@ -204,7 +203,8 @@ off (`0`) when reproducing a pre-0.2.82 baseline.
 
 1. **Compression:** Micro first caps oversized messages, then excerpts older tool results; Collapse / Auto archive the oldest conversation first, and the compression log gets one mechanical line (messages and tokens archived, tools used). What the model needs to keep, it keeps in notes; there is no LLM summarizer and no keyword-slotted rule summary.
 2. **Renewal:** History is rebuilt only when pressure remains above the renewal threshold after compression. Recent complete conversational transactions are carried within the carryover budget; a transaction that cannot fit is never split between a tool call and its results. System, Knowledge and task state survive.
-3. **Meta-tool exclusion:** `skill`, `memory`, `submit_workflow_nodes`, etc. are excluded from the repeat fuse's call signature
+3. **The kernel's words:** every text the kernel writes to the model (signals, the results it answers calls with, refusal reasons, the `[TASK STATE]` block, the descriptions of its own tools) comes from `context/voice.rs`; the lifecycle report's `kernel_text_tokens` counts how much of it the model saw. Through `update_plan` the model sets only `plan` and `current_step`.
+4. **Meta-tool exclusion:** `skill`, `memory`, `submit_workflow_nodes`, etc. are excluded from the repeat fuse's call signature
 
 ### Node context budgeting and recovery
 
@@ -223,4 +223,5 @@ Actual provider input usage is recorded as a `postflight` measurement for the sa
 - [Execution Plane & Tools](./execution-plane-and-tools) — large tool results, external payloads, and handle projection
 - [Skills](./skills) — `active_skills` narrows exposed tools
 - [Memory](./memory) — knowledge partition injection
-- Source: `context/manager.rs`, `context/renderer.rs`
+- [The Context Item Table](/en/concepts/context-item) — the scope, fidelity, lease and authority of every item
+- Source: `context/manager/`, `context/renderer.rs`
