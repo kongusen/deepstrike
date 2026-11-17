@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:b4fce0dad1765e5a70feee5d0862689ed8e17e6e481b497063cfd92099425aaf",
+    "checkpoint_digest": "sha256:827a08c4dd81a100d2645629752ca66c400f88f521ad4770dd0038099f382aa6",
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -30,7 +30,6 @@
         "signals": [],
         "system_measurements": [],
         "task_state": {
-          "blocked_on": [],
           "compression_log": [],
           "compression_log_dropped": "0",
           "criteria": [],
@@ -38,9 +37,7 @@
           "directives": [],
           "goal": "",
           "plan": [],
-          "preserved_refs": [],
-          "progress": "",
-          "scratchpad": ""
+          "preserved_refs": []
         }
       },
       "scheduler": {
@@ -114,7 +111,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -207,8 +203,8 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:f711430bf704176c58169eaa63a4b772b5ce3624e17f0200898161feac4a3374",
-    "tail_digest": "sha256:f95c9f5194b71cfaa471783c64633f58a90c047511878745f3083e4081e4c1d8",
+    "state_digest": "sha256:f8c921effbd0bca6c7da2ecf8107b5d328bcff004119c75e9259576ff4d0e2b0",
+    "tail_digest": "sha256:c2becc5821a4e321ec37b85b86ddbe08e87bb6078afbb3014e9b3af4398f87a8",
     "tail_inputs": [
       {
         "input": {
@@ -239,7 +235,6 @@
                   "cooldown_turns": 4,
                   "enabled": false,
                   "hysteresis_ppm": 100000,
-                  "notify_model": false,
                   "threshold_ppm": 650000
                 },
                 "max_context_tokens": 128000,
@@ -364,7 +359,6 @@
                   "cooldown_turns": 4,
                   "enabled": false,
                   "hysteresis_ppm": 100000,
-                  "notify_model": false,
                   "threshold_ppm": 650000
                 },
                 "max_context_tokens": 128000,

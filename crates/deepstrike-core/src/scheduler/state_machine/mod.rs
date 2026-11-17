@@ -1527,37 +1527,13 @@ impl LoopStateMachine {
                     window_turns: sample.window_turns,
                 });
                 // Opt-in entropy watch: threshold + hysteresis + cooldown. The alert is an
-                // observation (host-facing); with `notify_model` it is ALSO routed through
-                // the kernel's own signal dispatch as a Heartbeat/Alert directive — High
-                // urgency while running ⇒ a durable [SIGNAL] note on the turn we are about
-                // to emit anyway, never an extra provider call.
+                // observation for the host supervisor; the kernel does not tell the model.
                 if self.entropy.should_alert(&self.entropy_watch, &sample) {
                     self.observations.push(KernelObservation::EntropyAlert {
                         turn: sample.turn,
                         score: sample.score,
                         threshold: self.entropy_watch.threshold,
                     });
-                    if self.entropy_watch.notify_model {
-                        use crate::types::signal::{
-                            RuntimeSignal, SignalSource, SignalType, Urgency,
-                        };
-                        let signal = RuntimeSignal::new(
-                            SignalSource::Heartbeat,
-                            SignalType::Alert,
-                            Urgency::High,
-                            format!(
-                                "[entropy] session disorder {:.2} ≥ {:.2} (repeat {:.2} / failures {:.2} / pressure {:.2}). \
-                                 Stop and reassess: state what is not working and try a different approach.",
-                                sample.score,
-                                self.entropy_watch.threshold,
-                                sample.repeat_pressure,
-                                sample.failure_rate,
-                                sample.rho,
-                            ),
-                        )
-                        .with_dedupe(format!("entropy_alert:{}", sample.turn));
-                        let _ = self.dispatch_signal(signal);
-                    }
                 }
 
                 // Turn boundary: drain any kernel-queued signals into context so they

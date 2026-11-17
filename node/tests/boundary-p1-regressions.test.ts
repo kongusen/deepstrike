@@ -156,11 +156,11 @@ function findDeep(value: unknown, match: (value: Record<string, unknown>) => boo
 }
 
 describe("P1-7: the host never writes the model's task state", () => {
-  it("keeps the model's update_plan progress after a tool batch", async () => {
+  it("keeps the model's update_plan plan after a tool batch", async () => {
     const plane = new LocalExecutionPlane()
     plane.register(tool("noop", "does nothing", { type: "object", properties: {} }, async () => "ok"))
     const provider = new ScriptedProvider([
-      [{ type: "tool_call", id: "call_plan", name: "update_plan", arguments: { progress: "drafting section two" } } as StreamEvent],
+      [{ type: "tool_call", id: "call_plan", name: "update_plan", arguments: { plan: ["drafting section two"] } } as StreamEvent],
       [{ type: "tool_call", id: "call_noop", name: "noop", arguments: {} } as StreamEvent],
     ])
     const runner = new RuntimeRunner({

@@ -736,12 +736,6 @@ pub struct ContextVmState {
     /// CoreMessage-count boundary projected as `frozen_prefix_len` on future provider effects.
     #[serde(default)]
     pub frozen_history_len: u32,
-    /// Idle time-decay's timestamps (removed in 0.2.84, stage 2 of the kernel-distillation plan).
-    /// Accepted and ignored, so checkpoints written before restore; never written.
-    #[serde(default, skip_serializing)]
-    pub last_activity_ms: WireU64,
-    #[serde(default, skip_serializing)]
-    pub last_compact_ms: Option<WireU64>,
 }
 
 /// Which partition a [`StoredMessageState`] belongs to.
@@ -876,19 +870,9 @@ pub struct LogicalTaskState {
     #[serde(default)]
     pub current_step: Option<u32>,
     #[serde(default)]
-    pub progress: String,
-    #[serde(default)]
-    pub scratchpad: String,
-    #[serde(default)]
-    pub blocked_on: Vec<String>,
-    #[serde(default)]
     pub directives: Vec<String>,
     #[serde(default)]
     pub preserved_refs: Vec<String>,
-    /// The footer's action log (removed in 0.2.84, stage 2 of the kernel-distillation plan).
-    /// Accepted and ignored, so checkpoints written before it restore; never written.
-    #[serde(default, skip_serializing)]
-    pub recent_actions: Vec<String>,
     #[serde(default)]
     pub compression_log: Vec<LogicalCompressionEntry>,
     #[serde(default)]
@@ -2392,3 +2376,4 @@ fn is_zero_u64(value: &u64) -> bool {
 fn is_default_ledger(ledger: &crate::context::cache_ledger::CacheLedger) -> bool {
     *ledger == crate::context::cache_ledger::CacheLedger::default()
 }
+

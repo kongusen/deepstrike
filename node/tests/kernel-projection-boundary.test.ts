@@ -47,15 +47,10 @@ describe("kernel projection adapters", () => {
     expect(taskUpdateToKernel({
       plan: ["inspect", "verify"],
       currentStep: 1,
-      progress: "halfway",
-      blockedOn: ["approval"],
       preservedRefs: ["run-1"],
     })).toEqual({
       plan: ["inspect", "verify"],
       current_step: 1,
-      progress: "halfway",
-      scratchpad: undefined,
-      blocked_on: ["approval"],
       preserved_refs: ["run-1"],
     })
   })

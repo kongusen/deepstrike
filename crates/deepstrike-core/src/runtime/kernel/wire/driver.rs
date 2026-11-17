@@ -1482,12 +1482,8 @@ fn project_task_state(state: &TaskState) -> LogicalTaskState {
             })
             .collect(),
         current_step: state.current_step.map(|index| index as u32),
-        progress: state.progress.clone(),
-        scratchpad: state.scratchpad.clone(),
-        blocked_on: state.blocked_on.clone(),
         directives: state.directives.clone(),
         preserved_refs: state.preserved_refs.clone(),
-        recent_actions: Vec::new(),
         compression_log: state
             .compression_log
             .iter()
@@ -1529,9 +1525,6 @@ fn restore_task_state(state: &LogicalTaskState) -> TaskState {
             })
             .collect(),
         current_step: state.current_step.map(|index| index as usize),
-        progress: state.progress.clone(),
-        scratchpad: state.scratchpad.clone(),
-        blocked_on: state.blocked_on.clone(),
         directives: state.directives.clone(),
         preserved_refs: state.preserved_refs.clone(),
         compression_log: state
@@ -1998,9 +1991,6 @@ fn core_task_update(update: &WireTaskUpdate) -> crate::context::task_state::Task
     crate::context::task_state::TaskUpdate {
         plan: update.plan.clone(),
         current_step: update.current_step.map(|step| step as usize),
-        progress: update.progress.clone(),
-        scratchpad: update.scratchpad.clone(),
-        blocked_on: update.blocked_on.clone(),
         preserved_refs: update.preserved_refs.clone(),
         directives: update.directives.clone(),
     }
@@ -3237,7 +3227,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         threshold: f64::from(execution.entropy_watch.threshold_ppm.get()) / 1_000_000.0,
         hysteresis: f64::from(execution.entropy_watch.hysteresis_ppm.get()) / 1_000_000.0,
         cooldown_turns: execution.entropy_watch.cooldown_turns,
-        notify_model: execution.entropy_watch.notify_model,
     });
     install_live_policies(&mut engine, config);
     engine

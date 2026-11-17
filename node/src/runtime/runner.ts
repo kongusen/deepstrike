@@ -520,8 +520,7 @@ export interface RuntimeOptions {
    * Opt-in kernel entropy watch: threshold alerting over the per-turn session-entropy score
    * (`entropy_sample` events stream unconditionally regardless). When the score crosses
    * `threshold` — armed via hysteresis and past the cooldown — the run emits an `entropy_alert`
-   * stream event (and session-log record); with `notifyModel` the kernel also feeds the model a
-   * durable `[SIGNAL]` directive. Absent ⇒ disabled (kernel default).
+   * stream event (and session-log record). Absent ⇒ disabled (kernel default).
    */
   entropyWatch?: EntropyWatchOptions
   /**
@@ -1367,7 +1366,6 @@ export class RuntimeRunner {
         ...(ew.threshold !== undefined ? { threshold: ew.threshold } : {}),
         ...(ew.hysteresis !== undefined ? { hysteresis: ew.hysteresis } : {}),
         ...(ew.cooldownTurns !== undefined ? { cooldown_turns: ew.cooldownTurns } : {}),
-        ...(ew.notifyModel !== undefined ? { notify_model: ew.notifyModel } : {}),
       }
     }
 

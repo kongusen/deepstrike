@@ -137,12 +137,6 @@ pub struct TaskUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_step: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub progress: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scratchpad: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blocked_on: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preserved_refs: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directives: Option<Vec<String>>,
@@ -1069,7 +1063,7 @@ mod tests {
         let commands = [
             json!({ "kind": "cancel", "reason": "user" }),
             json!({ "kind": "update_deadline", "deadline_ms": "1700000000000" }),
-            json!({ "kind": "update_task", "update": { "progress": "halfway" } }),
+            json!({ "kind": "update_task", "update": { "current_step": 1 } }),
             json!({ "kind": "apply_capability_patch", "patch": {} }),
             json!({ "kind": "apply_knowledge_mutation", "mutation": {} }),
             json!({ "kind": "force_compact" }),

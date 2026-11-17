@@ -33,9 +33,7 @@
     "preserves": {
       "declared": [],
       "inferred": [
-        "plan",
-        "progress",
-        "scratchpad"
+        "plan"
       ]
     },
     "renames": {},
@@ -43,23 +41,16 @@
       "declared": [
         "plan",
         "currentStep",
-        "progress",
-        "scratchpad",
-        "blockedOn",
         "preservedRefs"
       ],
       "inferred": [
         "currentStep",
-        "blockedOn",
         "preservedRefs"
       ]
     },
     "derived": [
       "plan",
       "current_step",
-      "progress",
-      "scratchpad",
-      "blocked_on",
       "preserved_refs"
     ],
     "forbidden": [],

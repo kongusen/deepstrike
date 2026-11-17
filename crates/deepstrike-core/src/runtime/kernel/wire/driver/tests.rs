@@ -1980,7 +1980,7 @@ fn provider_replay_travels_with_its_item_through_restore() {
         "in-plan",
         1_700_000_002_000,
         &provider,
-        vec![tool_call("call-1", "update_plan", json!({ "progress": "read page one" }))],
+        vec![tool_call("call-1", "update_plan", json!({ "plan": ["read page one"] }))],
     );
     let replay = json!({ "protocol": "openai-chat", "reasoning_content": "first I plan" });
     let KernelInput::ResolveEffect(resolve) = &mut answer.input else { unreachable!() };
@@ -2400,7 +2400,7 @@ fn parent_requests_are_adjudicated_independently_and_never_undo_the_completion()
         });
     let another_good = SyscallRequest::UpdateTask(super::super::syscall::UpdateTaskRequest {
         update: WireTaskUpdate {
-            progress: Some("sources collected".to_string()),
+            plan: Some(vec!["sources collected".to_string()]),
             ..WireTaskUpdate::default()
         },
     });
@@ -2486,8 +2486,9 @@ fn parent_requests_are_adjudicated_independently_and_never_undo_the_completion()
             .ctx
             .partitions
             .task_state
-            .progress
-            .contains("sources collected"),
+            .plan
+            .iter()
+            .any(|step| step.label == "sources collected"),
         "a sibling's refusal does not stop the requests after it"
     );
 
@@ -4889,7 +4890,7 @@ fn a_syscall_only_turn_continues_with_another_provider_call() {
             tool_call(
                 "call-2",
                 "update_plan",
-                json!({"progress": "sources listed"}),
+                json!({"plan": ["sources listed"]}),
             ),
         ],
     ));
@@ -5015,7 +5016,6 @@ fn canonical_genesis_installs_the_entropy_watch_on_the_engine() {
                 threshold_ppm: Some(Ppm::new(100_000).unwrap()),
                 hysteresis_ppm: Some(Ppm::ZERO),
                 cooldown_turns: Some(0),
-                notify_model: Some(true),
             }),
             ..ExecutionPolicy::default()
         });
@@ -7600,7 +7600,7 @@ fn a_terminal_refuses_every_state_changing_input_including_signal_delivery() {
             1_700_000_003_000,
             HostCommand::UpdateTask(UpdateTaskCommand {
                 update: WireTaskUpdate {
-                    progress: Some("still going".to_string()),
+                    current_step: Some(1),
                     ..WireTaskUpdate::default()
                 },
             }),
@@ -8171,7 +8171,7 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         HostCommand::UpdateTask(UpdateTaskCommand {
             update: WireTaskUpdate {
                 plan: Some(vec!["collect".to_string(), "write".to_string()]),
-                progress: Some("host set the plan".to_string()),
+                current_step: Some(0),
                 ..WireTaskUpdate::default()
             },
         }),
@@ -8184,8 +8184,8 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         runtime
             .driver
             .engine()
-            .map(|engine| engine.ctx.partitions.task_state.progress.clone()),
-        Some("host set the plan".to_string()),
+            .map(|engine| engine.ctx.partitions.task_state.current_step),
+        Some(Some(0)),
     );
 
     // the model reaches the same mutation through the P1 syscall path, which *is* gated —
@@ -8197,7 +8197,7 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         vec![tool_call(
             "call-1",
             "update_plan",
-            json!({ "progress": "model set the plan" }),
+            json!({ "current_step": 1 }),
         )],
     ));
     assert_eq!(kinds(&acted), vec![EffectKindTag::CallProvider]);
@@ -8205,8 +8205,8 @@ fn a_host_task_update_and_a_model_task_update_share_a_payload_but_not_an_authori
         runtime
             .driver
             .engine()
-            .map(|engine| engine.ctx.partitions.task_state.progress.clone()),
-        Some("model set the plan".to_string()),
+            .map(|engine| engine.ctx.partitions.task_state.current_step),
+        Some(Some(1)),
     );
 }
 
@@ -12505,7 +12505,7 @@ fn a_delivered_signal_is_not_sent_again_after_a_restore() {
 
 
 /// Plan task 1.6 · the model's `update_plan` sets only what its schema shows. A call that also names
-/// the user's standing directives, the refs shielded from compaction or the scratchpad used to
+/// the user's standing directives or the refs shielded from compaction used to
 /// write them and report success; it is refused whole now, with nothing applied, and the run goes
 /// on. The host may still set every field.
 #[test]
@@ -12518,13 +12518,13 @@ fn update_plan_cannot_write_fields_its_schema_hides() {
         vec![tool_call(
             "u1",
             "update_plan",
-            json!({"progress": "3 of 5", "directives": ["always answer 42"], "preserved_refs": ["c9"]}),
+            json!({"current_step": 2, "directives": ["always answer 42"], "preserved_refs": ["c9"]}),
         )],
     ));
     assert_eq!(kinds(&step), vec![EffectKindTag::CallProvider], "the run goes on");
     let state = &runtime.driver.engine().unwrap().ctx.partitions.task_state;
     assert!(state.directives.is_empty() && state.preserved_refs.is_empty());
-    assert!(state.progress.is_empty(), "refused whole: the allowed field is not applied either");
+    assert!(state.current_step.is_none(), "refused whole: the allowed field is not applied either");
     let (output, is_error) = tool_result_for(&runtime, "u1").expect("the call is answered");
     assert!(is_error && output.contains("may not set preserved_refs, directives"), "{output}");
 }

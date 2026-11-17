@@ -24,13 +24,6 @@ pub struct TaskState {
     pub plan: Vec<PlanStep>,
     /// Index of the step currently executing (0-based). None before planning.
     pub current_step: Option<usize>,
-    /// Free-text progress note updated after each significant action.
-    pub progress: String,
-    /// Ephemeral scratch space for model use. Cleared on renewal. NOT used by the
-    /// compression pipeline (use compression_log instead).
-    pub scratchpad: String,
-    /// Reasons the current step cannot proceed.
-    pub blocked_on: Vec<String>,
     /// Explicit durable user directives / standing constraints (e.g. "don't do X"). Unlike
     /// runtime signals, these are intentionally persisted across compression and renewal.
     /// Bounded + recency-ordered (oldest dropped past [`MAX_DIRECTIVES`]); newest last.
@@ -166,9 +159,6 @@ pub const MAX_COMPRESSION_LOG: usize = 64;
 pub struct TaskUpdate {
     pub plan: Option<Vec<String>>,
     pub current_step: Option<usize>,
-    pub progress: Option<String>,
-    pub scratchpad: Option<String>,
-    pub blocked_on: Option<Vec<String>>,
     pub preserved_refs: Option<Vec<String>>,
     /// Replace the durable directive list wholesale (SDK/model curation).
     pub directives: Option<Vec<String>>,
@@ -218,15 +208,6 @@ impl TaskState {
         }
         if let Some(step) = update.current_step {
             self.current_step = Some(step);
-        }
-        if let Some(p) = update.progress {
-            self.progress = p;
-        }
-        if let Some(s) = update.scratchpad {
-            self.scratchpad = s;
-        }
-        if let Some(b) = update.blocked_on {
-            self.blocked_on = b;
         }
         if let Some(r) = update.preserved_refs {
             self.preserved_refs = r;
@@ -400,11 +381,11 @@ mod tests {
     fn apply_updates_fields() {
         let mut ts = TaskState::default();
         ts.apply(TaskUpdate {
-            progress: Some("half done".to_string()),
-            blocked_on: Some(vec!["waiting for data".to_string()]),
+            plan: Some(vec!["read".to_string(), "write".to_string()]),
+            current_step: Some(1),
             ..Default::default()
         });
-        assert_eq!(ts.progress, "half done");
-        assert_eq!(ts.blocked_on, ["waiting for data"]);
+        assert_eq!(ts.plan.len(), 2);
+        assert_eq!(ts.current_step, Some(1));
     }
 }

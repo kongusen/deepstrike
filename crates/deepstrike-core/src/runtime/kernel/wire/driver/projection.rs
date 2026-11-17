@@ -411,8 +411,6 @@ impl CanonicalOperationDriver {
             },
             history_len: ctx.partitions.history.len() as u32,
             frozen_history_len: ctx.frozen_history_len() as u32,
-            last_activity_ms: WireU64::ZERO,
-            last_compact_ms: None,
         }
     }
 

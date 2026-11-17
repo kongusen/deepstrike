@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:42f745d02d5e6c772e8b9bfdfa01e2e590ab4089cf228dd9f6b0e04905d23800",
+    "checkpoint_digest": "sha256:22a48cd03e1dbf4abfc85d5450905d2803fc3b1540e00c5bf5b6a3b1653117e2",
     "covered_transaction_head_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -30,7 +30,6 @@
         "signals": [],
         "system_measurements": [],
         "task_state": {
-          "blocked_on": [],
           "compression_log": [],
           "compression_log_dropped": "0",
           "criteria": [],
@@ -38,9 +37,7 @@
           "directives": [],
           "goal": "",
           "plan": [],
-          "preserved_refs": [],
-          "progress": "",
-          "scratchpad": ""
+          "preserved_refs": []
         }
       },
       "scheduler": {
@@ -114,7 +111,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,

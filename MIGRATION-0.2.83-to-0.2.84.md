@@ -6,7 +6,13 @@ stage 4 (memory under drift).
 
 ## Stored state
 
-Checkpoints and session logs written by 0.2.83 load unchanged. A `summary_upgraded` event in an
+**Operations still in flight under 0.2.83 cannot be resumed by this version.** Their kernel
+checkpoints and journal records carry configuration and task-state fields this release removes
+(see Removed), and the kernel decodes both strictly and re-hashes what it decodes, so a restore
+fails (`record_corrupted`, or a checkpoint that does not decode). Let in-flight operations finish,
+or abandon them, before upgrading.
+
+Session logs (the event stream) written by 0.2.83 still load. A `summary_upgraded` event in an
 older session log is ignored; replay uses the `compressed` event's rule-based summary.
 
 ## Behavior changes
@@ -66,8 +72,7 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
   should look for these lines instead.
 - Compaction events no longer report `snip_compact`; cache breaks are no longer attributed to
   `narration` or `snip`. SDKs still accept those strings when reading older session logs.
-- Checkpoints no longer write `recent_actions`, `last_activity_ms` or `last_compact_ms`; older
-  checkpoints that carry them still restore (the values are ignored).
+- Checkpoints no longer carry `recent_actions`, `last_activity_ms` or `last_compact_ms`.
 - Rust: `context::utility` and `context::summarizer` are gone (`context::archive::plan_archive`
   replaces the planner); `EvictionOp` is `Micro | Collapse { target_tokens } | AutoCompact`;
   `plan_eviction` takes no idle flag; `PressureAction::SnipCompact`,
@@ -91,6 +96,19 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
   `Vec<String>`; read `signal.text`. `Lease::SingleUse` is renamed `Lease::UntilDelivered`.
 - Checkpoints gain an optional `signals_delivered` (the signals the in-flight provider request
   carries). A checkpoint without it restores as before.
+
+- **`update_plan` takes `plan` and `current_step` only** (DEC-13 audit, M9). `progress`,
+  `blocked_on` and the scratchpad are gone from the task state, from the `[TASK STATE]` block and
+  from `TaskUpdate` in every SDK (Node / WASM `progress`, `scratchpad`, `blockedOn`; Python and
+  Rust `progress`, `scratchpad`, `blocked_on`). A model call that still passes them is answered
+  with a `malformed arguments` error result and the run goes on; a host `update_task` command that
+  passes them is rejected as an unknown field. The `update_plan` description reads "Update your
+  task plan. …". Measured as part of the stage 2 `minimal` variant: no scenario was significantly
+  better with them.
+- **`EntropyWatch.notify_model`** (Node / WASM `entropyWatch.notifyModel`, Python
+  `entropy_watch["notify_model"]`, the wire `entropy_watch.notify_model`). The entropy alert goes to
+  the host only, as the `entropy_alert` event; a host supervisor that wants the model told injects
+  its own note. The wire config rejects the field as unknown.
 
 ## Changed defaults
 

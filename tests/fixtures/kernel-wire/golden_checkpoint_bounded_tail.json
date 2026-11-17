@@ -1,11 +1,11 @@
 {
-  "base_state_digest": "sha256:0f185cc8bb8373106bf7e90212417e540308185852e0a4a694234b790d1661d2",
+  "base_state_digest": "sha256:2374cc05c6504b9f83856e4aed5c6074953260966ac83c0b1c4a6996a4579dfe",
   "checkpoint": {
-    "base_record_digest": "sha256:b72f703376b96d52d24a70455cc500631a5854b604aa390886803bfaf29e687c",
+    "base_record_digest": "sha256:457f90615d43605d1fc136d1aed8a01890a86bc84c3b866e5eda103202f6687d",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:d5153a4c400d4424bd7eb3a2c1305bb99993bd7c23b10a1f216add2b5f2c4d91",
-    "covered_transaction_head_digest": "sha256:5ab010aa3644f5314431c28f472c59f356d48c151fa1b4568bab6415d7828d69",
-    "genesis_digest": "sha256:722dcf45d86ad947a3637c2581ee29ce66cd4030dbffa1075cf128250b91d947",
+    "checkpoint_digest": "sha256:43d3af18e7467dcfd1fbbab16d7058966b22d877aba37a95a4df6fa58a08852d",
+    "covered_transaction_head_digest": "sha256:292b94c865967d1573f70989a51177fe26eba318fb1f9484416adabffdc34357",
+    "genesis_digest": "sha256:ee31f01b238ac8fd7d613cfc7f45992681e5f2011cd957a7c286344c67e965ec",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -93,7 +93,6 @@
         "signals": [],
         "system_measurements": [],
         "task_state": {
-          "blocked_on": [],
           "compression_log": [],
           "compression_log_dropped": "0",
           "criteria": [],
@@ -101,9 +100,7 @@
           "directives": [],
           "goal": "write the research brief",
           "plan": [],
-          "preserved_refs": [],
-          "progress": "",
-          "scratchpad": ""
+          "preserved_refs": []
         }
       },
       "scheduler": {
@@ -200,7 +197,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -372,12 +368,12 @@
         "accepted_inputs": [
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:722dcf45d86ad947a3637c2581ee29ce66cd4030dbffa1075cf128250b91d947",
+            "record_digest": "sha256:ee31f01b238ac8fd7d613cfc7f45992681e5f2011cd957a7c286344c67e965ec",
             "step_seq": "0"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:b72f703376b96d52d24a70455cc500631a5854b604aa390886803bfaf29e687c",
+            "record_digest": "sha256:457f90615d43605d1fc136d1aed8a01890a86bc84c3b866e5eda103202f6687d",
             "step_seq": "1"
           }
         ],
@@ -545,7 +541,6 @@
               "cooldown_turns": 4,
               "enabled": false,
               "hysteresis_ppm": 100000,
-              "notify_model": false,
               "threshold_ppm": 650000
             },
             "max_context_tokens": 128000,
@@ -694,8 +689,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:0f185cc8bb8373106bf7e90212417e540308185852e0a4a694234b790d1661d2",
-    "tail_digest": "sha256:12444717f38836b03cde760bbc61f01682455705d29352c9f0cbb36f7a77fc60",
+    "state_digest": "sha256:2374cc05c6504b9f83856e4aed5c6074953260966ac83c0b1c4a6996a4579dfe",
+    "tail_digest": "sha256:95b6aafa23e1949b5de3eb2c8b959459cefedbde15c6be39587a34904c57a3d8",
     "tail_inputs": [
       {
         "input": {
@@ -729,7 +724,7 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:bce8ffac0e9b937927f1b564cc2a40ea19293212d06b3ad76f015a1c2288831f",
+        "record_digest": "sha256:9ac91a87399232e1b0390eccfca6ceb39e347a97fb4baa93c3b4c343df5fd39a",
         "step_seq": "2"
       },
       {
@@ -758,7 +753,7 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:7fb6d2c91701523682776116dccc7e9c658201667492635c29764c06c7fdb299",
+        "record_digest": "sha256:afb0106b0db17c614ee2731cfe654c7065004afcce1de9ac6d356a73c476402b",
         "step_seq": "3"
       },
       {
@@ -785,7 +780,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:5ab010aa3644f5314431c28f472c59f356d48c151fa1b4568bab6415d7828d69",
+        "record_digest": "sha256:292b94c865967d1573f70989a51177fe26eba318fb1f9484416adabffdc34357",
         "step_seq": "4"
       }
     ],

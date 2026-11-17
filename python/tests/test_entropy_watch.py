@@ -98,24 +98,3 @@ async def test_entropy_alert_is_optin_and_lands_in_session_log():
     kinds = [entry.event.get("kind") for entry in await session_log.read("entropy-on")]
     assert "entropy_sample" in kinds
     assert "entropy_alert" in kinds
-
-
-@pytest.mark.asyncio
-async def test_notify_model_feeds_a_durable_entropy_directive():
-    provider = LoopingProvider(3)
-    runner, _log = _runner(
-        provider, _failing_poke(),
-        entropy_watch={"threshold": 0.1, "cooldown_turns": 0, "notify_model": True},
-    )
-    async for _ in runner.run(goal="poke it"):
-        pass
-
-    def rendered(ctx: RenderedContext) -> str:
-        parts = [getattr(ctx, "system_text", None)]
-        state_turn = getattr(ctx, "state_turn", None)
-        if state_turn is not None:
-            parts.append(getattr(state_turn, "content", None))
-        parts.extend(getattr(m, "content", None) for m in ctx.turns)
-        return "\n".join(p for p in parts if p)
-
-    assert any("[entropy]" in rendered(c) for c in provider.calls)

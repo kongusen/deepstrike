@@ -328,7 +328,7 @@ pub fn notes_block(notes: &[Note]) -> String {
 
 /// The `[TASK STATE]` block of the state turn; empty before a task is set.
 pub fn task_state_block(state: &TaskState) -> String {
-    if state.goal.is_empty() && state.plan.is_empty() && state.progress.is_empty() {
+    if state.goal.is_empty() && state.plan.is_empty() {
         return String::new();
     }
     let mut lines = Vec::new();
@@ -357,18 +357,9 @@ pub fn task_state_block(state: &TaskState) -> String {
             lines.push(format!("  [{}] {}. {}", marker, i + 1, step.label));
         }
     }
-    if !state.progress.is_empty() {
-        lines.push(format!("progress: {}", state.progress));
-    }
-    if !state.blocked_on.is_empty() {
-        lines.push(format!("blocked_on: {}", state.blocked_on.join(", ")));
-    }
     let notes = notes_block(&state.notes);
     if !notes.is_empty() {
         lines.push(notes);
-    }
-    if !state.scratchpad.is_empty() {
-        lines.push(format!("scratchpad: {}", state.scratchpad));
     }
     // Only the latest three compaction records; older ones stay in `compression_log`.
     if !state.compression_log.is_empty() {
@@ -612,7 +603,7 @@ pub fn read_result_tool_parameters() -> serde_json::Value {
 }
 
 pub fn update_plan_tool_description() -> String {
-    "Update your task plan and progress. Call this after completing a step or when the plan changes.".to_string()
+    "Update your task plan. Call this after completing a step or when the plan changes.".to_string()
 }
 
 pub fn update_plan_tool_parameters() -> serde_json::Value {
@@ -620,9 +611,7 @@ pub fn update_plan_tool_parameters() -> serde_json::Value {
                 "type": "object",
                 "properties": {
                     "plan": { "type": "array", "items": { "type": "string" } },
-                    "current_step": { "type": "integer" },
-                    "progress": { "type": "string" },
-                    "blocked_on": { "type": "array", "items": { "type": "string" } }
+                    "current_step": { "type": "integer" }
                 }
             })
 }

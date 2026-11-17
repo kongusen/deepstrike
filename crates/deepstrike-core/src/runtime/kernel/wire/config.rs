@@ -228,8 +228,6 @@ pub struct EntropyWatchPolicy {
     pub hysteresis_ppm: Option<Ppm>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cooldown_turns: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_model: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -668,7 +666,6 @@ pub struct ResolvedEntropyWatch {
     pub threshold_ppm: Ppm,
     pub hysteresis_ppm: Ppm,
     pub cooldown_turns: u32,
-    pub notify_model: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -953,7 +950,6 @@ impl ConfigDefaults {
                         threshold_ppm: Ppm::from_ppm_const(650_000),
                         hysteresis_ppm: Ppm::from_ppm_const(100_000),
                         cooldown_turns: 4,
-                        notify_model: false,
                     },
                 },
                 governance_policy: ResolvedGovernancePolicy {
@@ -1525,9 +1521,6 @@ fn resolve_execution(
             }
             if let Some(value) = watch.cooldown_turns {
                 resolved.entropy_watch.cooldown_turns = value;
-            }
-            if let Some(value) = watch.notify_model {
-                resolved.entropy_watch.notify_model = value;
             }
         }
     }
@@ -2202,7 +2195,6 @@ mod tests {
                     threshold_ppm: Some(ppm(650_000)),
                     hysteresis_ppm: Some(ppm(100_000)),
                     cooldown_turns: Some(3),
-                    notify_model: Some(true),
                 }),
             }),
             governance_policy: Some(GovernancePolicy {

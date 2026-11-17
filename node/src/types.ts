@@ -323,9 +323,8 @@ export interface EntropyAlertEvent extends StreamEvent {
 }
 
 /** Opt-in kernel-side threshold watch over the per-turn entropy score. Sampling itself is
- *  unconditional; this only controls alerting. `notifyModel` additionally routes the alert
- *  into the model's own signal channel (durable `[SIGNAL]` directive at the next boundary) —
- *  leave it off when a host supervisor injects task-aware guidance itself. */
+ *  unconditional; this only controls alerting. The alert goes to the host (an `entropy_alert`
+ *  event); a host supervisor that wants the model told injects its own guidance. */
 export interface EntropyWatchOptions {
   enabled?: boolean
   /** Alert when `score >= threshold` (kernel default 0.65). */
@@ -334,7 +333,6 @@ export interface EntropyWatchOptions {
   hysteresis?: number
   /** Minimum completed turns between two alerts (default 4). */
   cooldownTurns?: number
-  notifyModel?: boolean
 }
 
 export interface TokenUsage {
@@ -655,8 +653,5 @@ export interface LLMProvider {
 export interface TaskUpdate {
   plan?: string[]
   currentStep?: number
-  progress?: string
-  scratchpad?: string
-  blockedOn?: string[]
   preservedRefs?: string[]
 }

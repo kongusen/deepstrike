@@ -46,8 +46,8 @@ export const KERNEL_PROJECTION_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
       source: { type: "TaskUpdate", layer: "host", authority: "host-runtime" },
       target: { type: "KernelTaskUpdate", layer: "kernel", authority: "kernel" },
       fields: {
-        drops: ["plan", "currentStep", "progress", "scratchpad", "blockedOn", "preservedRefs"],
-        derived: ["plan", "current_step", "progress", "scratchpad", "blocked_on", "preserved_refs"],
+        drops: ["plan", "currentStep", "preservedRefs"],
+        derived: ["plan", "current_step", "preserved_refs"],
         forbidden: [],
       },
     },

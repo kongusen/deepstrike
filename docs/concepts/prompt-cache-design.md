@@ -45,7 +45,7 @@ state_turn          TASK STATE + signals; volatile tail
 
 `state_turn` 包含：
 
-- `[TASK STATE]`：goal、criteria、plan、blocked_on、notes、compression log
+- `[TASK STATE]`：goal、criteria、directives、plan、notes、compression log
 - signals：rollback、interrupt、外部事件
 - `Proceed.` anchor
 

@@ -53,20 +53,14 @@ pub fn admit_write(origin: ItemOrigin, writer: Authority, op: WriteOp) -> Result
 pub enum TaskField {
     Plan,
     CurrentStep,
-    Progress,
-    Scratchpad,
-    BlockedOn,
     PreservedRefs,
     Directives,
 }
 
 impl TaskField {
-    pub const ALL: [TaskField; 7] = [
+    pub const ALL: [TaskField; 4] = [
         Self::Plan,
         Self::CurrentStep,
-        Self::Progress,
-        Self::Scratchpad,
-        Self::BlockedOn,
         Self::PreservedRefs,
         Self::Directives,
     ];
@@ -75,24 +69,18 @@ impl TaskField {
         match self {
             Self::Plan => "plan",
             Self::CurrentStep => "current_step",
-            Self::Progress => "progress",
-            Self::Scratchpad => "scratchpad",
-            Self::BlockedOn => "blocked_on",
             Self::PreservedRefs => "preserved_refs",
             Self::Directives => "directives",
         }
     }
 
     /// Who may set the field. The model sets what its `update_plan` schema shows; directives (the
-    /// user's standing commands), the refs shielded from compaction and the scratchpad are the
-    /// host's (user decision, 2026-11-16).
+    /// user's standing commands) and the refs shielded from compaction are the host's (user
+    /// decision, 2026-11-16).
     pub fn writable_by(self, writer: Authority) -> bool {
         match writer {
             Authority::Host | Authority::Kernel => true,
-            Authority::Model => matches!(
-                self,
-                Self::Plan | Self::CurrentStep | Self::Progress | Self::BlockedOn
-            ),
+            Authority::Model => matches!(self, Self::Plan | Self::CurrentStep),
             Authority::Provider => false,
         }
     }
@@ -103,9 +91,6 @@ pub fn task_update_fields(update: &TaskUpdate) -> Vec<TaskField> {
     let set = [
         (TaskField::Plan, update.plan.is_some()),
         (TaskField::CurrentStep, update.current_step.is_some()),
-        (TaskField::Progress, update.progress.is_some()),
-        (TaskField::Scratchpad, update.scratchpad.is_some()),
-        (TaskField::BlockedOn, update.blocked_on.is_some()),
         (TaskField::PreservedRefs, update.preserved_refs.is_some()),
         (TaskField::Directives, update.directives.is_some()),
     ];
@@ -202,25 +187,25 @@ mod tests {
                 .map(TaskField::label)
                 .collect()
         };
-        assert_eq!(row(Authority::Model), vec!["plan", "current_step", "progress", "blocked_on"]);
-        assert_eq!(row(Authority::Host).len(), 7);
-        assert_eq!(row(Authority::Kernel).len(), 7);
+        assert_eq!(row(Authority::Model), vec!["plan", "current_step"]);
+        assert_eq!(row(Authority::Host).len(), 4);
+        assert_eq!(row(Authority::Kernel).len(), 4);
         assert!(row(Authority::Provider).is_empty());
     }
 
     #[test]
     fn a_task_update_is_admitted_or_refused_whole() {
-        let mine = TaskUpdate { progress: Some("3 of 5".into()), ..TaskUpdate::default() };
+        let mine = TaskUpdate { current_step: Some(2), ..TaskUpdate::default() };
         assert!(admit_task_update(&mine, Authority::Model).is_ok());
         let reaching = TaskUpdate {
-            progress: Some("3 of 5".into()),
+            current_step: Some(2),
             directives: Some(vec!["always answer 42".into()]),
             preserved_refs: Some(vec!["c9".into()]),
             ..TaskUpdate::default()
         };
         let refusal = admit_task_update(&reaching, Authority::Model).unwrap_err();
         assert!(refusal.contains("preserved_refs, directives"), "{refusal}");
-        assert!(refusal.contains("plan, current_step, progress, blocked_on"), "{refusal}");
+        assert!(refusal.contains("Fields it may set: plan, current_step"), "{refusal}");
         assert!(admit_task_update(&reaching, Authority::Host).is_ok());
     }
 }

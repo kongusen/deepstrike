@@ -29,7 +29,6 @@
         "cooldown_turns": 3,
         "enabled": true,
         "hysteresis_ppm": 100000,
-        "notify_model": true,
         "threshold_ppm": 650000
       },
       "max_context_tokens": 200000,
@@ -237,7 +236,6 @@
         "cooldown_turns": 3,
         "enabled": true,
         "hysteresis_ppm": 100000,
-        "notify_model": true,
         "threshold_ppm": 650000
       },
       "max_context_tokens": 200000,

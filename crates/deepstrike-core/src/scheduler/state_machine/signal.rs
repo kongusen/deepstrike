@@ -81,13 +81,6 @@ impl LoopStateMachine {
         action
     }
 
-    /// Route a signal and decide whether it drives a turn now. Assumes the caller
-    /// has already cleared observations / swept leases (see `feed` and `signal_event`).
-    pub(super) fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
-        // Drained at a turn boundary, where nothing is in flight by construction.
-        self.route_signal(signal, true).0
-    }
-
     fn route_signal(
         &mut self,
         signal: RuntimeSignal,

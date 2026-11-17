@@ -115,7 +115,7 @@ async def test_p1_7_the_host_never_writes_the_models_task_state():
     return "ok"
 
   provider = Scripted([
-    [ToolCallEvent(id="plan", name="update_plan", arguments={"progress": "drafting section two"})],
+    [ToolCallEvent(id="plan", name="update_plan", arguments={"plan": ["drafting section two"]})],
     [ToolCallEvent(id="noop", name="noop", arguments={})],
   ])
   runner = RuntimeRunner(RuntimeOptions(

@@ -81,12 +81,12 @@ async function drain(runner, sessionId, goal = "go") {
   ok("a failed tool result reaches the provider marked as a failure")
 }
 
-// P1-7 · the model's update_plan progress survives a tool batch.
+// P1-7 · the model's update_plan plan survives a tool batch.
 {
   const plane = new LocalExecutionPlane()
   plane.register(tool("noop", "noop", { type: "object", properties: {} }, async () => "ok"))
   const provider = scripted([
-    [{ type: "tool_call", id: "plan", name: "update_plan", arguments: { progress: "drafting section two" } }],
+    [{ type: "tool_call", id: "plan", name: "update_plan", arguments: { plan: ["drafting section two"] } }],
     [{ type: "tool_call", id: "noop", name: "noop", arguments: {} }],
   ])
   const runner = new RuntimeRunner({ provider, sessionLog: new InMemorySessionLog(), executionPlane: plane, maxTokens: 8000, maxTurns: 5, baselineToolIds: ["noop"], enablePlanTool: true })

@@ -50,7 +50,7 @@ the cache for the whole history behind it. The kernel places new entries as foll
 
 `state_turn` contains:
 
-- `[TASK STATE]`: goal, criteria, plan, blocked_on, notes, compression log
+- `[TASK STATE]`: goal, criteria, directives, plan, notes, compression log
 - signals: rollback, interrupt, external events
 - `Proceed.` anchor
 

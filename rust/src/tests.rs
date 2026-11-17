@@ -3392,7 +3392,7 @@ mod tests {
             assert_eq!(*recalls.lock().unwrap(), vec![("a".to_string(), 2)]);
         }
 
-        /// P1-7 · the model's update_plan progress survives a tool batch; the host writes none.
+        /// P1-7 · the model's update_plan plan survives a tool batch; the host writes none.
         #[tokio::test]
         async fn the_host_never_writes_the_models_task_state() {
             let mut plane = crate::runtime::execution_plane::LocalExecutionPlane::new();
@@ -3408,7 +3408,7 @@ mod tests {
                     vec![StreamEvent::ToolCall {
                         id: "plan".into(),
                         name: "update_plan".into(),
-                        arguments: serde_json::json!({ "progress": "drafting section two" }),
+                        arguments: serde_json::json!({ "plan": ["drafting section two"] }),
                     }],
                     vec![StreamEvent::ToolCall {
                         id: "noop".into(),

@@ -80,26 +80,4 @@ describe("session entropy (heartbeat watch source)", () => {
     expect(kinds).toContain("entropy_sample")
     expect(kinds).toContain("entropy_alert")
   })
-
-  it("notifyModel feeds the model a durable [entropy] directive through the signal channel", async () => {
-    class CapturingProvider extends LoopingProvider {
-      readonly contexts: RenderedContext[] = []
-      constructor() { super(3) }
-      async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
-        this.contexts.push(context)
-        yield* super.stream(context)
-      }
-    }
-    const provider = new CapturingProvider()
-    const { runner } = createRunner(provider, [failingPoke()], {
-      maxTurns: 8,
-      entropyWatch: { threshold: 0.1, cooldownTurns: 0, notifyModel: true },
-    })
-    for await (const _event of runner.run({ sessionId: "entropy-notify", goal: "poke it" })) { /* drain */ }
-
-    const rendered = provider.contexts
-      .map(c => [c.systemText, c.stateTurn?.content, ...c.turns.map(m => m.content)].filter(Boolean).join("\n"))
-      .join("\n---\n")
-    expect(rendered).toContain("[entropy]")
-  })
 })

@@ -18,7 +18,9 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
   model — notices, acknowledgements, the results it answers calls with, the notices it writes into
   history, the `[TASK STATE]` block and the descriptions and parameters of its own tools — are now
   built in one module, `context::voice`, so they can be read and swapped as a whole; nothing the
-  model sees changed. The refusal reasons of rejected kernel-tool calls are not moved yet.
+  model sees changed. So are the reasons a refused kernel-tool call carries, the `note`
+  acknowledgements and the memory-policy validation messages; a reason that only passes on another
+  component's message (a validation fault, a host policy's denial) carries it unchanged.
 - `deepstrike-lab` reports what a model spends keeping its own memory (kernel-distillation plan
   task 4.2): `recall_tokens` (the memory index lines recall injected), `memory_calls` (`note`,
   `propose_memory` and `memory` calls per trial), `memory_turn_share` (turns that called nothing
@@ -99,6 +101,12 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 - **The `summary_upgraded` session event** (contract, Node / WASM / Python types and registries).
   Session logs from earlier versions still load; a `summary_upgraded` event in them is ignored, and
   replay uses the `compressed` event's rule-based summary.
+- **`update_plan`'s `progress` and `blocked_on`, and the task scratchpad** (stage 2 audit, M9:
+  measured with the other mechanisms in `minimal`, no significant gain). The model's `update_plan`
+  takes `plan` and `current_step`; `TaskUpdate` loses the three fields in every SDK, and the
+  `[TASK STATE]` block no longer renders them.
+- **`EntropyWatch.notify_model`**, the unmeasured second channel that turned an entropy alert into
+  a `[SIGNAL]` to the model. The alert goes to the host only.
 - `ContextConfig.autocompact_buffer` and `ContextConfig::autocompact_threshold()` (never read).
 - `ContextConfig.verbose_control_notes` and the `[SYSTEM] …` verbose rollback / rejection notes.
 - Rust: `EvictionOp::Snip` and `EvictionOp::AutoCompact` lose their fields (the executor ignored

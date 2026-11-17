@@ -2266,7 +2266,6 @@ export class RuntimeRunner {
         ...(ew.threshold !== undefined ? { threshold: ew.threshold } : {}),
         ...(ew.hysteresis !== undefined ? { hysteresis: ew.hysteresis } : {}),
         ...(ew.cooldownTurns !== undefined ? { cooldown_turns: ew.cooldownTurns } : {}),
-        ...(ew.notifyModel !== undefined ? { notify_model: ew.notifyModel } : {}),
       }
     }
     await this.commitKernelApply(runtime, this.pendingObservations, { kind: "configure_run", config })

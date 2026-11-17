@@ -5659,45 +5659,8 @@ fn sm2_with_watch(threshold: f64, cooldown_turns: u32) -> LoopStateMachine {
         threshold,
         hysteresis: 0.1,
         cooldown_turns,
-        notify_model: false,
     });
     sm
-}
-
-#[test]
-fn entropy_watch_notify_model_routes_a_heartbeat_signal() {
-    let mut sm = sm2_with_watch(0.2, 0);
-    let mut cfg = sm.entropy_watch_config();
-    cfg.notify_model = true;
-    sm.set_entropy_watch(cfg);
-    sm.start(RuntimeTask::new("loop badly"));
-
-    let mut saw_alert = false;
-    for _ in 0..4 {
-        let obs = entropy_drive_turn(&mut sm, serde_json::json!({"same": true}), true);
-        if obs
-            .iter()
-            .any(|o| matches!(o, KernelObservation::EntropyAlert { .. }))
-        {
-            saw_alert = true;
-            // The internal signal is not a leased host delivery, but still traverses the
-            // attention policy and reaches the model channel.
-            assert!(
-                !obs.iter()
-                    .any(|o| matches!(o, KernelObservation::SignalDeliveryDisposed { .. }))
-            );
-            assert!(
-                sm.ctx
-                    .partitions
-                    .signals
-                    .iter()
-                    .any(|s| s.text.contains("[entropy]")),
-                "entropy directive must land in signals: {:?}",
-                sm.ctx.partitions.signals
-            );
-        }
-    }
-    assert!(saw_alert, "low threshold + disordered run must alert");
 }
 
 #[test]
