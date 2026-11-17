@@ -3178,22 +3178,18 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     });
     let context = &config.context_policy;
     let thresholds = &context.pressure_thresholds_ppm;
-    engine
-        .ctx
-        .apply_context_policy(&crate::context::policy::ContextPolicy {
-            pressure_thresholds_ppm: crate::context::policy::PressureThresholdsPpm {
-                micro: thresholds.micro.get(),
-                collapse: thresholds.collapse.get(),
-                auto: thresholds.auto.get(),
-                renewal: thresholds.renewal.get(),
-            },
-            target_after_compress_ppm: context.target_after_compress_ppm.get(),
-            preserve_recent_turns: context.preserve_recent_turns,
-            renewal_carryover_ppm: context.renewal_carryover_ppm.get(),
-            delegate_tool_result_clearing: context.delegated_tiers.tool_result_clearing,
-            delegate_compaction: context.delegated_tiers.compaction,
-            notes_budget_tokens: context.notes_budget_tokens,
-        });
+    let mut tuned = engine.ctx.config.clone();
+    tuned.micro_threshold = thresholds.micro.as_ratio();
+    tuned.collapse_threshold = thresholds.collapse.as_ratio();
+    tuned.auto_threshold = thresholds.auto.as_ratio();
+    tuned.renewal_threshold = thresholds.renewal.as_ratio();
+    tuned.target_after_compress = context.target_after_compress_ppm.as_ratio();
+    tuned.preserve_recent_units = context.preserve_recent_turns as usize;
+    tuned.carryover_ratio = context.renewal_carryover_ppm.as_ratio();
+    tuned.delegate_tool_result_clearing = context.delegated_tiers.tool_result_clearing;
+    tuned.delegate_compaction = context.delegated_tiers.compaction;
+    tuned.notes_budget_tokens = context.notes_budget_tokens;
+    engine.ctx.apply_config(tuned);
     engine
         .ctx
         .set_prompt_budget(crate::context::config::PromptBudgetConfig {

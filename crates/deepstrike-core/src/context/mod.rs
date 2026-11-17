@@ -10,7 +10,6 @@ pub mod manager;
 pub mod measurement;
 pub mod notes;
 pub mod partitions;
-pub mod policy;
 pub mod pressure;
 pub mod renderer;
 pub mod renewal;

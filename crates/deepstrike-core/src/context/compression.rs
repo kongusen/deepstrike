@@ -487,13 +487,13 @@ fn apply_archive_plan(
 /// Compression pipeline — operates on history partition but can reference full partitions.
 pub struct CompressionPipeline {
     stages: Vec<(PressureAction, Box<dyn Compressor>)>,
-    preserve_recent_turns: usize,
+    preserve_recent_units: usize,
 }
 
 impl CompressionPipeline {
     pub fn new(config: &ContextConfig) -> Self {
         Self {
-            preserve_recent_turns: config.preserve_recent_turns,
+            preserve_recent_units: config.preserve_recent_units,
             stages: vec![
                 // A micro compaction first caps oversized messages (snip), then excerpts old tool
                 // results. Snip has no pressure tier of its own (stage 2, DEC-13).
@@ -537,7 +537,7 @@ impl CompressionPipeline {
                     partitions,
                     target_tokens,
                     max_tokens,
-                    self.preserve_recent_turns,
+                    self.preserve_recent_units,
                     engine,
                 );
                 total_saved += res.tokens_saved;
@@ -1000,7 +1000,7 @@ mod tests {
         // rewrites from msg 1 — so the cache break is there, NOT the coarse 0. An AutoCompact drops
         // the oldest → break 0.
         let mut cfg = config();
-        cfg.preserve_recent_turns = 1;
+        cfg.preserve_recent_units = 1;
         let mut ctx = baseline_partitions();
         let (_s, _u, _a, cache_at) = CompressionPipeline::new(&cfg).compress(
             &mut ctx,
@@ -1091,7 +1091,7 @@ mod tests {
         let mut ctx = baseline_partitions();
         let before = ctx.total_tokens(&engine());
         let mut cfg = config();
-        cfg.preserve_recent_turns = 1;
+        cfg.preserve_recent_units = 1;
         let (saved, summary, archived, _cache_at) =
             CompressionPipeline::new(&cfg).compress(&mut ctx, action, MAX, 500, &engine());
         let archived_len = archived.len();
@@ -1167,9 +1167,9 @@ mod tests {
     fn pipeline_stops_cascade_when_target_reached() {
         let cfg = ContextConfig {
             snip_per_msg_ratio: 0.25,
-            // preserve_recent_turns=0: no cache-prefix protection, so snip can cap the lone message —
+            // preserve_recent_units=0: no cache-prefix protection, so snip can cap the lone message —
             // this test isolates the cascade early-break (snip reaches target → heavier stages skip).
-            preserve_recent_turns: 0,
+            preserve_recent_units: 0,
             ..Default::default()
         };
         let pipeline = CompressionPipeline::new(&cfg);

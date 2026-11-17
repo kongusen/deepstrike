@@ -6,7 +6,6 @@ use super::item::{
     ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, LeaseEvent, OriginTally, Relation,
 };
 use super::partitions::{ContextPartitions, SignalItem};
-use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::InternalRenderedContext;
 use super::renewal::RenewalPolicy;
@@ -336,9 +335,10 @@ impl ContextManager {
         }
     }
 
-    /// Atomically install the stable replay policy and rebuild every component derived from it.
-    pub fn apply_context_policy(&mut self, policy: &ContextPolicy) {
-        policy.apply_to(&mut self.config);
+    /// Install a configuration and rebuild every component derived from it. The wire's resolved
+    /// context policy reaches the kernel this way (`build_engine`); it has been validated there.
+    pub fn apply_config(&mut self, config: ContextConfig) {
+        self.config = config;
         self.compression = CompressionPipeline::new(&self.config);
         self.pressure = PressureMonitor::new(self.max_tokens, self.config.clone());
         self.renewal = RenewalPolicy::from_config(&self.config);

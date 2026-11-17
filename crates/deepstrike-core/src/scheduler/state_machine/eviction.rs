@@ -181,7 +181,7 @@ impl LoopStateMachine {
             }
             EvictionOp::AutoCompact => {
                 // Layer 5: auto-compact down to the preserve floor (target 0); the pipeline applies
-                // `config.preserve_recent_turns` at the compactor.
+                // `config.preserve_recent_units` at the compactor.
                 let (saved, summary, archived, cache_at) = self.ctx.force_compress();
                 if saved > 0 || summary.is_some() {
                     self.push_compression_observations(

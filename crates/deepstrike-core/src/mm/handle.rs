@@ -427,7 +427,7 @@ pub enum EvictionOp {
     Micro,
     /// Archive the oldest units until history fits the target.
     Collapse { target_tokens: u32 },
-    /// Archive everything but the last `ContextConfig::preserve_recent_turns` turns.
+    /// Archive everything but the last `ContextConfig::preserve_recent_units` units.
     AutoCompact,
 }
 

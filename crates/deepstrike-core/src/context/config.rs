@@ -51,14 +51,9 @@ pub struct ContextConfig {
     /// Maximum fraction of max_tokens a recovery/replay payload may occupy.
     pub recovery_content_ratio: f64,
 
-    /// Recent conversational transactions always kept during render.
+    /// The most recent history units (a tool call stays with its results) that render never
+    /// drops and compaction never archives. The wire's `preserve_recent_turns` sets it. Default 2.
     pub preserve_recent_units: usize,
-
-    /// Number of most-recent turns (user+assistant pairs) preserved by
-    /// the archive stages (ContextCollapse and AutoCompact). Each turn = 2 messages, so
-    /// the actual message count kept is `preserve_recent_turns * 2`.
-    /// Must be ≥ 1. Default: 2 (= 4 messages).
-    pub preserve_recent_turns: usize,
 
     // ── Noise reduction ──────────────────────────────────────────────────────
 
@@ -99,7 +94,6 @@ impl Default for ContextConfig {
             carryover_ratio: 0.05,
             recovery_content_ratio: 0.25,
             preserve_recent_units: 2,
-            preserve_recent_turns: 2,
             preserved_tool_results: 5,
             knowledge_budget_ratio: 0.25,
             delegate_tool_result_clearing: false,

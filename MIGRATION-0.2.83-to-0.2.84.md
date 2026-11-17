@@ -110,6 +110,12 @@ older session log is ignored; replay uses the `compressed` event's rule-based su
   the host only, as the `entropy_alert` event; a host supervisor that wants the model told injects
   its own note. The wire config rejects the field as unknown.
 
+- Rust: `context::policy` (`ContextPolicy`, `PressureThresholdsPpm`, `PPM_SCALE`) is removed; the
+  wire `ContextPolicy` is the only one. `ContextManager::apply_context_policy(&ContextPolicy)` is
+  `apply_config(ContextConfig)`, and `ContextConfig.preserve_recent_turns` is merged into
+  `preserve_recent_units`, which the wire's `preserve_recent_turns` now sets for render as well as
+  compaction.
+
 ## Changed defaults
 
 - `ContextConfig::default().notes_budget_tokens` is 600, the wire default. Code that builds a

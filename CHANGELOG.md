@@ -140,6 +140,13 @@ stage 4. Phase 0 changes nothing the model sees; the memory header change below 
 - Rust: `ContextPartitions.signals` holds `SignalItem { text, delivered }` instead of `String`
   (plan task 1.1), and `Lease::SingleUse`, which no item used, is `Lease::UntilDelivered`: the
   lease the origin table gives signals, enforced on delivery rather than on first reference.
+- One count of recent history units protects them from both render and compaction: the wire's
+  `context_policy.preserve_recent_turns` now also sets what render never drops (it was a separate
+  `ContextConfig.preserve_recent_units`, fixed at 2). Both defaulted to 2, so only a host that
+  sets the wire value differently sees a change. Rust: `ContextConfig.preserve_recent_turns` is
+  gone (use `preserve_recent_units`), and `context::policy::ContextPolicy`, a second copy of the
+  wire policy with its own validation, is gone; `ContextManager::apply_context_policy` is
+  `apply_config(ContextConfig)`.
 - `CollapseCompactor` and `AutoCompactor` (identical bodies) are one `ArchiveCompactor`; the
   pipeline still labels the two stages `context_collapse` and `auto_compact`.
 
