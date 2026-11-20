@@ -1,12 +1,10 @@
-<p align="center">
-  <a href="https://github.com/kongusen/deepstrike">
-    <img src="https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/banner.png" alt="DeepStrike" width="420" />
-  </a>
-</p>
-
 # DeepStrike Python SDK
 
-Build Python Agents with providers, typed tools, memory, Skills, delegation, workflows, and durable sessions. The SDK keeps the Agent's long-running work explicit through stream events, SessionLog evidence, tool policies, and host-provided integrations.
+Build a Python assistant that can recall a project preference in a later session. With a memory store and candidate sink, your application reviews what gets saved and the model can open the full record when needed.
+
+[Install](#install) · [Run a tool](#quick-start) · [Add memory](#memory) · [All SDKs and examples](https://github.com/kongusen/deepstrike#run-your-first-agent)
+
+![A preference is proposed, approved and recalled by the next session](https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/readme/memory-cycle.gif)
 
 ## Install
 

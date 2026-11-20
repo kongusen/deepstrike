@@ -1,14 +1,10 @@
-<p align="center">
-  <a href="https://github.com/kongusen/deepstrike">
-    <img src="https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/banner.png" alt="DeepStrike" width="420" />
-  </a>
-</p>
-
 # DeepStrike Rust SDK
 
-Build Rust Agents with providers, typed tools, durable sessions, Memory, Skills, Knowledge, governance, and bounded evaluation loops.
+Embed an assistant in a Rust service. The kernel can shorten older tool outputs while keeping task notes in view. When a full result has been saved, the model can reopen it to check the evidence.
 
-Use `RuntimeRunner` when an Agent needs streaming events, durable session recovery, tool control, or host-provided integrations.
+[Install](#add-to-your-project) · [Run an agent](#quick-start) · [Set permissions](#governance) · [All SDKs and examples](https://github.com/kongusen/deepstrike#run-your-first-agent)
+
+![A task note stays visible while the model reopens a saved source](https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/readme/pressure-notes.gif)
 
 ## Add to your project
 

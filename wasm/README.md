@@ -1,12 +1,10 @@
-<p align="center">
-  <a href="https://github.com/kongusen/deepstrike">
-    <img src="https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/banner.png" alt="DeepStrike" width="420" />
-  </a>
-</p>
-
 # DeepStrike WASM SDK
 
-Build browser and edge Agents with providers, typed tools, memory interfaces, Skills, governance, and durable session evidence. The WASM SDK runs wherever `fetch` and WebAssembly are available, including browsers, Cloudflare Workers, Deno Deploy, and Vercel Edge.
+Run an assistant in a browser or edge worker. Your host supplies tools for APIs it can access. The shared kernel groups each call with its result when building the next model request.
+
+[Install](#install) · [Run a tool](#quick-start) · [Edge examples](#edge-runtime-examples) · [All SDKs and examples](https://github.com/kongusen/deepstrike#run-your-first-agent)
+
+![The kernel assembles the next request after a tool returns](https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/readme/turn-view.gif)
 
 ## Install
 

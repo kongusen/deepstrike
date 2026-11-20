@@ -1,17 +1,14 @@
 # DeepStrike 文档
 
-文档源目录，支持 **简体中文（默认）** 与 **English** 双语。默认阅读路径从要构建的 Agent 出发，而不是从运行时实现出发。
+先选一件你想让助手做的事。第一次接触 DeepStrike，可以先看[四张章鱼动图](https://github.com/kongusen/deepstrike/blob/main/README.zh-CN.md#一份周报是怎么写出来的)，或直接[跑一个会查资料的助手](https://github.com/kongusen/deepstrike/blob/main/README.zh-CN.md#运行第一个助手)。
 
-## 阅读路径
+- 我有一个函数，想让模型调用它。看[工具接入](./guides/execution-plane-and-tools.md)。
+- 我想让助手查很多资料，还能记得已经确认的结论。看[上下文管理](./guides/context-engineering.md)和[跨会话记忆](./guides/memory.md)。
+- 我想把团队的审阅步骤写成助手能按需加载的说明。看 [Skill 的加载、工具和租约](./guides/skills.md)。
+- 我想让几个助手分工，读完各自的材料再汇总。看[工作流](./guides/workflow.md)。
+- 我想让人批准后才发送，或让中断的任务继续。看[权限与审批](./guides/governance.md)和[会话恢复](./guides/session-replay-and-recovery.md)。
 
-1. **入门**：安装 SDK，运行第一个使用工具的 Agent，并选择合适的 API。
-2. **Agent 能力**：按需添加模型、工具、Memory、Skill、治理、委托、工作流、Signal 和可恢复 Session。
-3. **教程课程**：在 `example/` 的 Research Brief Studio 中，从单 Agent 逐级构建到协作 Agent 团队。
-4. **Agent 如何运行**：理解一次运行、Context、时间、质量和连续性如何配合。
-5. **概念**：阅读角色、隔离、缓存和预算等设计概念。
-6. **参考**：查找 API、字段、选项和事件类型。
-
-`architecture/overview` 与 `architecture/kernel-abi` 是实现细节，保留给需要研究运行时实现或 ABI 的读者，不作为新用户的起点。
+[中文文档首页](./index.md) · [English documentation](./en/index.md) · [实现原理](./architecture/execution-model.md) · [API 参考](./reference/index.md)
 
 ## 目录结构
 

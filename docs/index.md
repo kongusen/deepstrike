@@ -6,8 +6,8 @@ hero:
   text: 本地 Agent Process Runtime
   tagline: 用可持久化的进程树、权限、预算、调度、通信与恢复，让 Agent 持续完成工作。
   image:
-    src: /banner.png
-    alt: DeepStrike
+    src: /deepstrike-octopus-icon.png
+    alt: DeepStrike 蓝章鱼吉祥物
   actions:
     - theme: brand
       text: 了解 Agent Runtime

@@ -6,8 +6,8 @@ hero:
   text: A local Agent Process Runtime
   tagline: Durable process trees, authority, budgets, scheduling, communication, and recovery for Agents that keep working.
   image:
-    src: /banner.png
-    alt: DeepStrike
+    src: /deepstrike-octopus-icon.png
+    alt: DeepStrike's blue octopus mascot
   actions:
     - theme: brand
       text: Explore Agent Runtime

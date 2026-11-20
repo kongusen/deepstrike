@@ -1,12 +1,10 @@
-<p align="center">
-  <a href="https://github.com/kongusen/deepstrike">
-    <img src="https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/banner.png" alt="DeepStrike" width="420" />
-  </a>
-</p>
-
 # DeepStrike Node.js SDK
 
-Build Node.js Agents with providers, typed tools, memory, Skills, delegation, workflows, and durable sessions. The SDK keeps the Agent's long-running work explicit through stream events, SessionLog evidence, tool policies, and host-provided integrations.
+Give a JavaScript assistant access to project data. When it needs a team procedure, it can load a Skill with instructions and permitted tools, such as a checklist and a ticket reader.
+
+[Install](#install) · [Run a tool](#quick-start) · [Connect a provider](#providers) · [All SDKs and examples](https://github.com/kongusen/deepstrike#run-your-first-agent)
+
+![Activating a review Skill loads its checklist and exposes its ticket tool](https://raw.githubusercontent.com/kongusen/deepstrike/main/docs/public/readme/skill-cycle.gif)
 
 ## Install
 

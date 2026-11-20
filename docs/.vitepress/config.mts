@@ -8,11 +8,11 @@ export default defineConfig({
   ignoreDeadLinks: [/^https?:\/\/localhost/],
 
   head: [
-    ['link', { rel: 'icon', type: 'image/png', href: '/banner.png' }],
+    ['link', { rel: 'icon', type: 'image/png', href: '/deepstrike-octopus-icon.png' }],
   ],
 
   themeConfig: {
-    logo: '/banner.png',
+    logo: '/deepstrike-octopus-icon.png',
     socialLinks: [
       { icon: 'github', link: 'https://github.com/kongusen/deepstrike' },
       { icon: 'discord', link: 'https://discord.gg/cwS3RBYCv' },

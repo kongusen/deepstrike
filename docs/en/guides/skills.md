@@ -12,10 +12,9 @@ Skills are reusable packages of instructions, knowledge, and optional tool acces
 
 | Benefit | Behavior |
 | --- | --- |
-| --- | --- |
 | Smaller default prompt | Only skill summaries are available until the Agent loads one. |
 | Specialized instructions | The skill body becomes active context for the current task. |
-| Focused tool access | `allowed_tools` can narrow the tools visible during that phase. |
+| Focused tool access | An active Skill contributes the tools in its `allowed_tools` list within the run’s permissions. |
 | Phase-based work | Different skills can be loaded and released as the task changes. |
 
 The value of a skill is not another Markdown file. It is a reusable capability boundary that keeps an Agent focused.
@@ -27,7 +26,7 @@ The value of a skill is not another Markdown file. It is a reusable capability b
 1. `SkillRegistry.scan()` scans `*.md` files, parses YAML frontmatter → `SkillMetadata`
 2. The Agent sees an available-skills summary and can request a skill by name
 3. The agent calls `skill(name="...")` → SDK reads the file body → returns it as a tool result
-4. After loading, the skill enters `active_skills` and **narrows** the exposed tool set via `allowed_tools`
+4. After loading, the skill enters `active_skills`. For the next model call the kernel combines baseline tools, stable core tools and tools declared by active Skills, subject to the run’s permissions.
 
 ```python
 # python/deepstrike/skills/registry.py
@@ -86,7 +85,7 @@ The runner scans at startup and `register_skills` with the kernel.
 
 ## Level 2: Stable core tools
 
-After skill gating, only skill-declared tools plus meta-tools are exposed by default. To always keep baseline tools:
+The host can mark frequently used tools as stable core to keep them visible across Skill changes within the run’s permissions. This example keeps file reading and search available.
 
 ```python
 RuntimeOptions(
@@ -123,8 +122,7 @@ RuntimeOptions(..., skill_lease_turns=8)   # auto-deactivate 8 turns after each 
 runner.deactivate_skill("code-review")     # or explicit host-driven unload
 ```
 
-- After deactivation the toolset **re-widens** at the next provider call (an epoch event, same
-  cache cost class as activation)
+- After deactivation the kernel rebuilds the tool list for the next provider call. Tools contributed only by this Skill leave that list.
 - The skill body's knowledge pin (key `skill:<name>`) is dropped at the next compaction/renewal
   boundary (cache-safe)
 - A later `skill(name)` call re-activates and re-pins fresh content

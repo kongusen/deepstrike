@@ -14,7 +14,7 @@ Skill 是可复用的指令、Knowledge 和可选工具集合。Agent 只有在�
 | --- | --- |
 | 更小的默认 prompt | 加载前只看到 Skill 摘要。 |
 | 专业指令 | 加载后正文成为当前任务的 Context。 |
-| 专注工具集 | `allowed_tools` 可以收窄这一阶段可见的工具。 |
+| 专注工具集 | 内核在本次运行的权限范围内，展示激活的 Skill 通过 `allowed_tools` 声明的工具。 |
 | 分阶段工作 | 任务变化时可以加载和释放不同 Skill。 |
 
 Skill 的核心价值不是“多一份 Markdown”，而是让能力成为可复用的工作边界，帮助 Agent 保持专注。
@@ -26,7 +26,7 @@ Skill 的核心价值不是“多一份 Markdown”，而是让能力成为可�
 1. `SkillRegistry.scan()` 扫描 `*.md`，解析 YAML frontmatter → `SkillMetadata`
 2. Agent 看到可用 Skill 摘要，可以按名称请求 Skill
 3. Agent 调用 `skill(name="...")` → SDK 读文件正文 → 作为 tool result 返回
-4. 加载后进入 `active_skills`，按 `allowed_tools` **收窄** 暴露的工具集
+4. 加载后进入 `active_skills`。内核在组织下一次模型调用时，会合并基础工具、常驻工具和激活的 Skill 声明的工具，并检查运行权限。
 
 ---
 
@@ -64,7 +64,7 @@ Runner 启动时 scan 并 `register_skills` 到 kernel。
 
 ## Level 2：Stable Core 工具
 
-Skill 门控后，默认只暴露 skill 声明的工具 + meta-tools。若需始终保留基础工具：
+应用可以将常用工具设为常驻，让它们在本次运行的权限范围内跨 Skill 保持可见。下面把读文件和搜索设为常驻工具。
 
 ```python
 RuntimeOptions(
@@ -100,7 +100,7 @@ RuntimeOptions(..., skill_lease_turns=8)   # 每次激活 8 轮后自动卸载
 runner.deactivate_skill("code-review")     # 或宿主显式卸载
 ```
 
-- 卸载后工具集在下一次 provider 调用**回宽**（与激活同为 epoch 事件，缓存成本同级）
+- 卸载后，内核重新生成下一次模型调用的工具列表。仅由这个 Skill 引入的工具退出列表。
 - Skill 正文的 knowledge 钉（键 `skill:<name>`）在下一个 compaction/renewal 边界摘除（缓存安全）
 - 之后模型再调 `skill(name)` 会重新激活并重新钉入正文
 - **刻意不提供模型侧 unload 工具** —— 卸载只由宿主驱动，避免模型反复装卸抖动
