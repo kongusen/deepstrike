@@ -23,6 +23,9 @@ export interface DynamicWorkflowReplayRun {
   artifact?: DynamicWorkflowArtifactSnapshot
   argsFingerprint?: string
   limits?: Required<DynamicWorkflowLimits>
+  /** `scoped`: unlabelled node ids follow program position. Absent on runs recorded before that,
+   *  which keep the call-order counter so their saved results still match on resume. */
+  nodeIds?: "scoped"
   status: "planning" | "running" | "completed" | "failed" | "cancelled"
   events: DynamicWorkflowLifecycleEvent[]
   records: DynamicWorkflowInvocationRecord[]

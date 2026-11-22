@@ -34,21 +34,38 @@ describe("DynamicWorkflowController", () => {
     expect(controller.isFinished).toBe(true)
   })
 
-  it("supports concurrent submissions and preserves parallel result order", async () => {
+  it("submits agents called in the same turn as one batch and preserves parallel result order", async () => {
     const controller = new DynamicWorkflowController()
     const runPromise = controller.start(ctx =>
       ctx.parallel(["a", "b"], item => ctx.agent(`task:${item}`, { label: item })),
     )
 
-    const first = await controller.nextSubmission()
-    const second = await controller.nextSubmission()
-    expect([first?.spec.nodes[0]?.nodeId, second?.spec.nodes[0]?.nodeId]).toEqual(["a", "b"])
+    // A driver that admits one submission at a time still runs both agents concurrently.
+    const batch = await controller.nextSubmission()
+    expect(batch?.spec.nodes.map(node => node.nodeId)).toEqual(["a", "b"])
 
-    controller.completeSubmission(second!.id, outcome(second!.spec, "done"))
-    controller.completeSubmission(first!.id, outcome(first!.spec, "done"))
+    controller.completeSubmission(batch!.id, outcome(batch!.spec, "done"))
 
     const run = await runPromise
     expect(run.value.map(result => result?.text)).toEqual(["task:a:done", "task:b:done"])
+  })
+
+  it("keeps agents called in separate turns as separate submissions", async () => {
+    const controller = new DynamicWorkflowController()
+    const runPromise = controller.start(async ctx => {
+      const first = await ctx.agent("first", { label: "first" })
+      const second = await ctx.agent(`after:${first?.text}`, { label: "second" })
+      return second?.text
+    })
+
+    const first = await controller.nextSubmission()
+    expect(first?.spec.nodes.map(node => node.nodeId)).toEqual(["first"])
+    controller.completeSubmission(first!.id, outcome(first!.spec, "done"))
+    const second = await controller.nextSubmission()
+    expect(second?.spec.nodes.map(node => node.nodeId)).toEqual(["second"])
+    controller.completeSubmission(second!.id, outcome(second!.spec, "done"))
+
+    expect((await runPromise).value).toBe("after:first:done:done")
   })
 
   it("propagates a driver failure to the dynamic script", async () => {

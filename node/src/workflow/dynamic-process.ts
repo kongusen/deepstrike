@@ -11,6 +11,7 @@ import type {
 } from "./dynamic.js"
 import {
   DynamicWorkflowExecutor,
+  runInDynamicWorkflowScope,
   fingerprintDynamicWorkflowScript,
 } from "./dynamic.js"
 import { DynamicWorkflowScriptError } from "./dynamic-vm.js"
@@ -112,12 +113,14 @@ export class DynamicWorkflowProcessExecutor {
         try {
           const payload = (request.payload ?? {}) as Record<string, unknown>
           if (request.method === "agent") {
-            respond(request, await context.agent(String(payload.prompt ?? ""), payload.options as never))
+            respond(request, await runInDynamicWorkflowScope(context, payload.scope, () =>
+              context.agent(String(payload.prompt ?? ""), payload.options as never)))
             return
           }
           if (request.method === "parallelAgents") {
             const requests = (payload.requests ?? []) as DynamicWorkflowAgentRequest[]
-            respond(request, await context.parallelAgents(requests, (_, index) => requests[index]))
+            respond(request, await runInDynamicWorkflowScope(context, payload.scope, () =>
+              context.parallelAgents(requests, (_, index) => requests[index])))
             return
           }
           if (request.method === "blackboard_put") {
@@ -189,10 +192,17 @@ export class DynamicWorkflowProcessExecutor {
 const WORKER_SOURCE = String.raw`
 import vm from "node:vm";
 import readline from "node:readline";
+import { AsyncLocalStorage } from "node:async_hooks";
 let nextId = 0;
 const pending = new Map();
 const send = value => process.stdout.write(JSON.stringify(value) + "\n");
 const rpc = (method, payload) => new Promise((resolve, reject) => { const id = ++nextId; pending.set(id, { resolve, reject }); send({ type: "request", id, method, payload }); });
+// Each parallel() item runs in its own scope; the host names unlabelled agents by that scope, so
+// their ids follow program position rather than which sibling finished first.
+const scopes = new AsyncLocalStorage();
+const rootScope = { path: "", parallels: 0 };
+const scopePath = () => (scopes.getStore() ?? rootScope).path;
+const itemScopes = count => { const parent = scopes.getStore() ?? rootScope; const prefix = (parent.path ? parent.path + "." : "") + "p" + (parent.parallels++); return Array.from({ length: count }, (_, index) => ({ path: prefix + "." + index, parallels: 0 })); };
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", async line => {
   const message = JSON.parse(line);
@@ -204,9 +214,9 @@ input.on("line", async line => {
     const workflow = Object.freeze(Object.assign(Object.create(null), {
       args: Object.freeze(message.args ?? {}),
       progress: Object.freeze(await rpc("progress")),
-      agent: (prompt, options) => rpc("agent", { prompt, options }),
-      parallelAgents: async (items, worker) => rpc("parallelAgents", { requests: items.map((item, index) => worker(item, index)) }),
-      parallel: async (items, worker) => Promise.all(items.map((item, index) => worker(item, index))),
+      agent: (prompt, options) => rpc("agent", { prompt, options, scope: scopePath() }),
+      parallelAgents: async (items, worker) => rpc("parallelAgents", { requests: items.map((item, index) => worker(item, index)), scope: scopePath() }),
+      parallel: async (items, worker) => { const itemScope = itemScopes(items.length); return Promise.all(items.map((item, index) => scopes.run(itemScope[index], () => worker(item, index)))); },
       pipeline: async (items, worker) => { const out = []; for (let index = 0; index < items.length; index++) out.push(await worker(items[index], index)); return out; },
       phase,
       log: (message, fields) => rpc("log", { message, fields }),
