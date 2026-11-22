@@ -8,7 +8,7 @@
  *   same ids and so reuses every saved result.
  */
 import { RuntimeRunner, InMemorySessionLog } from "../src/advanced/public.js"
-import { DynamicWorkflowExecutor, type DynamicWorkflowContext, type DynamicWorkflowHost, type DynamicWorkflowScript } from "../src/workflow/dynamic.js"
+import { DynamicWorkflowExecutor, DynamicWorkflowLimitError, type DynamicWorkflowContext, type DynamicWorkflowHost, type DynamicWorkflowScript } from "../src/workflow/dynamic.js"
 import { DynamicWorkflowProcessExecutor } from "../src/workflow/dynamic-process.js"
 import { InMemoryDynamicWorkflowReplayStore, fingerprintDynamicWorkflowInvocation } from "../src/workflow/dynamic-replay.js"
 
@@ -86,6 +86,42 @@ describe("dynamic workflow concurrency", () => {
       .run(ctx => Promise.all(["a", "b", "c", "d", "e"].map(item => ctx.agent(`task ${item}`))))
 
     expect(sizes).toEqual([2, 2, 1])
+  })
+})
+
+describe("dynamic workflow per-call failures", () => {
+  const settle = (calls: Array<Promise<unknown>>) => Promise.allSettled(calls).then(results =>
+    results.map(result => result.status === "fulfilled" ? "ok" : (result.reason as Error).constructor.name))
+
+  it("fails only the calls past maxAgentsPerRun in a batch", async () => {
+    const executed: string[] = []
+    const run = await new DynamicWorkflowExecutor(delayedHost({}, executed), { limits: { maxAgentsPerRun: 2 } })
+      .run(ctx => settle(["a", "b", "c"].map(item => ctx.agent(`task ${item}`))))
+
+    expect(run.value).toEqual(["ok", "ok", DynamicWorkflowLimitError.name])
+    expect(executed).toHaveLength(2)
+  })
+
+  it("fails only the calls the host was running when it throws", async () => {
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    // An interrupted run: one saved result, then the script stopped.
+    await expect(new DynamicWorkflowExecutor(delayedHost({}, []), { runId: "host-error", replayStore: store })
+      .run(async ctx => { await ctx.agent("saved", { label: "kept" }); throw new Error("stopped") }))
+      .rejects.toThrow("stopped")
+    const failing: DynamicWorkflowHost = { async runWorkflow() { throw new Error("host down") } }
+
+    const run = await new DynamicWorkflowExecutor(failing, { runId: "host-error", replayStore: store })
+      .run(ctx => settle([ctx.agent("saved", { label: "kept" }), ctx.agent("fresh", { label: "new" })]))
+
+    expect(run.value).toEqual(["ok", "Error"])
+  })
+
+  it("keeps parallelAgents all-or-nothing on the limit", async () => {
+    const executed: string[] = []
+    await expect(new DynamicWorkflowExecutor(delayedHost({}, executed), { limits: { maxAgentsPerRun: 2 } })
+      .run(ctx => ctx.parallelAgents(["a", "b", "c"], item => ({ prompt: `task ${item}` }))))
+      .rejects.toBeInstanceOf(DynamicWorkflowLimitError)
+    expect(executed).toEqual([])
   })
 })
 
