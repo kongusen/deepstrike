@@ -47,4 +47,33 @@ await assert.rejects(
   runner().runDynamicWorkflow(async ctx => { await ctx.agent("one"); await ctx.agent("two") }, { limits: { maxAgentsPerRun: 1 } }),
   DynamicWorkflowLimitError,
 )
-console.log("dynamic workflow: real WASM kernel program, blackboard and limits pass")
+// agent() calls in one parallel() reach the kernel as one batch and run together.
+let active = 0
+let peak = 0
+const concurrent = new RuntimeRunner({
+  sessionLog: new InMemorySessionLog(), maxTokens: 8000,
+  provider: { async complete() { return { role: "assistant", content: "", toolCalls: [] } }, async *stream() {} },
+  subAgentOrchestrator: {
+    async run(ctx) {
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      active -= 1
+      return { agentId: ctx.manifest.agent_id, result: { termination: "completed", finalMessage: { role: "assistant", content: "ok", toolCalls: [] }, turnsUsed: 1, totalTokensUsed: 1 } }
+    },
+  },
+})
+const parallelRun = await concurrent.runDynamicWorkflow(
+  async ctx => ctx.parallel(["a", "b", "c", "d"], item => ctx.agent(`task ${item}`)),
+  { sessionId: "dw-parallel" },
+)
+assert.deepEqual(parallelRun.value.map(result => result.text), ["ok", "ok", "ok", "ok"])
+assert.equal(peak, 4)
+
+// A batch past maxAgentsPerRun fails only the calls over the limit.
+const settled = await runner().runDynamicWorkflow(
+  async ctx => (await Promise.allSettled(["a", "b", "c"].map(item => ctx.agent(`task ${item}`)))).map(result => result.status),
+  { sessionId: "dw-limit", limits: { maxAgentsPerRun: 2 } },
+)
+assert.deepEqual(settled.value, ["fulfilled", "fulfilled", "rejected"])
+console.log("dynamic workflow: real WASM kernel program, blackboard, limits and parallel batching pass")

@@ -1,6 +1,7 @@
 """Plan task 6.3 · dynamic workflows: a host program decides, step by step, which agents to run.
 
-The program is ordinary async Python. Each ``agent`` (or ``parallel_agents`` batch) becomes one
+The program is ordinary async Python. Each ``parallel_agents`` batch, and every set of ``agent``
+calls made in the same turn of the event loop (the workers of a ``parallel``), becomes one
 submission the kernel admits onto the operation's dynamic workflow root — the kernel still owns the
 DAG, its budgets and every spawn — and the program awaits the typed result before deciding what
 comes next. The vocabulary matches the Node SDK's ``runDynamicWorkflow``; replay of a saved run and
@@ -161,9 +162,46 @@ class DynamicWorkflowContext:
     self._next_node = 0
     self._sequence = 0
     self._slots = asyncio.Semaphore(limits.max_concurrent_agents)
+    self._pending: list[tuple[DynamicWorkflowAgentRequest, asyncio.Future[DynamicWorkflowAgentResult | None]]] = []
+    self._flush: asyncio.Task[None] | None = None
 
   async def agent(self, prompt: str, options: DynamicWorkflowAgentOptions | None = None) -> DynamicWorkflowAgentResult | None:
-    return (await self._run_batch([agent_task(prompt, options)]))[0]
+    future: asyncio.Future[DynamicWorkflowAgentResult | None] = asyncio.get_running_loop().create_future()
+    self._pending.append((agent_task(prompt, options), future))
+    if self._flush is None:
+      # Its first step runs after the tasks already scheduled, so every worker of a ``parallel``
+      # reaches its call first.
+      self._flush = asyncio.ensure_future(self._flush_agents())
+    return await future
+
+  async def _flush_agents(self) -> None:
+    """Submit the pending ``agent`` calls in batches of at most ``max_concurrent_agents``.
+
+    The host admits one submission at a time, so separate submissions would run one after another.
+    Each call settles on its own: calls past ``max_agents_per_run`` fail alone, the rest still run.
+    """
+    calls, self._pending, self._flush = self._pending, [], None
+    size = self._limits.max_concurrent_agents
+    for start in range(0, len(calls), size):
+      chunk = calls[start:start + size]
+      room = max(0, self._limits.max_agents_per_run - self.progress.agents_started)
+      for _, future in chunk[room:]:
+        if not future.done():
+          future.set_exception(DynamicWorkflowLimitError(
+            f"dynamic workflow exceeded max_agents_per_run ({self._limits.max_agents_per_run})"))
+      admitted = chunk[:room]
+      if not admitted:
+        continue
+      try:
+        results = await self._run_batch([request for request, _ in admitted])
+      except Exception as error:  # noqa: BLE001 - delivered to each waiting call
+        for _, future in admitted:
+          if not future.done():
+            future.set_exception(error)
+        continue
+      for (_, future), result in zip(admitted, results):
+        if not future.done():
+          future.set_result(result)
 
   async def parallel_agents(self, requests: list[DynamicWorkflowAgentRequest]) -> list[DynamicWorkflowAgentResult | None]:
     if len(requests) > self._limits.max_batch_size:

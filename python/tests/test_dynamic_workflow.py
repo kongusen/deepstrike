@@ -1,6 +1,8 @@
 """Plan task 6.3 · dynamic workflows in Python: a host program runs agents one decision at a time on
 a kernel-owned dynamic workflow root, and shares state with them through the blackboard (6.2)."""
 
+import asyncio
+
 import pytest
 
 from deepstrike import InMemorySessionLog, RuntimeOptions, RuntimeRunner
@@ -75,3 +77,40 @@ async def test_a_program_past_its_agent_limit_fails_before_spawning():
 
   with pytest.raises(DynamicWorkflowLimitError):
     await _runner(_Orchestrator()).run_dynamic_workflow(program, limits=DynamicWorkflowLimits(max_agents_per_run=1))
+
+
+class _SlowOrchestrator(_Orchestrator):
+  def __init__(self) -> None:
+    super().__init__()
+    self.active = 0
+    self.peak = 0
+
+  async def run(self, ctx):
+    self.active += 1
+    self.peak = max(self.peak, self.active)
+    await asyncio.sleep(0.02)
+    self.active -= 1
+    return await super().run(ctx)
+
+
+@pytest.mark.asyncio
+async def test_parallel_over_agent_runs_the_agents_together():
+  orchestrator = _SlowOrchestrator()
+
+  async def program(ctx):
+    return await ctx.parallel(["a", "b", "c", "d"], lambda item, _: ctx.agent(f"task {item}"))
+
+  run = await _runner(orchestrator).run_dynamic_workflow(program, session_id="dw-parallel")
+  assert [r.text for r in run.value] == ["done: task a", "done: task b", "done: task c", "done: task d"]
+  assert orchestrator.peak == 4
+
+
+@pytest.mark.asyncio
+async def test_a_batch_past_its_agent_limit_fails_only_the_calls_over_it():
+  async def program(ctx):
+    results = await asyncio.gather(*(ctx.agent(f"task {item}") for item in "abc"), return_exceptions=True)
+    return [type(r).__name__ for r in results]
+
+  run = await _runner(_Orchestrator()).run_dynamic_workflow(
+    program, session_id="dw-limit", limits=DynamicWorkflowLimits(max_agents_per_run=2))
+  assert run.value == ["DynamicWorkflowAgentResult", "DynamicWorkflowAgentResult", "DynamicWorkflowLimitError"]
