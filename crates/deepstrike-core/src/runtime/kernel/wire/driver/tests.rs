@@ -12565,3 +12565,75 @@ fn kernel_text_tokens_count_signals_once_and_kernel_answers() {
     let restored = Runtime::restore_with(Some(&checkpoint), &[]);
     assert_eq!(tokens(&restored), expected, "the count survives a restore");
 }
+
+#[test]
+fn a_dynamic_workflow_restored_from_a_checkpoint_stays_open_for_its_host() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    runtime.submit(&dynamic_workflow_start("dynamic-start", 1_700_000_001_000));
+    // A checkpoint before the first append covers the empty root, too.
+    let empty = runtime.checkpoint().decode().unwrap();
+    let mut runtime = runtime.restore(&empty);
+    let append = |id: &str, at: u64, node: &str| {
+        control(
+            id,
+            at,
+            HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+                nodes: vec![wire_node(node, "dynamic work", &[])],
+                plan: None,
+            }),
+        )
+    };
+    let first = runtime.submit(&append("append-one", 1_700_000_002_000, "node-one"));
+    runtime.submit(&spawned(
+        "ack-one",
+        1_700_000_003_000,
+        &effect_id(first.step_seq),
+        &["wf-node0"],
+    ));
+    runtime.submit(&child_done(
+        "done-one",
+        1_700_000_004_000,
+        "wf-node0",
+        "first result",
+    ));
+    assert!(runtime.tx.terminal().is_none());
+
+    let checkpoint = runtime.checkpoint().decode().unwrap();
+    let mut restored = runtime.restore(&checkpoint);
+    assert!(
+        restored.tx.terminal().is_none(),
+        "a restore does not close the root"
+    );
+
+    let second = restored.submit(&append("append-two", 1_700_000_005_000, "node-two"));
+    assert_eq!(
+        sole_effect(&second).tag(),
+        EffectKindTag::SpawnTasks,
+        "the restored root still accepts the host's next batch"
+    );
+    restored.submit(&spawned(
+        "ack-two",
+        1_700_000_006_000,
+        &effect_id(second.step_seq),
+        &["wf-node1"],
+    ));
+    let done = restored.submit(&child_done(
+        "done-two",
+        1_700_000_007_000,
+        "wf-node1",
+        "second result",
+    ));
+    assert!(done.published_effects().is_empty());
+    assert!(
+        restored.tx.terminal().is_none(),
+        "a settled batch after restore still waits for the host's close"
+    );
+
+    let closed = restored.submit(&control(
+        "close",
+        1_700_000_008_000,
+        HostCommand::CompleteDynamicWorkflow(CompleteDynamicWorkflowCommand {}),
+    ));
+    assert!(closed.step.disposition.is_terminal());
+}
