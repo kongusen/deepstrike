@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { consumeMemoryLeaseWrite, memoryRecordExpired, revokeMemoryLease, verifyMemoryLease } from "../src/memory/lifecycle.js"
+import { InMemoryMemoryLifecycleStore } from "../src/memory/lifecycle-store.js"
 import { FileMemoryLifecycleStore } from "../src/memory/durable-lifecycle-store.js"
 import type { MemoryLease } from "../src/memory/lifecycle.js"
 
@@ -18,6 +19,35 @@ test("TTL expiration uses updated_at and day precision", () => {
   const record = { updated_at: 1_000, ttl_days: 1 }
   expect(memoryRecordExpired(record, 1_000 + 86_400_000)).toBe(false)
   expect(memoryRecordExpired(record, 1_000 + 86_400_001)).toBe(true)
+})
+
+describe.each(["memory", "file"])("%s lifecycle store", backend => {
+  test.each([
+    { name: "competing operations", ids: ["first", "second"], expectedAccepted: 1 },
+    { name: "concurrent retries", ids: ["first", "first"], expectedAccepted: 2 },
+  ])("consumes one write for $name", async ({ ids, expectedAccepted }) => {
+    const directory = await mkdtemp(join(tmpdir(), "deepstrike-lease-race-"))
+    try {
+      const path = join(directory, "leases.json")
+      const first = backend === "file" ? new FileMemoryLifecycleStore(path) : new InMemoryMemoryLifecycleStore()
+      const second = backend === "file" ? new FileMemoryLifecycleStore(path) : first
+      const scope = { tenant_id: "tenant-1", namespace: "test" }
+      await first.issueLease({
+        lease_id: "lease", agent_id: "agent", scope, issued_at: 0, expires_at: 100, max_writes: 1, writes_used: 0,
+      })
+      const receipts = await Promise.all([
+        first.consumeWrite("agent", scope, ids[0], 10),
+        second.consumeWrite("agent", scope, ids[1], 10),
+      ])
+      expect(receipts.filter(receipt => receipt.valid)).toHaveLength(expectedAccepted)
+      if (ids[0] === ids[1]) expect(receipts[0]).toEqual(receipts[1])
+      else expect(receipts).toContainEqual({ valid: false, reason_code: "memory_write_budget_exhausted" })
+      expect((await first.events()).filter(event => event.type === "lease_write_consumed")).toHaveLength(1)
+      expect((await second.getLease("agent", scope))?.writes_used).toBe(1)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })
 
 test("file lifecycle store atomically consumes a lease and survives restart", async () => {
