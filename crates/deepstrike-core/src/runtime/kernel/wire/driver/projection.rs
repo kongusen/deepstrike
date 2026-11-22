@@ -95,6 +95,7 @@ impl CanonicalOperationDriver {
             );
             WorkflowGraphState {
                 workflow_id: workflow_id.clone(),
+                dynamic_open: engine.is_dynamic_workflow_open(),
                 nodes: runtime_nodes
                     .into_iter()
                     .zip(self.workflow_nodes.iter())
@@ -569,6 +570,13 @@ impl CanonicalOperationDriver {
         let mut engine = build_engine(genesis_config);
         install_live_policies(&mut engine, &live_config);
         engine.set_root_workflow(state.transition.root_kind == Some(RootKind::Workflow));
+        engine.set_dynamic_workflow_open(
+            state
+                .scheduler
+                .workflow
+                .as_ref()
+                .is_some_and(|workflow| workflow.dynamic_open),
+        );
         driver.policy = Some(LivePolicyState::restore(
             state.syscall.policy_revision.unwrap_or(WireU64::ZERO),
             live_config.clone(),

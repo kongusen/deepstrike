@@ -539,6 +539,11 @@ pub struct WorkflowGraphState {
     /// private reverse edges, ready heap and agent lookup from this projection during restore.
     #[serde(default)]
     pub nodes: Vec<WorkflowNodeState>,
+    /// A host-driven dynamic root that is still waiting for further appends or the host's close.
+    /// Not derivable from `root_kind`, which is `Workflow` for static and dynamic roots alike: a
+    /// restore that dropped it would let the next settled batch terminate the root on its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dynamic_open: bool,
 }
 
 /// One workflow node as source state rather than a snapshot of `TaskGraph` internals.
