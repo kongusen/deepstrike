@@ -12,13 +12,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.84"
+version = "0.2.85"
 edition = "2024"
 repository = "https://github.com/kongusen/deepstrike"
 
 [workspace.dependencies]
-deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.84" }
-deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.2.84" }
+deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.85" }
+deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.2.85" }
 notify = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

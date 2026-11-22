@@ -4,6 +4,46 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.85] - 2026-11-22
+
+Dynamic workflow fixes: `parallel()` over `agent()` now runs its agents concurrently in every SDK,
+a Node replay no longer re-runs agents when siblings finish in a different order, and a dynamic
+workflow root survives a checkpoint restore. Also fixes a lease race in the in-memory memory store.
+
+### Fixed
+
+- `ctx.parallel()` over `ctx.agent()` ran its agents one at a time (Node, Python, WASM). Each
+  `agent()` call was its own submission, and the runner admits one submission at a time. `agent()`
+  calls made in the same turn of the event loop now go to the kernel as one batch of at most
+  `maxConcurrentAgents` (`max_concurrent_agents`), the way `parallelAgents` already did. Each call
+  in a batch settles on its own: the `maxAgentsPerRun` limit, a missing saved result or a host error
+  fails only the calls it concerns. `parallelAgents` stays all-or-nothing. A batch's results come
+  back together, so a fast branch's next call waits for its slower siblings in that batch.
+- Node: unlabelled dynamic workflow node ids followed completion order, so a replay of a saved run
+  — whose saved results return instantly — could assign them differently and run agents again. Ids
+  now follow the call's position in the program: each `parallel()` item has its own counter
+  (`dynamic-agent-p0.1.0` is the first agent of item 1 of the first `parallel()`), in the VM and
+  process executors alike. New runs are saved with `nodeIds: "scoped"`; a run saved by an earlier
+  version has no marker and resumes with its original ids. Scripts that do not use `parallel()` get
+  the same ids as before. Concurrency a script builds itself with `Promise.all`, outside
+  `ctx.parallel()`, still shares one counter; give such calls a `label`. Python and WASM do not
+  replay saved runs, so their ids are unchanged.
+- A dynamic workflow root restored from a checkpoint came back closed: once its next batch settled
+  it terminated on its own, and the host's later appends and close were lost. Besides resuming an
+  operation, this hit the in-process rebuild after a CAS conflict or a failed commit. The
+  checkpoint now records `dynamic_open` (omitted when false, so static workflow checkpoints are
+  byte-identical). A checkpoint written by 0.2.84 or earlier has no field and restores closed, as
+  before.
+- `InMemoryMemoryLifecycleStore.consumeWrite` could accept two concurrent writes against a
+  single-write lease for different operations while counting only one in `writes_used` and the
+  `lease_write_consumed` events. Lookup, verification and receipt now happen in one synchronous
+  step.
+
+### Changed
+
+- A custom `DynamicWorkflowHost` must answer every node of a submission, since one submission can
+  now carry several `agent()` calls. `parallelAgents` already required this.
+
 ## [0.2.84] - 2026-11-17
 
 Kernel distillation (`docs/plans/kernel-distillation.md`). Seven rule mechanisms of the context
