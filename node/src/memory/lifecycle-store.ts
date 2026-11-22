@@ -26,8 +26,12 @@ export class InMemoryMemoryLifecycleStore implements MemoryLifecycleStore {
     return structuredClone(lease)
   }
 
+  private findLease(agentId: string, scope: MemoryScope): MemoryLease | undefined {
+    return [...this.leases.values()].find(item => item.agent_id === agentId && memoryScopeMatches(item.scope, scope))
+  }
+
   async getLease(agentId: string, scope: MemoryScope): Promise<MemoryLease | undefined> {
-    const lease = [...this.leases.values()].find(item => item.agent_id === agentId && memoryScopeMatches(item.scope, scope))
+    const lease = this.findLease(agentId, scope)
     return lease ? structuredClone(lease) : undefined
   }
 
@@ -44,7 +48,8 @@ export class InMemoryMemoryLifecycleStore implements MemoryLifecycleStore {
     const key = `${agentId}:${operationId}`
     const prior = this.consumed.get(key)
     if (prior) return structuredClone(prior)
-    const lease = await this.getLease(agentId, scope)
+    // Keep the lookup and the receipt write in the same synchronous turn.
+    const lease = this.findLease(agentId, scope)
     const verdict = verifyMemoryLease(lease, agentId, scope, nowMs)
     if (!verdict.valid) {
       const rejected: MemoryLifecycleWriteResult = verdict
