@@ -12,6 +12,7 @@ import {
   type DynamicWorkflowReplayRun,
   type DynamicWorkflowReplayStore,
 } from "./dynamic-replay.js"
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash } from "node:crypto"
 
 /** The sizing hint sent to a workflow author. It is guidance, not a hard agent count. */
@@ -458,9 +459,12 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     if (existing?.status === "completed" && existing.records.length === 0 && this.options.artifactSnapshot) {
       throw new DynamicWorkflowNothingToResumeError(`dynamic workflow run "${runId}" has no saved invocation results`)
     }
+    // A run recorded before scoped node ids keeps the call-order counter it was recorded with.
+    const legacyNodeIds = existing !== undefined && existing.nodeIds !== "scoped"
     const replayRun: DynamicWorkflowReplayRun = {
       version: 2,
       runId,
+      ...(legacyNodeIds ? {} : { nodeIds: "scoped" as const }),
       inputFingerprint,
       ...(this.options.artifactDigest ? { artifactDigest: this.options.artifactDigest } : {}),
       ...(this.options.artifactSnapshot ? { artifact: structuredClone(this.options.artifactSnapshot) } : {}),
@@ -509,6 +513,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       this.options.replayStore,
       this.options.onProgress,
       emitLifecycle,
+      legacyNodeIds,
     )
     control.attach(runId, emitLifecycle, status => context.setStatus(status))
     emitLifecycle({ kind: "approval_requested", runId })
@@ -566,6 +571,30 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
   }
 }
 
+interface DynamicWorkflowScope {
+  readonly path: string
+  agents: number
+  parallels: number
+}
+
+/** One call's share of a batch: its result, or the error that failed only that call. */
+type AgentBatchSlot = { result: DynamicWorkflowAgentResult | null } | { error: unknown }
+
+interface PendingAgentCall {
+  readonly request: DynamicWorkflowAgentRequest
+  readonly nodeId: string
+  resolve(result: DynamicWorkflowAgentResult | null): void
+  reject(error: unknown): void
+}
+
+/**
+ * Run `work` in the scope a process-isolated script reports for one of its `parallel()` items.
+ * The child process runs `parallel()` itself, so it sends the scope with each agent request.
+ */
+export function runInDynamicWorkflowScope<R>(context: DynamicWorkflowContext, path: unknown, work: () => R): R {
+  return context instanceof DynamicWorkflowContextImpl ? context.inRemoteScope(path, work) : work()
+}
+
 class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implements DynamicWorkflowContext<TArgs> {
   readonly args: Readonly<TArgs>
   private readonly board = new Map<string, { value: unknown; phase?: DynamicWorkflowPhaseProgress }>()
@@ -575,11 +604,23 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     delete: (key: string) => this.blackboardDelete(key),
   })
   private agentCount = 0
+  /** Legacy replay runs only: one counter for every unlabelled agent, in call order. */
   private nextNode = 0
+  /**
+   * Unlabelled node ids come from per-scope counters. Each `parallel()` item runs in its own
+   * scope, so an agent's id is its position in the program (`dynamic-agent-p0.1.0`: the first
+   * agent of item 1 of the first parallel), not the order in which siblings happened to finish.
+   * A replay that returns saved results instantly therefore reassigns the same ids.
+   */
+  private readonly rootScope: DynamicWorkflowScope = { path: "", agents: 0, parallels: 0 }
+  private readonly scopes = new AsyncLocalStorage<DynamicWorkflowScope>()
+  /** Scopes named over RPC by the process executor, which tracks `parallel()` in the child. */
+  private readonly remoteScopes = new Map<string, DynamicWorkflowScope>()
+  /** `agent()` calls made in the same turn of the event loop, submitted as one kernel batch. */
+  private pendingAgents: PendingAgentCall[] = []
+  private agentFlushScheduled = false
   private replayInvalidated = false
   private readonly phaseStack: DynamicWorkflowPhaseProgress[] = []
-  private activeAgentSlots = 0
-  private readonly waitingAgentSlots: Array<() => void> = []
   private nextPlanSequence = 0
 
   constructor(
@@ -595,8 +636,42 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     private readonly replayStore: DynamicWorkflowReplayStore | undefined,
     private readonly onProgress?: (progress: DynamicWorkflowProgress) => void,
     private readonly emitLifecycle?: (event: DynamicWorkflowLifecycleEvent) => void,
+    private readonly legacyNodeIds = false,
   ) {
     this.args = snapshotArgs(args)
+  }
+
+  /** Run `work` in the scope a process-isolated script named for its own `parallel()` item. */
+  inRemoteScope<R>(path: unknown, work: () => R): R {
+    if (path === undefined || path === "" || this.legacyNodeIds) return work()
+    if (typeof path !== "string" || path.length > 192 || !/^p\d+\.\d+(?:\.p\d+\.\d+)*$/.test(path)) {
+      throw new Error("invalid dynamic workflow scope")
+    }
+    let scope = this.remoteScopes.get(path)
+    if (!scope) {
+      scope = { path, agents: 0, parallels: 0 }
+      this.remoteScopes.set(path, scope)
+    }
+    return this.scopes.run(scope, work)
+  }
+
+  private currentScope(): DynamicWorkflowScope {
+    return this.scopes.getStore() ?? this.rootScope
+  }
+
+  private allocateNodeId(options: DynamicWorkflowAgentOptions): string {
+    const label = options.label?.trim()
+    if (label) return label
+    if (this.legacyNodeIds) return `dynamic-agent-${this.nextNode++}`
+    const scope = this.currentScope()
+    return `dynamic-agent-${scope.path ? `${scope.path}.` : ""}${scope.agents++}`
+  }
+
+  /** Reserve the next `parallel()` in the current scope and name one child scope per item. */
+  private reserveItemScopes(count: number): DynamicWorkflowScope[] {
+    const parent = this.currentScope()
+    const prefix = `${parent.path ? `${parent.path}.` : ""}p${parent.parallels++}`
+    return Array.from({ length: count }, (_, index) => ({ path: `${prefix}.${index}`, agents: 0, parallels: 0 }))
   }
 
   setStatus(status: DynamicWorkflowStatus): void {
@@ -638,14 +713,23 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       chunks.push(requests.slice(index, index + this.limits.maxConcurrentAgents))
     }
     const results: Array<DynamicWorkflowAgentResult | null> = []
-    for (const chunk of chunks) results.push(...await this.runAgentBatch(chunk))
+    for (const chunk of chunks) {
+      for (const slot of await this.runAgentBatch(chunk)) {
+        if ("error" in slot) throw slot.error
+        results.push(slot.result)
+      }
+    }
     return results
   }
 
   async parallel<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R> | R): Promise<R[]> {
     this.assertBatchSize(items.length, "parallel")
+    // Reserved before the first await, so sibling parallels in one scope keep their call order.
+    const scopes = this.legacyNodeIds ? undefined : this.reserveItemScopes(items.length)
     await this.control.waitIfPaused()
-    return this.mapBounded(items, worker)
+    return this.mapBounded(items, scopes
+      ? (item, index) => this.scopes.run(scopes[index]!, () => worker(item, index))
+      : worker)
   }
 
   async pipeline<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R> | R): Promise<R[]> {
@@ -706,172 +790,66 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   }
 
   private async runAgent<T>(prompt: string, options: DynamicWorkflowAgentOptions): Promise<DynamicWorkflowAgentResult<T> | null> {
-    await this.control.waitIfPaused()
     if (!prompt.trim()) throw new Error("dynamic workflow agent prompt must not be empty")
-    const planSequence = this.nextPlanSequence++
-    const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
-    const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
-    const cached = this.replayInvalidated ? undefined : await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
-    if (!cached && this.replayActive && this.resumeRequiresRecords && !this.replayNodeIds.has(nodeId)) {
-      throw new DynamicWorkflowNothingToResumeError(`dynamic workflow invocation "${nodeId}" has no saved result`)
-    }
-    if (cached) {
-      await this.host.recordReplayFact?.({
-        runId: this.runId,
-        sequence: planSequence,
+    // The id is taken now, in the caller's scope; the batch is assembled later, outside it.
+    const nodeId = this.allocateNodeId(options)
+    await this.control.waitIfPaused()
+    return new Promise<DynamicWorkflowAgentResult<T> | null>((resolve, reject) => {
+      this.pendingAgents.push({
+        request: { prompt, options },
         nodeId,
-        promptFingerprint,
-        status: cached.status,
-        replay: "reused",
-        resultDigest: digestDynamicWorkflowResult(cached.text),
-        ...(cached.termination ? { termination: cached.termination } : {}),
+        resolve: resolve as (result: DynamicWorkflowAgentResult | null) => void,
+        reject,
       })
-      this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId, promptFingerprint })
-      this.progress.agentsReused += 1
-      this.progress.agentsCompleted += 1
-      const currentPhase = this.phaseStack.at(-1)
-      if (currentPhase) {
-        currentPhase.agentsStarted += 1
-        currentPhase.agentsCompleted += 1
+      if (!this.agentFlushScheduled) {
+        this.agentFlushScheduled = true
+        setImmediate(() => void this.flushAgents())
       }
-      this.emit()
-      return {
-        value: options.outputSchema ? parseStructuredValue<T>(cached.text) : cached.text as T,
-        text: cached.text,
-        nodeId: cached.nodeId,
-        status: replayStatus(cached.status),
-        ...(cached.termination ? { termination: cached.termination } : {}),
-      }
-    }
-    if (this.replayActive) this.replayInvalidated = true
-    if (this.agentCount >= this.limits.maxAgentsPerRun) {
-      throw new DynamicWorkflowLimitError(
-        `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
-      )
-    }
-    this.agentCount += 1
-    this.emitLifecycle?.({ kind: "agent_started", runId: this.runId, nodeId, promptFingerprint })
-    await this.acquireAgentSlot()
-    this.progress.agentsStarted = this.agentCount
-    this.progress.activeAgents += 1
-    const currentPhase = this.phaseStack.at(-1)
-    if (currentPhase) {
-      currentPhase.agentsStarted += 1
-    }
-    this.emit()
-    try {
-      const spec: WorkflowSpec = {
-        nodes: [{
-          nodeId,
-          task: prompt,
-          role: options.role ?? "implement",
-          ...(options.agent ? { agent: options.agent } : {}),
-          ...(options.modelHint ? { modelHint: options.modelHint } : {}),
-          ...(options.trust ? { trust: options.trust } : {}),
-          ...(options.toolAccess ? { toolAccess: options.toolAccess } : {}),
-          ...(options.isolation ? { isolation: options.isolation } : {}),
-          ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
-          ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
-          ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-          ...(options.maxWallMs !== undefined ? { maxWallMs: options.maxWallMs } : {}),
-        }],
-      }
-      let outcome: WorkflowOutcome
+    })
+  }
+
+  /**
+   * Submit every `agent()` call made in the same turn as one kernel batch, so the calls of a
+   * `parallel()` or `Promise.all` run concurrently. A host that admits one submission at a time
+   * would otherwise run them one after another. Batches are bounded by `maxConcurrentAgents`.
+   * Each call settles on its own: a limit, a missing saved result or a host error fails only the
+   * calls it concerns, as it would had they been submitted one at a time.
+   */
+  private async flushAgents(): Promise<void> {
+    this.agentFlushScheduled = false
+    const calls = this.pendingAgents.splice(0)
+    for (let index = 0; index < calls.length; index += this.limits.maxConcurrentAgents) {
+      const chunk = calls.slice(index, index + this.limits.maxConcurrentAgents)
       try {
-        outcome = await this.host.runWorkflow(spec, {
-          runId: this.runId,
-          sequence: planSequence,
-          nodes: [{ nodeId, dependsOn: [], promptFingerprint, replay: "executed" }],
+        const slots = await this.runAgentBatch(chunk.map(call => call.request), chunk.map(call => call.nodeId), true)
+        chunk.forEach((call, position) => {
+          const slot = slots[position]!
+          if ("error" in slot) call.reject(slot.error)
+          else call.resolve(slot.result)
         })
       } catch (error) {
-        await this.replayStore?.save(this.runId, {
-          nodeId,
-          promptFingerprint,
-          text: "",
-          status: "failed",
-          termination: "host_error",
-          error: error instanceof Error ? error.message : String(error),
-        })
-        await this.host.recordReplayFact?.({
-          runId: this.runId,
-          sequence: planSequence,
-          nodeId,
-          promptFingerprint,
-          status: "failed",
-          replay: "executed",
-          resultDigest: digestDynamicWorkflowResult(""),
-          termination: "host_error",
-        })
-        this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: "failed", termination: "host_error" })
-        throw error
+        for (const call of chunk) call.reject(error)
       }
-      if (outcome.rejection) {
-        await this.replayStore?.save(this.runId, {
-          nodeId,
-          promptFingerprint,
-          text: "",
-          status: "cancelled",
-          termination: "workflow_rejected",
-        })
-        await this.host.recordReplayFact?.({
-          runId: this.runId,
-          sequence: planSequence,
-          nodeId,
-          promptFingerprint,
-          status: "cancelled",
-          replay: "executed",
-          resultDigest: digestDynamicWorkflowResult(""),
-          termination: "workflow_rejected",
-        })
-        this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: "failed", termination: "workflow_rejected" })
-        return null
-      }
-      const node = outcome.nodeOutcomes.find(candidate => candidate.nodeId === nodeId) ?? outcome.nodeOutcomes[0]
-      const text = node?.output?.content ?? Object.values(outcome.outputs)[0] ?? ""
-      const value = options.outputSchema ? parseStructuredValue<T>(text) : (text as T)
-      const status = node?.status ?? "failed"
-      await this.replayStore?.save(this.runId, {
-        nodeId,
-        promptFingerprint,
-        text,
-        status,
-        ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
-        ...(node ? {} : { error: "workflow returned no matching node outcome" }),
-      })
-      await this.host.recordReplayFact?.({
-        runId: this.runId,
-        sequence: planSequence,
-        nodeId,
-        promptFingerprint,
-        status,
-        replay: "executed",
-        resultDigest: digestDynamicWorkflowResult(text),
-        ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
-      })
-      this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status, ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }) })
-      this.progress.agentsCompleted += 1
-      if (currentPhase) currentPhase.agentsCompleted += 1
-      return {
-        value,
-        text,
-        nodeId: node?.nodeId ?? nodeId,
-        status,
-        ...(node?.termination ? { termination: node.termination } : {}),
-      }
-    } finally {
-      this.progress.activeAgents -= 1
-      this.releaseAgentSlot()
-      this.emit()
     }
   }
 
-  private async runAgentBatch(requests: readonly DynamicWorkflowAgentRequest[]): Promise<Array<DynamicWorkflowAgentResult | null>> {
+  /**
+   * Run one kernel batch. Without `partial`, a limit or a missing saved result fails the whole
+   * batch before anything runs and a host error is thrown. With `partial`, those fail only the
+   * calls they concern and every other call still settles.
+   */
+  private async runAgentBatch(
+    requests: readonly DynamicWorkflowAgentRequest[],
+    nodeIds?: readonly string[],
+    partial = false,
+  ): Promise<AgentBatchSlot[]> {
     if (requests.length === 0) return []
+    const assigned = nodeIds ?? requests.map(request => this.allocateNodeId(request.options ?? {}))
     await this.control.waitIfPaused()
     const planSequence = this.nextPlanSequence++
     const nodes = requests.map((request, index) => {
       const options = request.options ?? {}
-      const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
+      const nodeId = assigned[index]!
       return {
         nodeId,
         request,
@@ -892,26 +870,43 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         } satisfies WorkflowNodeSpec,
       }
     })
-    const cached = await Promise.all(nodes.map(async entry => {
+    const cached = await Promise.all(nodes.map(async (entry, index) => {
       const promptFingerprint = fingerprintDynamicWorkflowInvocation(entry.request.prompt, entry.options)
       return {
         ...entry,
+        index,
         promptFingerprint,
         record: this.replayInvalidated ? undefined : await this.replayStore?.find(this.runId, entry.nodeId, promptFingerprint),
       }
     }))
-    if (this.replayActive && this.resumeRequiresRecords) {
-      const missingNode = cached.find(entry => !entry.record && !this.replayNodeIds.has(entry.nodeId))
-      if (missingNode) throw new DynamicWorkflowNothingToResumeError(`dynamic workflow invocation "${missingNode.nodeId}" has no saved result`)
+    const errors = new Map<number, unknown>()
+    const settle = (resultOf: (entry: (typeof cached)[number]) => DynamicWorkflowAgentResult | null): AgentBatchSlot[] => {
+      const slots: AgentBatchSlot[] = cached.map(entry => errors.has(entry.index) ? { error: errors.get(entry.index) } : { result: null })
+      for (const entry of replayable) slots[entry.index] = { result: resultOf(entry) }
+      return slots
     }
-    const firstMiss = cached.findIndex(entry => !entry.record)
+    if (this.replayActive && this.resumeRequiresRecords) {
+      for (const entry of cached) {
+        if (entry.record || this.replayNodeIds.has(entry.nodeId)) continue
+        const error = new DynamicWorkflowNothingToResumeError(`dynamic workflow invocation "${entry.nodeId}" has no saved result`)
+        if (!partial) throw error
+        errors.set(entry.index, error)
+      }
+    }
+    const live = cached.filter(entry => !errors.has(entry.index))
+    const firstMiss = live.findIndex(entry => !entry.record)
     if (firstMiss >= 0 && this.replayActive) this.replayInvalidated = true
-    const replayable = firstMiss >= 0 ? cached.map((entry, index) => index < firstMiss ? entry : { ...entry, record: undefined }) : cached
-    const misses = replayable.filter(entry => !entry.record)
-    if (this.agentCount + misses.length > this.limits.maxAgentsPerRun) {
-      throw new DynamicWorkflowLimitError(
+    let replayable = firstMiss >= 0 ? live.map((entry, index) => index < firstMiss ? entry : { ...entry, record: undefined }) : live
+    let misses = replayable.filter(entry => !entry.record)
+    const room = Math.max(0, this.limits.maxAgentsPerRun - this.agentCount)
+    if (misses.length > room) {
+      const limitError = () => new DynamicWorkflowLimitError(
         `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
       )
+      if (!partial) throw limitError()
+      for (const entry of misses.slice(room)) errors.set(entry.index, limitError())
+      replayable = replayable.filter(entry => !errors.has(entry.index))
+      misses = misses.slice(0, room)
     }
     const currentPhase = this.phaseStack.at(-1)
     const replayed = replayable.filter(entry => entry.record)
@@ -938,7 +933,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       }
     }
     if (misses.length === 0) {
-      return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
+      return settle(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
     }
     this.agentCount += misses.length
     this.progress.agentsStarted = this.agentCount
@@ -987,7 +982,11 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           termination: "host_error",
         })))
         for (const entry of misses) this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId: entry.nodeId, status: "failed", termination: "host_error" })
-        throw error
+        if (!partial) throw error
+        // Only the calls the host was running fail; reused results in the batch still settle.
+        for (const entry of misses) errors.set(entry.index, error)
+        replayable = replayable.filter(entry => !errors.has(entry.index))
+        return settle(entry => this.replayResult(entry.options, entry.record!))
       }
       if (outcome.rejection) {
         await Promise.all(misses.map(entry => this.replayStore?.save(this.runId, {
@@ -1018,7 +1017,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           this.progress.agentsCompleted += 1
           if (currentPhase) currentPhase.agentsCompleted += 1
         }
-        return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
+        return settle(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
       }
       const results = new Map<string, DynamicWorkflowAgentResult | null>()
       for (const entry of misses) {
@@ -1055,7 +1054,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         this.progress.agentsCompleted += 1
         if (currentPhase) currentPhase.agentsCompleted += 1
       }
-      return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : results.get(entry.nodeId) ?? null)
+      return settle(entry => entry.record ? this.replayResult(entry.options, entry.record) : results.get(entry.nodeId) ?? null)
     } finally {
       this.progress.activeAgents -= misses.length
       this.emit()
@@ -1075,20 +1074,6 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       status: replayStatus(record.status),
       ...(record.termination ? { termination: record.termination } : {}),
     }
-  }
-
-  private async acquireAgentSlot(): Promise<void> {
-    if (this.activeAgentSlots < this.limits.maxConcurrentAgents) {
-      this.activeAgentSlots += 1
-      return
-    }
-    await new Promise<void>(resolve => this.waitingAgentSlots.push(resolve))
-    this.activeAgentSlots += 1
-  }
-
-  private releaseAgentSlot(): void {
-    this.activeAgentSlots -= 1
-    this.waitingAgentSlots.shift()?.()
   }
 
   private assertBatchSize(size: number, operation: string): void {

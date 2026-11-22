@@ -1,8 +1,8 @@
 /**
  * Plan task 6.3 · dynamic workflows: a host program decides, step by step, which agents to run.
  *
- * Each `agent` (or `parallelAgents` batch) becomes one submission the kernel admits onto the
- * operation's dynamic workflow root — the kernel still owns the DAG, its budgets and every spawn —
+ * Each `parallelAgents` batch, and every set of `agent` calls made in the same turn of the event loop,
+ * becomes one submission the kernel admits onto the operation's dynamic workflow root — the kernel still owns the DAG, its budgets and every spawn —
  * and the program awaits the typed result before deciding what comes next. The vocabulary matches
  * the Node SDK's `runDynamicWorkflow`; replay of a saved run and the sandboxed script executors are
  * Node-only (they need a filesystem and `node:vm`).
@@ -95,6 +95,12 @@ export interface DynamicWorkflowHost {
   writeBlackboard(key: string, content: string | undefined): Promise<void>
 }
 
+interface PendingAgentCall {
+  readonly request: DynamicWorkflowAgentRequest
+  resolve(result: DynamicWorkflowAgentResult | null): void
+  reject(error: unknown): void
+}
+
 export function dynamicAgentTask(prompt: string, options?: DynamicWorkflowAgentOptions): DynamicWorkflowAgentRequest {
   if (!prompt.trim()) throw new Error("dynamic workflow agent prompt must not be empty")
   return { prompt, ...(options ? { options } : {}) }
@@ -110,6 +116,9 @@ export class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> i
   private sequence = 0
   private activeSlots = 0
   private readonly waitingSlots: Array<() => void> = []
+  /** `agent()` calls made in the same turn, submitted together so `parallel()` runs them at once. */
+  private pendingAgents: PendingAgentCall[] = []
+  private agentFlushScheduled = false
 
   readonly blackboard: DynamicWorkflowBlackboard = Object.freeze({
     put: (key: string, value: unknown, options?: { scope?: "workflow" | "phase" }) => this.blackboardPut(key, value, options),
@@ -124,7 +133,39 @@ export class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> i
   }
 
   async agent<T = string>(prompt: string, options?: DynamicWorkflowAgentOptions): Promise<DynamicWorkflowAgentResult<T> | null> {
-    return (await this.runBatch([dynamicAgentTask(prompt, options)]))[0] as DynamicWorkflowAgentResult<T> | null
+    const request = dynamicAgentTask(prompt, options)
+    return new Promise<DynamicWorkflowAgentResult<T> | null>((resolve, reject) => {
+      this.pendingAgents.push({ request, resolve: resolve as PendingAgentCall["resolve"], reject })
+      if (!this.agentFlushScheduled) {
+        this.agentFlushScheduled = true
+        // A macrotask, so every worker of a `parallel()` reaches its call first.
+        setTimeout(() => void this.flushAgents(), 0)
+      }
+    })
+  }
+
+  /**
+   * Submit the pending `agent()` calls in batches of at most `maxConcurrentAgents`. The host admits
+   * one submission at a time, so separate submissions would run one after another. Each call
+   * settles on its own: calls past `maxAgentsPerRun` fail alone, the rest still run.
+   */
+  private async flushAgents(): Promise<void> {
+    this.agentFlushScheduled = false
+    const calls = this.pendingAgents.splice(0)
+    for (let index = 0; index < calls.length; index += this.limits.maxConcurrentAgents) {
+      const chunk = calls.slice(index, index + this.limits.maxConcurrentAgents)
+      const room = Math.max(0, this.limits.maxAgentsPerRun - this.progress.agentsStarted)
+      for (const call of chunk.slice(room)) {
+        call.reject(new DynamicWorkflowLimitError(`dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`))
+      }
+      const admitted = chunk.slice(0, room)
+      try {
+        const results = await this.runBatch(admitted.map(call => call.request))
+        admitted.forEach((call, position) => call.resolve(results[position] ?? null))
+      } catch (error) {
+        for (const call of admitted) call.reject(error)
+      }
+    }
   }
 
   async parallelAgents<T>(items: readonly T[], worker: (item: T, index: number) => DynamicWorkflowAgentRequest): Promise<Array<DynamicWorkflowAgentResult | null>> {

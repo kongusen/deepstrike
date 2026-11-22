@@ -11,20 +11,23 @@ import type { WorkflowNodeSpec } from "../src/types/agent.js"
 
 function fakeHost(delayMs = 0, onRun?: (goal: string) => void, onDone?: (goal: string) => void): DynamicWorkflowHost {
   return {
+    // Agent calls made in the same turn arrive as one multi-node submission; run them together.
     async runWorkflow(spec) {
-      const node = spec.nodes[0]
-      const goal = typeof node.task === "string" ? node.task : node.task.goal
-      onRun?.(goal)
-      if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs))
-      onDone?.(goal)
-      const content = goal.startsWith("json:") ? JSON.stringify({ goal }) : `done:${goal}`
+      const settled = await Promise.all(spec.nodes.map(async node => {
+        const goal = typeof node.task === "string" ? node.task : node.task.goal
+        onRun?.(goal)
+        if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs))
+        onDone?.(goal)
+        const content = goal.startsWith("json:") ? JSON.stringify({ goal }) : `done:${goal}`
+        return { nodeId: node.nodeId ?? "unknown", content }
+      }))
       return {
-        nodeOutcomes: [{
-          nodeId: node.nodeId ?? "unknown",
-          status: "completed",
-          output: { role: "assistant", content },
-        }],
-        outputs: { [node.nodeId ?? "unknown"]: content },
+        nodeOutcomes: settled.map(({ nodeId, content }) => ({
+          nodeId,
+          status: "completed" as const,
+          output: { role: "assistant" as const, content },
+        })),
+        outputs: Object.fromEntries(settled.map(({ nodeId, content }) => [nodeId, content])),
       }
     },
   }
